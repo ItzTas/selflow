@@ -15,11 +15,11 @@ use selflow_protocol::ipc::LockView;
 use tokio::sync::mpsc::Receiver;
 
 use crate::clock::Clock;
-use crate::store::{Event, EventKind, Store};
+use crate::store::{Event, EventKind, Store, StoreError};
 
 pub use constants::{MAX_SLEEP, SHUTDOWN_NOTICE, WARNING_GRACE};
-use types::ShownLock;
 pub use types::{Enforcer, EngineError};
+use types::{Outcome, Record, ShownLock};
 
 pub struct Engine<C: Clock, E: Enforcer> {
     clock: Arc<C>,
@@ -52,27 +52,41 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
     pub fn tick(&mut self) -> Result<Timestamp, EngineError> {
         let now = self.clock.now();
         let instant = now.timestamp();
-        let shared = Arc::clone(&self.store);
-        let store = locked(&shared);
-        self.refresh_config(&store, instant)?;
-        let today = logical_date(&now, self.config.day_starts_at);
-        let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
-        let log = store.night_log(&nights)?;
+        let log = self.load(&now)?;
         let evaluation = evaluate(&now, &self.config, self.seed, &log);
         let language = Language::from_tag(&self.config.language).unwrap_or(Language::En);
         self.send_warnings(&now, &evaluation.warnings, language);
-        let shutdown_at = match &evaluation.enforcement {
-            Enforcement::Free => {
-                self.release(&store, instant)?;
-                None
-            }
-            Enforcement::Locked(lock) => self.enforce(&store, &log, lock, instant, language)?,
+        let outcome = match &evaluation.enforcement {
+            Enforcement::Free => self.release(instant),
+            Enforcement::Locked(lock) => self.enforce(&log, lock, instant, language),
         };
+        self.record(&outcome.records);
+        if outcome.shut_down {
+            self.enforcer.shut_down();
+        }
         Ok(evaluation
             .next_change_at
             .into_iter()
-            .chain(shutdown_at)
+            .chain(outcome.pending_shutdown)
             .fold(later_by(instant, MAX_SLEEP), Ord::min))
+    }
+
+    fn load(&mut self, now: &ZonedDateTime) -> Result<NightLog, EngineError> {
+        let shared = Arc::clone(&self.store);
+        let store = locked(&shared);
+        self.refresh_config(&store, now.timestamp())?;
+        let today = logical_date(now, self.config.day_starts_at);
+        let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
+        Ok(store.night_log(&nights)?)
+    }
+
+    fn record(&self, records: &[Record]) {
+        let store = locked(&self.store);
+        for record in records {
+            if let Err(error) = write(&store, record) {
+                tracing::error!(%error, ?record, "couldn't record an enforcement step");
+            }
+        }
     }
 
     pub async fn run(mut self, mut wake: Receiver<()>) -> Result<(), EngineError> {
@@ -134,12 +148,11 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
 
     fn enforce(
         &mut self,
-        store: &Store,
         log: &NightLog,
         lock: &ActiveLock,
         now: Timestamp,
         language: Language,
-    ) -> Result<Option<Timestamp>, EngineError> {
+    ) -> Outcome {
         let window = &lock.window;
         let identity = format!(
             "{}/{}/{}",
@@ -164,48 +177,65 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             shutdown_at,
             ..lock_view(lock, language.tag())
         });
+        let event = |kind| {
+            Record::Event(lock_event(
+                now,
+                &identity,
+                &shown.label,
+                window.logical_date,
+                kind,
+            ))
+        };
+        let mut records = Vec::new();
         let recorded = log.started.iter().any(|started| {
             started.key() == window.key() && started.logical_date == window.logical_date
         });
         if !recorded {
-            store.record_started(window)?;
+            records.push(Record::Started(window.clone()));
         }
-        store.record_event(&lock_event(
-            now,
-            &identity,
-            &shown.label,
-            window.logical_date,
-            EventKind::LockStarted,
-        ))?;
+        records.push(event(EventKind::LockStarted));
         let due = shutdown_at.is_some_and(|at| at <= now);
         if !due || shown.shut_down {
-            return Ok(shutdown_at.filter(|at| now < *at));
+            return Outcome {
+                records,
+                pending_shutdown: shutdown_at.filter(|at| now < *at),
+                shut_down: false,
+            };
         }
-        store.record_event(&lock_event(
-            now,
-            &identity,
-            &shown.label,
-            window.logical_date,
-            EventKind::Shutdown,
-        ))?;
+        records.push(event(EventKind::Shutdown));
         shown.shut_down = true;
-        self.enforcer.shut_down();
-        Ok(None)
+        Outcome {
+            records,
+            pending_shutdown: None,
+            shut_down: true,
+        }
     }
 
-    fn release(&mut self, store: &Store, now: Timestamp) -> Result<(), EngineError> {
+    fn release(&mut self, now: Timestamp) -> Outcome {
         self.enforcer.hide_lock();
+        let mut records = Vec::new();
         for (identity, shown) in self.shown.iter_mut().filter(|(_, shown)| !shown.ended) {
-            store.record_event(&lock_event(
+            shown.ended = true;
+            records.push(Record::Event(lock_event(
                 now,
                 identity,
                 &shown.label,
                 shown.logical_date,
                 EventKind::LockEnded,
-            ))?;
-            shown.ended = true;
+            )));
         }
-        Ok(())
+        Outcome {
+            records,
+            pending_shutdown: None,
+            shut_down: false,
+        }
+    }
+}
+
+fn write(store: &Store, record: &Record) -> Result<(), StoreError> {
+    match record {
+        Record::Started(window) => store.record_started(window),
+        Record::Event(event) => store.record_event(event).map(drop),
     }
 }
 

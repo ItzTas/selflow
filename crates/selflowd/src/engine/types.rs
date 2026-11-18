@@ -1,9 +1,10 @@
 use jiff::{Timestamp, civil};
 use selflow_core::config::ConfigError;
+use selflow_core::plan::LockWindow;
 use selflow_protocol::ipc::LockView;
 use thiserror::Error;
 
-use crate::store::StoreError;
+use crate::store::{Event, StoreError};
 
 pub trait Enforcer: Send {
     fn warn(&mut self, title: String, body: String);
@@ -25,5 +26,17 @@ pub(super) struct ShownLock {
     pub(super) logical_date: civil::Date,
     pub(super) first_shown: Timestamp,
     pub(super) ended: bool,
+    pub(super) shut_down: bool,
+}
+
+#[derive(Debug)]
+pub(super) enum Record {
+    Started(LockWindow),
+    Event(Event),
+}
+
+pub(super) struct Outcome {
+    pub(super) records: Vec<Record>,
+    pub(super) pending_shutdown: Option<Timestamp>,
     pub(super) shut_down: bool,
 }

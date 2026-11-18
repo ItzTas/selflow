@@ -1,8 +1,44 @@
 mod support;
 
+use std::fs::{Permissions, set_permissions};
+use std::os::unix::fs::PermissionsExt;
+
 use jiff::civil::date;
-use selflowd::store::EventKind;
-use support::{Call, at, engine_on, extension, setup};
+use selflowd::store::{EventKind, Store};
+use support::{Call, at, engine_on, extension, setup, setup_on};
+
+#[test]
+fn keeps_enforcing_when_the_store_cannot_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selflow/selflow.db");
+    let (mut engine, calls, clock, store) = setup_on(Store::open(&path).unwrap(), at(19, 23, 30));
+    let state = path.parent().unwrap();
+    set_permissions(state, Permissions::from_mode(0o500)).unwrap();
+    let mut ticks = vec![engine.tick()];
+    for moment in [at(19, 23, 31), at(20, 7, 0)] {
+        clock.set(moment);
+        ticks.push(engine.tick());
+    }
+    set_permissions(state, Permissions::from_mode(0o700)).unwrap();
+    assert!(ticks.iter().all(Result::is_ok));
+    assert_eq!(
+        calls.take(),
+        vec![
+            Call::Show("bedtime".into(), 1),
+            Call::Show("bedtime".into(), 1),
+            Call::ShutDown,
+            Call::Hide
+        ]
+    );
+    assert_eq!(
+        store
+            .lock()
+            .unwrap()
+            .events_for(date(2026, 11, 19))
+            .unwrap(),
+        vec![]
+    );
+}
 
 #[test]
 fn locks_at_bedtime_and_records_the_start_once() {

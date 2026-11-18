@@ -76,7 +76,13 @@ impl Enforcer for FakeEnforcer {
 pub type TestEngine = Engine<TestClock, FakeEnforcer>;
 
 pub fn setup(now: ZonedDateTime) -> (TestEngine, Calls, Arc<TestClock>, Arc<Mutex<Store>>) {
-    let store = Store::open_in_memory().unwrap();
+    setup_on(Store::open_in_memory().unwrap(), now)
+}
+
+pub fn setup_on(
+    store: Store,
+    now: ZonedDateTime,
+) -> (TestEngine, Calls, Arc<TestClock>, Arc<Mutex<Store>>) {
     let saved_at = at(18, 10, 0).timestamp();
     store
         .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
