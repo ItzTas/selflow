@@ -2,7 +2,7 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, ZonedDateTime};
 use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::{
-    ChangeKindView, ConfigStatusView, MessageView, PositionedMessage, ReportView,
+    ChangeKindView, ConfigStatusView, MessageView, PositionedMessage, ReportEntry, ReportView,
 };
 
 const WEEKDAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -88,19 +88,28 @@ pub fn render_report(localizer: &Localizer, report: &ReportView, tz: &TimeZone) 
     if report.entries.is_empty() {
         return format!("{heading}\n{}", localizer.text("cli-report-empty", &[]));
     }
-    let lines = report.entries.iter().map(|entry| {
-        let at = entry.at.to_zoned_datetime(tz.clone());
-        format!(
-            "{:02}:{:02}  {}",
-            at.hour(),
-            at.minute(),
-            message_text(localizer, &entry.message)
-        )
-    });
+    let lines = report
+        .entries
+        .iter()
+        .map(|entry| report_line(localizer, entry, tz));
     std::iter::once(heading)
         .chain(lines)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn report_line(localizer: &Localizer, entry: &ReportEntry, tz: &TimeZone) -> String {
+    if entry.message.id == "report-pending" {
+        let when = format_moment(localizer, entry.at, tz);
+        return localizer.text("report-pending", &[("when", Arg::Text(when))]);
+    }
+    let at = entry.at.to_zoned_datetime(tz.clone());
+    format!(
+        "{:02}:{:02}  {}",
+        at.hour(),
+        at.minute(),
+        message_text(localizer, &entry.message)
+    )
 }
 
 fn with_bullets(localizer: &Localizer, headline: String, changes: &[MessageView]) -> String {
