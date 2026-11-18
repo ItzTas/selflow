@@ -1,0 +1,6 @@
+rust = "~1"
+[settings]
+auto-install = true
+telemetry = false
+unstable-lockfile = true
+auto-clean = true

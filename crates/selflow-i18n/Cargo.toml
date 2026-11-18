@@ -1,0 +1,13 @@
+[package]
+name = "selflow-i18n"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fluent-bundle.workspace = true
+unic-langid.workspace = true
+tracing.workspace = true

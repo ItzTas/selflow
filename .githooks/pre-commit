@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if ! cargo fmt --check; then
+	echo "pre-commit: run cargo fmt" >&2
+	exit 1
+fi
+
+echo "pre-commit: cargo test"
+cargo test
