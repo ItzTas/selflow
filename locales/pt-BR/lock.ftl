@@ -19,3 +19,4 @@ lock-refused-no-budget = Não há mais extensões esta noite.
 lock-refused-reason-too-short = Escreva um pouco mais: pelo menos { $min_chars } caracteres.
 lock-refused-phrase-mismatch = A frase ainda não confere. Confira e tente de novo.
 lock-failed = A tela de bloqueio não conseguiu abrir.
+lock-request-failed = Não foi possível falar com o Selflow agora. Tente de novo daqui a pouco.

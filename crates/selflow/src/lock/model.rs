@@ -12,6 +12,7 @@ pub enum LockEvent {
     Submit,
     Granted,
     Refused(RefusalView),
+    RequestFailed,
 }
 
 #[derive(Debug, PartialEq)]
@@ -41,9 +42,15 @@ pub enum ExtensionArea {
         minutes: i64,
         reason_required: bool,
         phrase: Option<String>,
-        error: Option<RefusalView>,
+        error: Option<FormError>,
         sending: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FormError {
+    Refused(RefusalView),
+    Failed,
 }
 
 pub struct LockModel {
@@ -51,7 +58,7 @@ pub struct LockModel {
     view: Option<LockView>,
     reason: String,
     phrase: String,
-    error: Option<RefusalView>,
+    error: Option<FormError>,
     sending: bool,
 }
 
@@ -71,10 +78,7 @@ impl LockModel {
         match event {
             LockEvent::View(view) => self.view = Some(view),
             LockEvent::Ended => return LockEffect::Exit,
-            LockEvent::Disconnected => {
-                self.sending = false;
-                return LockEffect::Reconnect;
-            }
+            LockEvent::Disconnected => return LockEffect::Reconnect,
             LockEvent::Tick(now) => self.now = now,
             LockEvent::ReasonEdited(reason) => self.reason = reason,
             LockEvent::PhraseEdited(phrase) => self.phrase = phrase,
@@ -87,7 +91,11 @@ impl LockModel {
             }
             LockEvent::Refused(refusal) => {
                 self.sending = false;
-                self.error = Some(refusal);
+                self.error = Some(FormError::Refused(refusal));
+            }
+            LockEvent::RequestFailed => {
+                self.sending = false;
+                self.error = Some(FormError::Failed);
             }
         }
         LockEffect::None

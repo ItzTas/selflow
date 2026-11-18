@@ -19,3 +19,4 @@ lock-refused-no-budget = No extensions left tonight.
 lock-refused-reason-too-short = Write a little more: at least { $min_chars } characters.
 lock-refused-phrase-mismatch = The sentence doesn't match yet. Check it and try again.
 lock-failed = The lock screen couldn't start.
+lock-request-failed = Couldn't reach Selflow just now. Try again in a moment.

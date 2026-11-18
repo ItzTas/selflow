@@ -5,7 +5,7 @@ use jiff::tz::TimeZone;
 use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::RefusalView;
 
-use super::model::{ExtensionArea, LockEvent, LockModel, Screen};
+use super::model::{ExtensionArea, FormError, LockEvent, LockModel, Screen};
 use super::style;
 
 pub fn lock_screen<'a>(
@@ -100,7 +100,7 @@ fn extension_area<'a>(
                 ));
             }
             if let Some(error) = error {
-                form = form.push(muted(refusal_text(&error, localizer, tz)));
+                form = form.push(muted(form_error_text(&error, localizer, tz)));
             }
             let (label, on_press) = if sending {
                 ("lock-asking", None)
@@ -140,7 +140,10 @@ fn muted<'a>(line: String) -> Text<'a> {
         .center()
 }
 
-fn refusal_text(refusal: &RefusalView, localizer: &Localizer, tz: &TimeZone) -> String {
+fn form_error_text(error: &FormError, localizer: &Localizer, tz: &TimeZone) -> String {
+    let FormError::Refused(refusal) = error else {
+        return localizer.text("lock-request-failed", &[]);
+    };
     match refusal {
         RefusalView::TooEarly { available_at } => localizer.text(
             "lock-refused-too-early",

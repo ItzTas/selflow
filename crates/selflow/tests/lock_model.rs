@@ -1,6 +1,6 @@
 mod support;
 
-use selflow::lock::{ExtensionArea, LockEffect, LockEvent, LockModel, Screen};
+use selflow::lock::{ExtensionArea, FormError, LockEffect, LockEvent, LockModel, Screen};
 use selflow_protocol::ipc::{LockView, RefusalView};
 use support::{at, view};
 
@@ -83,4 +83,39 @@ fn shows_no_form_when_the_budget_is_spent() {
             ..
         }
     ));
+}
+
+#[test]
+fn a_failed_request_shows_an_error_on_the_form() {
+    let mut model = LockModel::new(at(19, 23, 2).timestamp());
+    model.update(LockEvent::View(view()));
+    model.update(LockEvent::Submit);
+    model.update(LockEvent::RequestFailed);
+    assert!(matches!(
+        model.screen(),
+        Screen::Locked {
+            extension: ExtensionArea::Form {
+                error: Some(FormError::Failed),
+                sending: false,
+                ..
+            },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_lost_connection_keeps_the_request_in_flight() {
+    let mut model = LockModel::new(at(19, 23, 2).timestamp());
+    model.update(LockEvent::View(view()));
+    model.update(LockEvent::Submit);
+    model.update(LockEvent::Disconnected);
+    assert!(matches!(
+        model.screen(),
+        Screen::Locked {
+            extension: ExtensionArea::Form { sending: true, .. },
+            ..
+        }
+    ));
+    assert_eq!(model.update(LockEvent::Submit), LockEffect::None);
 }
