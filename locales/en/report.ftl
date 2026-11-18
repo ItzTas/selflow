@@ -1,0 +1,8 @@
+report-lock-started = The { $label } lock started.
+report-lock-ended = The { $label } lock ended.
+report-extension = You asked for { $minutes } more min during the { $label } lock. Your reason: { $reason }
+report-shutdown = The computer shut down during the { $label } lock.
+report-config-saved-tighten = You saved a change that makes the rules firmer. It applied right away.
+report-config-saved-loosen = You saved a change that loosens the rules. It waits a while before it applies.
+report-config-saved-neutral = You saved your settings.
+report-pending = A saved change takes effect on { $when }.

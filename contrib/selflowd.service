@@ -1,0 +1,7 @@
+[Unit]
+Description=Selflow daemon
+
+[Service]
+ExecStart=%h/.cargo/bin/selflowd
+Restart=always
+RestartSec=2

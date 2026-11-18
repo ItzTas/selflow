@@ -10,10 +10,15 @@ use jiff::{
 };
 use selflow_core::enforce::GrantedExtension;
 use selflow_core::versions::ChangeKind;
-use selflow_protocol::ipc::LockView;
+use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
 use selflowd::clock::Clock;
 use selflowd::engine::{Enforcer, Engine};
+use selflowd::ipc::{Shared, bind, serve};
 use selflowd::store::Store;
+use tempfile::TempDir;
+use tokio::io::BufReader;
+use tokio::net::UnixStream;
+use tokio::sync::{mpsc, watch};
 
 pub struct TestClock(Mutex<ZonedDateTime>);
 
@@ -84,10 +89,7 @@ pub fn setup_on(
     store: Store,
     now: ZonedDateTime,
 ) -> (TestEngine, Calls, Arc<TestClock>, Arc<Mutex<Store>>) {
-    let saved_at = at(18, 10, 0).timestamp();
-    store
-        .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
-        .unwrap();
+    save_no_jitter(&store);
     let store = Arc::new(Mutex::new(store));
     let clock = Arc::new(TestClock::new(now));
     let (engine, calls) = engine_on(store.clone(), clock.clone());
@@ -98,6 +100,13 @@ pub fn engine_on(store: Arc<Mutex<Store>>, clock: Arc<TestClock>) -> (TestEngine
     let calls = Calls::default();
     let engine = Engine::new(clock, FakeEnforcer(calls.clone()), store).unwrap();
     (engine, calls)
+}
+
+pub fn save_no_jitter(store: &Store) {
+    let saved_at = at(18, 10, 0).timestamp();
+    store
+        .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
+        .unwrap();
 }
 
 pub fn brt() -> TimeZone {
@@ -179,4 +188,87 @@ pub async fn wait_for(limit: Duration, condition: impl Fn() -> bool) -> bool {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+pub struct TestClient {
+    stream: tokio::sync::Mutex<BufReader<UnixStream>>,
+    _dir: TempDir,
+}
+
+impl TestClient {
+    pub async fn request(&self, request: Request) -> Response {
+        let mut stream = self.stream.lock().await;
+        write_message(stream.get_mut(), &request).await.unwrap();
+        read_message(&mut *stream)
+            .await
+            .unwrap()
+            .expect("the daemon answered")
+    }
+}
+
+pub struct Subscriber {
+    stream: BufReader<UnixStream>,
+    _dir: TempDir,
+}
+
+impl Subscriber {
+    pub async fn next(&mut self) -> Option<Response> {
+        tokio::time::timeout(Duration::from_secs(5), read_message(&mut self.stream))
+            .await
+            .ok()?
+            .unwrap()
+    }
+}
+
+pub async fn start(now: ZonedDateTime) -> (TestClient, Arc<Shared>) {
+    let (client, shared, _clock) = start_on(Store::open_in_memory().unwrap(), now).await;
+    (client, shared)
+}
+
+pub async fn start_with_config(now: ZonedDateTime) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
+    let store = Store::open_in_memory().unwrap();
+    save_no_jitter(&store);
+    start_on(store, now).await
+}
+
+pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
+    let (sender, views) = watch::channel(None);
+    let clock = Arc::new(TestClock::new(at(19, 23, 0)));
+    let (dir, stream, _shared) = launch(Store::open_in_memory().unwrap(), clock, views).await;
+    let mut stream = BufReader::new(stream);
+    write_message(stream.get_mut(), &Request::SubscribeLock)
+        .await
+        .unwrap();
+    (Subscriber { stream, _dir: dir }, sender)
+}
+
+async fn start_on(store: Store, now: ZonedDateTime) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
+    let clock = Arc::new(TestClock::new(now));
+    let (_, views) = watch::channel(None);
+    let (dir, stream, shared) = launch(store, clock.clone(), views).await;
+    let client = TestClient {
+        stream: tokio::sync::Mutex::new(BufReader::new(stream)),
+        _dir: dir,
+    };
+    (client, shared, clock)
+}
+
+async fn launch(
+    store: Store,
+    clock: Arc<dyn Clock>,
+    views: watch::Receiver<Option<LockView>>,
+) -> (TempDir, UnixStream, Arc<Shared>) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selflow/daemon.sock");
+    let listener = bind(&path).unwrap();
+    let (wake, _) = mpsc::channel(1);
+    let shared = Arc::new(Shared {
+        store: Arc::new(Mutex::new(store)),
+        clock,
+        wake,
+        views,
+    });
+    tokio::spawn(serve(listener, Arc::clone(&shared)));
+    let stream = UnixStream::connect(&path).await.unwrap();
+    (dir, stream, shared)
 }
