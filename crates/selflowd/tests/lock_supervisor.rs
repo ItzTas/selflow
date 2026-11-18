@@ -121,3 +121,9 @@ fn sleep_binary() -> PathBuf {
         .unwrap();
     PathBuf::from(String::from_utf8(output.stdout).unwrap().trim())
 }
+
+#[test]
+fn power_modes_print_as_their_setting() {
+    assert_eq!(PowerMode::LogOnly.to_string(), "log");
+    assert_eq!(PowerMode::Real.to_string(), "real");
+}

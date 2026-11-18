@@ -1,10 +1,20 @@
 use std::ffi::OsStr;
+use std::fmt;
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerMode {
     Real,
     LogOnly,
+}
+
+impl fmt::Display for PowerMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            PowerMode::Real => "real",
+            PowerMode::LogOnly => "log",
+        })
+    }
 }
 
 pub fn power_mode_from(value: Option<&OsStr>) -> PowerMode {

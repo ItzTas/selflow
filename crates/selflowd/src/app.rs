@@ -56,7 +56,9 @@ async fn run_bound(listener: UnixListener, store_path: &Path) -> Result<(), AppE
         lock_program_from(&std::env::current_exe()?),
         vec!["lock".into()],
     );
-    let enforcer = SystemEnforcer::new(supervisor, Notifier, power_mode());
+    let power = power_mode();
+    tracing::info!("power mode: {power}");
+    let enforcer = SystemEnforcer::new(supervisor, Notifier, power);
     let views = enforcer.views();
     let mut engine = Engine::new(Arc::clone(&clock), enforcer, Arc::clone(&store))?;
     let mut terminate = signal(SignalKind::terminate())?;
