@@ -208,7 +208,8 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         let notice = later_by(shown.first_shown, SHUTDOWN_NOTICE);
         let shutdown_at = lock
             .shutdown_at
-            .map(|at| at.max(earliest_shutdown).max(notice));
+            .map(|at| at.max(earliest_shutdown).max(notice))
+            .filter(|at| *at < window.ends_at.timestamp());
         self.enforcer.show_lock(LockView {
             shutdown_at,
             ..lock_view(lock, language.tag())

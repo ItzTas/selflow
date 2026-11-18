@@ -202,3 +202,30 @@ fn a_neutral_save_during_a_lock_does_not_postpone_its_shutdown() {
         ]
     );
 }
+
+#[test]
+fn a_shutdown_that_would_come_after_the_lock_ends_is_dropped() {
+    let store = Store::open_in_memory().unwrap();
+    let saved_at = at(20, 6, 40).timestamp();
+    store
+        .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
+        .unwrap();
+    let (mut engine, calls, clock, _store) = setup_over(store, at(20, 6, 40));
+    engine.tick().unwrap();
+    assert_eq!(calls.last_view().map(|view| view.shutdown_at), Some(None));
+    for minute in [41, 59] {
+        clock.set(at(20, 6, minute));
+        engine.tick().unwrap();
+    }
+    clock.set(at(20, 7, 0));
+    engine.tick().unwrap();
+    assert_eq!(
+        calls.take(),
+        vec![
+            Call::Show("bedtime".into(), 1),
+            Call::Show("bedtime".into(), 1),
+            Call::Show("bedtime".into(), 1),
+            Call::Hide
+        ]
+    );
+}
