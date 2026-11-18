@@ -63,14 +63,20 @@ fn status(
     views: &watch::Receiver<Option<LockView>>,
 ) -> Result<Response, IpcError> {
     let instant = now.timestamp();
-    let config = config_in_force(store, instant)?;
+    let versions = store.versions()?;
+    let current = in_force(&versions, instant);
+    let config = config_of(current)?;
     let next_lock_at = windows_around(&config, store.seed()?, now)
         .iter()
         .map(|window| window.starts_at.timestamp())
         .filter(|starts_at| *starts_at > instant)
         .min();
+    let language = match current {
+        Some(_) => config.language,
+        None => Language::from_env().tag().to_owned(),
+    };
     Ok(Response::Status(StatusView {
-        language: config.language,
+        language,
         locked: views.borrow().clone(),
         next_lock_at,
     }))

@@ -1,5 +1,6 @@
 mod support;
 
+use selflow_core::config::parse;
 use selflow_protocol::ipc::{ChangeKindView, RefusalView, Request, Response};
 use selflowd::ipc::{IpcError, bind};
 use support::{at, no_jitter, sample_view, start, start_with_config, subscribe};
@@ -68,6 +69,18 @@ async fn the_first_save_takes_effect_at_once_even_when_it_loosens() {
         (kind, effective_at),
         (ChangeKindView::Loosen, at(18, 10, 0).timestamp())
     );
+}
+
+#[tokio::test]
+async fn with_nothing_saved_the_status_uses_the_default_files_language() {
+    let (client, _shared) = start(at(18, 10, 0)).await;
+    let Response::Config { text } = client.request(Request::GetConfig).await else {
+        panic!("expected Config")
+    };
+    let Response::Status(status) = client.request(Request::Status).await else {
+        panic!("expected Status")
+    };
+    assert_eq!(status.language, parse(&text).unwrap().language);
 }
 
 #[tokio::test]
