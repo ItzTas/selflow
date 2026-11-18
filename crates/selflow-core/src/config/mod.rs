@@ -4,6 +4,7 @@ mod raw;
 mod types;
 mod validate;
 
+pub(crate) use constants::DAYS;
 pub use constants::SUPPORTED_LANGUAGES;
 pub use error::ConfigError;
 pub use types::{Challenges, Config, LockRule, RuleSet};
