@@ -7,8 +7,11 @@ use std::time::Duration;
 use selflow_protocol::ipc::LockView;
 use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, watch};
+use tokio::time::Instant;
 
 const RESPAWN_DELAY: Duration = Duration::from_secs(1);
+const MAX_RESPAWN_DELAY: Duration = Duration::from_secs(30);
+const STEADY_RUN: Duration = Duration::from_secs(5);
 const HIDE_GRACE: Duration = Duration::from_secs(5);
 
 pub struct LockSupervisor {
@@ -27,6 +30,8 @@ struct Running {
     pid: Option<u32>,
     generation: u64,
     stop: Option<oneshot::Sender<()>>,
+    next_spawn_at: Option<Instant>,
+    quick_exits: u32,
 }
 
 impl LockSupervisor {
@@ -98,6 +103,28 @@ impl Running {
             let _ = stop.send(());
         }
     }
+
+    fn waiting(&self) -> bool {
+        self.next_spawn_at.is_some_and(|at| Instant::now() < at)
+    }
+
+    fn back_off(&mut self, ran: Duration) -> Instant {
+        if ran >= STEADY_RUN {
+            self.quick_exits = 0;
+            return self.respawn_in(RESPAWN_DELAY);
+        }
+        let delay = RESPAWN_DELAY
+            .saturating_mul(2u32.saturating_pow(self.quick_exits))
+            .min(MAX_RESPAWN_DELAY);
+        self.quick_exits = self.quick_exits.saturating_add(1);
+        self.respawn_in(delay)
+    }
+
+    fn respawn_in(&mut self, delay: Duration) -> Instant {
+        let at = Instant::now() + delay;
+        self.next_spawn_at = Some(at);
+        at
+    }
 }
 
 pub fn lock_program_from(current_exe: &Path) -> PathBuf {
@@ -110,7 +137,7 @@ pub fn lock_program_from(current_exe: &Path) -> PathBuf {
 
 fn start(shared: &Arc<Shared>) {
     let mut running = shared.running();
-    if running.pid.is_some() || shared.views.borrow().is_none() {
+    if running.pid.is_some() || running.waiting() || shared.views.borrow().is_none() {
         return;
     }
     let spawned = Command::new(&shared.program)
@@ -124,6 +151,7 @@ fn start(shared: &Arc<Shared>) {
         Err(error) => {
             let program = shared.program.display();
             tracing::error!(%error, %program, "couldn't start the lock client");
+            retry(shared, running.back_off(Duration::ZERO));
             return;
         }
     };
@@ -131,25 +159,48 @@ fn start(shared: &Arc<Shared>) {
     running.generation += 1;
     running.pid = child.id();
     running.stop = Some(stop);
-    tokio::spawn(supervise(Arc::clone(shared), child, stopped));
+    tokio::spawn(supervise(
+        Arc::clone(shared),
+        child,
+        stopped,
+        Instant::now(),
+    ));
 }
 
-async fn supervise(shared: Arc<Shared>, mut child: Child, stopped: oneshot::Receiver<()>) {
+fn retry(shared: &Arc<Shared>, at: Instant) {
+    let shared = Arc::clone(shared);
+    tokio::spawn(async move {
+        tokio::time::sleep_until(at).await;
+        start(&shared);
+    });
+}
+
+async fn supervise(
+    shared: Arc<Shared>,
+    mut child: Child,
+    stopped: oneshot::Receiver<()>,
+    started: Instant,
+) {
     let status = tokio::select! {
         status = child.wait() => status,
         Ok(()) = stopped => stop(&mut child).await,
     };
-    log_exit(status);
-    {
-        let mut running = shared.running();
-        running.pid = None;
-        running.stop = None;
+    let ran = started.elapsed();
+    log_exit(status, ran);
+    if let Some(at) = released(&shared, ran) {
+        retry(&shared, at);
     }
-    if shared.views.borrow().is_none() {
-        return;
-    }
-    tokio::time::sleep(RESPAWN_DELAY).await;
-    start(&shared);
+}
+
+fn released(shared: &Shared, ran: Duration) -> Option<Instant> {
+    let mut running = shared.running();
+    running.pid = None;
+    running.stop = None;
+    shared
+        .views
+        .borrow()
+        .is_some()
+        .then(|| running.back_off(ran))
 }
 
 async fn stop(child: &mut Child) -> io::Result<ExitStatus> {
@@ -157,8 +208,11 @@ async fn stop(child: &mut Child) -> io::Result<ExitStatus> {
     child.wait().await
 }
 
-fn log_exit(status: io::Result<ExitStatus>) {
+fn log_exit(status: io::Result<ExitStatus>, ran: Duration) {
     match status {
+        Ok(status) if ran < STEADY_RUN => {
+            tracing::warn!(%status, ?ran, "the lock client exited soon after it started");
+        }
         Ok(status) => tracing::info!(%status, "the lock client exited"),
         Err(error) => tracing::warn!(%error, "couldn't wait on the lock client"),
     }
