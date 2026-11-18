@@ -130,13 +130,13 @@ impl Store {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "UPDATE config_versions SET superseded = 1 WHERE superseded = 0 AND effective_at > ?1",
-            params![saved_at.to_string()],
+            params![timestamp_text(saved_at)],
         )?;
         tx.execute(
             "INSERT INTO config_versions (saved_at, effective_at, kind, text) VALUES (?1, ?2, ?3, ?4)",
             params![
-                saved_at.to_string(),
-                effective_at.to_string(),
+                timestamp_text(saved_at),
+                timestamp_text(effective_at),
                 change_kind_text(kind),
                 text
             ],
@@ -189,8 +189,8 @@ impl Store {
                 extension.rule_set,
                 extension.rule_id,
                 extension.logical_date.to_string(),
-                extension.granted_at.to_string(),
-                extension.until.to_string(),
+                timestamp_text(extension.granted_at),
+                timestamp_text(extension.until),
                 extension.reason
             ],
         )?;
@@ -259,7 +259,7 @@ impl Store {
             "INSERT OR IGNORE INTO events (at, logical_date, kind, key, detail)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
-                event.at.to_string(),
+                timestamp_text(event.at),
                 event.logical_date.to_string(),
                 event_kind_text(event.kind),
                 event.key,
@@ -292,4 +292,8 @@ type EventColumns = (String, String, String, Option<String>);
 
 fn event_row(row: &Row) -> rusqlite::Result<EventColumns> {
     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+}
+
+fn timestamp_text(timestamp: Timestamp) -> String {
+    timestamp.strftime("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
 }

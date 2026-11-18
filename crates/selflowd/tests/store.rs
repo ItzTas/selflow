@@ -103,3 +103,44 @@ fn the_default_path_follows_xdg_state_home() {
         Some("/h/.local/state/selflow/selflow.db".into())
     );
 }
+
+#[test]
+fn a_whole_second_version_survives_a_later_save_with_a_fraction() {
+    let store = Store::open_in_memory().unwrap();
+    let instant = at(18, 10, 0).timestamp();
+    let half = instant + jiff::SignedDuration::from_millis(500);
+    let first = store
+        .save_version("one", instant, instant, ChangeKind::Tighten)
+        .unwrap();
+    let second = store
+        .save_version("two", half, instant, ChangeKind::Tighten)
+        .unwrap();
+    let ids: Vec<_> = store.versions().unwrap().iter().map(|v| v.id).collect();
+    assert_eq!(ids, vec![first, second]);
+}
+
+#[test]
+fn orders_events_by_time_across_fractions() {
+    let store = Store::open_in_memory().unwrap();
+    let whole = at(19, 23, 0).timestamp();
+    let half = whole + jiff::SignedDuration::from_millis(500);
+    let event = |at, key: &str| Event {
+        at,
+        logical_date: date(2026, 11, 19),
+        kind: EventKind::Shutdown,
+        key: key.into(),
+        detail: None,
+    };
+    store
+        .record_event(&event(whole + jiff::SignedDuration::from_secs(1), "c"))
+        .unwrap();
+    store.record_event(&event(half, "b")).unwrap();
+    store.record_event(&event(whole, "a")).unwrap();
+    let keys: Vec<_> = store
+        .events_for(date(2026, 11, 19))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.key)
+        .collect();
+    assert_eq!(keys, vec!["a", "b", "c"]);
+}
