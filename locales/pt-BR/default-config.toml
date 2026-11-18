@@ -1,0 +1,50 @@
+# Idioma das mensagens do Selflow: "en" ou "pt-BR".
+language = "pt-BR"
+# Quando um novo dia começa, para que uma noite longa ainda conte como o dia anterior.
+day_starts_at = "05:00"
+# Quanto tempo uma mudança que afrouxa as regras espera antes de valer.
+loosening_delay = "24h"
+
+# Horários com nome que um bloqueio pode usar como início ou fim.
+[anchors]
+# O horário em que você pretende estar na cama.
+bedtime = "23:00"
+# O horário em que você pretende levantar.
+wake = "07:00"
+
+# Um grupo de bloqueios e desafios de desbloqueio para os dias listados abaixo.
+[[rule_set]]
+# O nome deste conjunto de regras.
+name = "every-night"
+# Os dias que este conjunto de regras cobre, de "mon" (segunda) a "sun" (domingo).
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+# O que é preciso para desbloquear a tela durante um bloqueio.
+[rule_set.challenges]
+# Quanto tempo esperar até a opção de desbloqueio aparecer.
+wait = "2m"
+# Se é preciso escrever um motivo para desbloquear, mostrado no relatório do dia seguinte.
+reason = true
+# Uma frase para digitar antes de desbloquear; um valor vazio significa nenhuma.
+phrase = ""
+# Quantas extensões cada noite permite.
+extensions = 1
+# Quanto tempo dura cada extensão.
+extension_length = "20m"
+
+# Um bloqueio: a tela fica bloqueada do início ao fim.
+[[rule_set.lock]]
+# Um nome curto para este bloqueio, único dentro do seu conjunto de regras.
+id = "bedtime"
+# O nome mostrado na tela de bloqueio.
+label = "Hora de dormir"
+# Quando o bloqueio começa: o nome de uma âncora ou um horário como "23:00".
+start = "bedtime"
+# O bloqueio começa num momento aleatório até este tempo depois do início; "0m" mantém o horário exato.
+start_jitter = "15m"
+# Quando o bloqueio termina: o nome de uma âncora ou um horário como "07:00".
+end = "wake"
+# Com quanta antecedência cada aviso chega antes do bloqueio.
+warnings = ["15m", "5m", "1m"]
+# Desliga o computador se a tela ficar bloqueada por este tempo; remova a linha para nunca desligar.
+shutdown_after = "30m"

@@ -1,0 +1,13 @@
+config-syntax = Não foi possível ler esta parte do arquivo: { $detail }
+config-bad-duration = O valor `{ $value }` não é uma duração como 15m ou 2h 30m.
+config-not-positive = A duração `{ $value }` precisa ser maior que zero.
+config-bad-time = O valor `{ $value }` não é um horário como 23:00.
+config-unknown-anchor = Não há nenhuma âncora chamada `{ $name }` em [anchors].
+config-unknown-language = O idioma `{ $value }` não está disponível. As opções são "en" e "pt-BR".
+config-bad-day = O valor `{ $value }` não é um dia. Os dias são mon, tue, wed, thu, fri, sat e sun.
+config-day-in-two-sets = O dia `{ $day }` está em `{ $first }` e em `{ $second }`. Cada dia pertence a um só conjunto de regras.
+config-duplicate-set = Já existe um conjunto de regras chamado `{ $name }`.
+config-duplicate-lock = O conjunto de regras `{ $set }` já tem um bloqueio com o id `{ $id }`.
+config-empty-window = O bloqueio `{ $id }` começa e termina no mesmo horário.
+config-jitter-too-long = O start_jitter do bloqueio `{ $id }` precisa ser menor que o próprio bloqueio.
+config-locks-overlap = No conjunto de regras `{ $set }`, os bloqueios `{ $first }` e `{ $second }` se sobrepõem.

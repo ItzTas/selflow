@@ -1,0 +1,50 @@
+# Language for messages from Selflow: "en" or "pt-BR".
+language = "en"
+# When a new day begins, so a late night still counts as the day before.
+day_starts_at = "05:00"
+# How long a change that loosens the rules waits before it takes effect.
+loosening_delay = "24h"
+
+# Named times that a lock can use as its start or end.
+[anchors]
+# The time you plan to be in bed.
+bedtime = "23:00"
+# The time you plan to get up.
+wake = "07:00"
+
+# A group of locks and unlock challenges for the days listed below.
+[[rule_set]]
+# The name of this rule set.
+name = "every-night"
+# The days this rule set covers, from "mon" to "sun".
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+# What it takes to unlock the screen during a lock.
+[rule_set.challenges]
+# How long to wait before the unlock option appears.
+wait = "2m"
+# Whether to write a reason for unlocking, shown in the next-day report.
+reason = true
+# A sentence to type before unlocking; an empty value means none.
+phrase = ""
+# How many extensions each night allows.
+extensions = 1
+# How long each extension lasts.
+extension_length = "20m"
+
+# A lock: the screen stays locked from start to end.
+[[rule_set.lock]]
+# A short name for this lock, unique within its rule set.
+id = "bedtime"
+# The name shown on the lock screen.
+label = "Bedtime"
+# When the lock starts: an anchor name or a time like "23:00".
+start = "bedtime"
+# The lock starts at a random moment up to this long after start; "0m" keeps it exact.
+start_jitter = "15m"
+# When the lock ends: an anchor name or a time like "07:00".
+end = "wake"
+# How long before the lock each notice comes.
+warnings = ["15m", "5m", "1m"]
+# Shuts the computer down if the screen stays locked this long; remove the line to never shut down.
+shutdown_after = "30m"
