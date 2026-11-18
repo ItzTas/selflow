@@ -7,7 +7,7 @@ use jiff::civil::date;
 use jiff::tz::{self, TimeZone};
 use jiff::{Timestamp, ZonedDateTime};
 use selflow::editor::Editor;
-use selflow_protocol::ipc::{ChangeKindView, Response};
+use selflow_protocol::ipc::{ChangeKindView, LockView, Response};
 
 pub fn brt() -> TimeZone {
     TimeZone::fixed(tz::offset(-3))
@@ -56,5 +56,19 @@ pub fn saved() -> Response {
         kind: ChangeKindView::Neutral,
         effective_at: Timestamp::UNIX_EPOCH,
         changes: Vec::new(),
+    }
+}
+
+pub fn view() -> LockView {
+    LockView {
+        label: "bedtime".into(),
+        ends_at: at(20, 7, 0).timestamp(),
+        extension_available_at: at(19, 23, 2).timestamp(),
+        extensions_left: 1,
+        extension_minutes: 20,
+        reason_required: true,
+        phrase: None,
+        shutdown_at: Some(at(19, 23, 30).timestamp()),
+        language: "en".into(),
     }
 }

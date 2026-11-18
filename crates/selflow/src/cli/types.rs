@@ -3,6 +3,9 @@ use jiff::civil;
 use selflow_protocol::ipc::MessageView;
 use std::io;
 
+use super::commands::LockArgs;
+use crate::lock::LockError;
+
 #[derive(Debug, Parser)]
 #[command(name = "selflow", arg_required_else_help = true)]
 pub struct Cli {
@@ -14,6 +17,8 @@ pub struct Cli {
 pub enum Command {
     Config(ConfigArgs),
     Report(ReportArgs),
+    #[command(hide = true)]
+    Lock(LockArgs),
 }
 
 #[derive(Debug, Args)]
@@ -48,4 +53,6 @@ pub enum CliError {
     UnexpectedResponse,
     #[error("the daemon reported an error")]
     Daemon(MessageView),
+    #[error("the lock screen failed: {0}")]
+    Lock(#[from] LockError),
 }
