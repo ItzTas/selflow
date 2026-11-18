@@ -1,8 +1,10 @@
 mod types;
 
+use std::cmp;
+
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 
-use crate::config::Config;
+use crate::config::{Challenges, Config};
 use crate::plan::{LockWindow, windows_around};
 use crate::timing::{Seed, fnv1a64};
 
@@ -34,22 +36,50 @@ pub fn evaluate(now: &ZonedDateTime, config: &Config, seed: Seed, log: &NightLog
 }
 
 fn candidates(now: &ZonedDateTime, config: &Config, seed: Seed, log: &NightLog) -> Vec<LockWindow> {
-    let mut windows: Vec<LockWindow> = windows_around(config, seed, now)
-        .into_iter()
+    let computed = windows_around(config, seed, now);
+    let started = log.started.iter().map(|started| {
+        computed
+            .iter()
+            .find(|window| same_window(window, started))
+            .map_or_else(|| started.clone(), |window| stricter(started, window))
+    });
+    let fresh = computed
+        .iter()
         .filter(|window| {
-            !log.started.iter().any(|started| {
-                is_window(
-                    window,
-                    &started.rule_set,
-                    &started.rule_id,
-                    started.logical_date,
-                )
-            })
+            !log.started
+                .iter()
+                .any(|started| same_window(window, started))
         })
-        .chain(log.started.iter().cloned())
-        .collect();
+        .cloned();
+    let mut windows: Vec<LockWindow> = started.chain(fresh).collect();
     windows.sort_by_key(|window| window.starts_at.timestamp());
     windows
+}
+
+fn stricter(started: &LockWindow, computed: &LockWindow) -> LockWindow {
+    let (kept, current) = (&started.challenges, &computed.challenges);
+    LockWindow {
+        label: computed.label.clone(),
+        ends_at: cmp::max_by_key(&started.ends_at, &computed.ends_at, |at| at.timestamp()).clone(),
+        warnings: computed.warnings.clone(),
+        shutdown_after: started
+            .shutdown_after
+            .into_iter()
+            .chain(computed.shutdown_after)
+            .min(),
+        challenges: Challenges {
+            wait: kept.wait.max(current.wait),
+            reason: kept.reason || current.reason,
+            phrase: kept.phrase.clone().or_else(|| current.phrase.clone()),
+            extensions: kept.extensions.min(current.extensions),
+            extension_length: kept.extension_length.min(current.extension_length),
+        },
+        ..started.clone()
+    }
+}
+
+fn same_window(window: &LockWindow, other: &LockWindow) -> bool {
+    is_window(window, &other.rule_set, &other.rule_id, other.logical_date)
 }
 
 fn is_window(
@@ -94,15 +124,24 @@ fn active_lock(window: &LockWindow, log: &NightLog, now: Timestamp) -> Option<Ac
         .map(|extension| extension.until)
         .filter(|until| *until <= now)
         .fold(starts_at, Ord::max);
-    let granted = u32::try_from(extensions_of(window, log).count()).unwrap_or(u32::MAX);
+    let granted = log
+        .extensions
+        .iter()
+        .filter(|extension| {
+            extension.rule_set == window.rule_set && extension.logical_date == window.logical_date
+        })
+        .count();
     Some(ActiveLock {
         window: window.clone(),
         locked_since,
-        extension_available_at: locked_since + window.challenges.wait,
-        extensions_left: window.challenges.extensions.saturating_sub(granted),
+        extension_available_at: later_by(locked_since, window.challenges.wait),
+        extensions_left: window
+            .challenges
+            .extensions
+            .saturating_sub(u32::try_from(granted).unwrap_or(u32::MAX)),
         shutdown_at: window
             .shutdown_after
-            .map(|after| locked_since + after)
+            .map(|after| later_by(locked_since, after))
             .filter(|shutdown_at| *shutdown_at < ends_at),
     })
 }
@@ -130,7 +169,7 @@ fn warnings_for(window: &LockWindow, log: &NightLog, seed: Seed, now: Timestamp)
         .map(|offset| Warning {
             key: key.clone(),
             label: window.label.clone(),
-            at: lock_at - *offset,
+            at: earlier_by(lock_at, *offset),
             lock_at,
             variant,
         })
@@ -155,4 +194,12 @@ fn draw_variant(seed: Seed, key: &str, lock_at: Timestamp) -> u8 {
     bytes.extend_from_slice(key.as_bytes());
     bytes.extend_from_slice(lock_at.to_string().as_bytes());
     fastrand::Rng::with_seed(fnv1a64(&bytes)).u8(1..=3)
+}
+
+fn later_by(at: Timestamp, duration: SignedDuration) -> Timestamp {
+    at.checked_add(duration).unwrap_or(Timestamp::MAX)
+}
+
+fn earlier_by(at: Timestamp, duration: SignedDuration) -> Timestamp {
+    at.checked_sub(duration).unwrap_or(Timestamp::MIN)
 }
