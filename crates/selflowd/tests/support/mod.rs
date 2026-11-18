@@ -47,15 +47,22 @@ pub enum Call {
 }
 
 #[derive(Clone, Default)]
-pub struct Calls(Arc<Mutex<Vec<Call>>>);
+pub struct Calls {
+    calls: Arc<Mutex<Vec<Call>>>,
+    last_view: Arc<Mutex<Option<LockView>>>,
+}
 
 impl Calls {
     pub fn take(&self) -> Vec<Call> {
-        std::mem::take(&mut *self.0.lock().unwrap())
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+
+    pub fn last_view(&self) -> Option<LockView> {
+        self.last_view.lock().unwrap().clone()
     }
 
     fn push(&self, call: Call) {
-        self.0.lock().unwrap().push(call);
+        self.calls.lock().unwrap().push(call);
     }
 }
 
@@ -67,7 +74,9 @@ impl Enforcer for FakeEnforcer {
     }
 
     fn show_lock(&mut self, view: LockView) {
-        self.0.push(Call::Show(view.label, view.extensions_left));
+        self.0
+            .push(Call::Show(view.label.clone(), view.extensions_left));
+        *self.0.last_view.lock().unwrap() = Some(view);
     }
 
     fn hide_lock(&mut self) {
@@ -90,6 +99,13 @@ pub fn setup_on(
     now: ZonedDateTime,
 ) -> (TestEngine, Calls, Arc<TestClock>, Arc<Mutex<Store>>) {
     save_no_jitter(&store);
+    setup_over(store, now)
+}
+
+pub fn setup_over(
+    store: Store,
+    now: ZonedDateTime,
+) -> (TestEngine, Calls, Arc<TestClock>, Arc<Mutex<Store>>) {
     let store = Arc::new(Mutex::new(store));
     let clock = Arc::new(TestClock::new(now));
     let (engine, calls) = engine_on(store.clone(), clock.clone());

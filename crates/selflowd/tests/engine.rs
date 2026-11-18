@@ -4,8 +4,9 @@ use std::fs::{Permissions, set_permissions};
 use std::os::unix::fs::PermissionsExt;
 
 use jiff::civil::date;
+use selflow_core::versions::ChangeKind;
 use selflowd::store::{EventKind, Store};
-use support::{Call, at, engine_on, extension, setup, setup_on};
+use support::{Call, at, brt, engine_on, extension, no_jitter, setup, setup_on, setup_over};
 
 #[test]
 fn keeps_enforcing_when_the_store_cannot_record() {
@@ -122,5 +123,82 @@ fn a_restart_keeps_the_spent_budget_and_one_start_event() {
             .filter(|e| e.kind == EventKind::LockStarted)
             .count(),
         1
+    );
+}
+
+#[test]
+fn a_rule_that_just_came_into_force_waits_its_full_shutdown_time() {
+    let store = Store::open_in_memory().unwrap();
+    let saved_at = at(19, 23, 40).timestamp();
+    store
+        .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
+        .unwrap();
+    let (mut engine, calls, clock, store) = setup_over(store, at(19, 23, 40));
+    engine.tick().unwrap();
+    clock.set(at(19, 23, 42));
+    engine.tick().unwrap();
+    assert_eq!(
+        calls.take(),
+        vec![
+            Call::Show("bedtime".into(), 1),
+            Call::Show("bedtime".into(), 1)
+        ]
+    );
+    assert_eq!(
+        calls.last_view().and_then(|view| view.shutdown_at),
+        Some(at(20, 0, 10).timestamp())
+    );
+    clock.set(
+        date(2026, 11, 20)
+            .at(0, 9, 30, 0)
+            .to_zoned_datetime(brt())
+            .unwrap(),
+    );
+    assert_eq!(engine.tick().unwrap(), at(20, 0, 10).timestamp());
+    clock.set(at(20, 0, 10));
+    engine.tick().unwrap();
+    assert_eq!(
+        calls.take(),
+        vec![
+            Call::Show("bedtime".into(), 1),
+            Call::Show("bedtime".into(), 1),
+            Call::ShutDown
+        ]
+    );
+    let shutdowns: Vec<_> = store
+        .lock()
+        .unwrap()
+        .events_for(date(2026, 11, 19))
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::Shutdown)
+        .map(|event| event.at)
+        .collect();
+    assert_eq!(shutdowns, vec![at(20, 0, 10).timestamp()]);
+}
+
+#[test]
+fn a_neutral_save_during_a_lock_does_not_postpone_its_shutdown() {
+    let (mut engine, calls, clock, store) = setup(at(19, 23, 30));
+    let relabeled = no_jitter().replace(
+        "id = \"bedtime\"\n",
+        "id = \"bedtime\"\nlabel = \"sleep\"\n",
+    );
+    let saved_at = at(19, 23, 20).timestamp();
+    store
+        .lock()
+        .unwrap()
+        .save_version(&relabeled, saved_at, saved_at, ChangeKind::Neutral)
+        .unwrap();
+    engine.tick().unwrap();
+    clock.set(at(19, 23, 31));
+    engine.tick().unwrap();
+    assert_eq!(
+        calls.take(),
+        vec![
+            Call::Show("sleep".into(), 1),
+            Call::Show("sleep".into(), 1),
+            Call::ShutDown
+        ]
     );
 }

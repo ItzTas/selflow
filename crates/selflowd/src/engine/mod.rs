@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil, tz::TimeZone};
 use selflow_core::config::{Config, parse};
 use selflow_core::enforce::{ActiveLock, Enforcement, NightLog, Warning, evaluate};
+use selflow_core::plan::LockWindow;
 use selflow_core::timing::{Seed, logical_date};
 use selflow_core::versions::{StoredVersion, in_force};
 use selflow_i18n::language::Language;
@@ -52,13 +53,16 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
     pub fn tick(&mut self) -> Result<Timestamp, EngineError> {
         let now = self.clock.now();
         let instant = now.timestamp();
-        let log = self.load(&now)?;
+        let (log, versions) = self.load(&now)?;
         let evaluation = evaluate(&now, &self.config, self.seed, &log);
         let language = Language::from_tag(&self.config.language).unwrap_or(Language::En);
         self.send_warnings(&now, &evaluation.warnings, language);
         let outcome = match &evaluation.enforcement {
             Enforcement::Free => self.release(instant),
-            Enforcement::Locked(lock) => self.enforce(&log, lock, instant, language),
+            Enforcement::Locked(lock) => {
+                let earliest = self.earliest_shutdown(&versions, &lock.window, instant);
+                self.enforce(&log, lock, earliest, instant, language)
+            }
         };
         self.record(&outcome.records);
         if outcome.shut_down {
@@ -71,13 +75,14 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             .fold(later_by(instant, MAX_SLEEP), Ord::min))
     }
 
-    fn load(&mut self, now: &ZonedDateTime) -> Result<NightLog, EngineError> {
+    fn load(&mut self, now: &ZonedDateTime) -> Result<(NightLog, Vec<StoredVersion>), EngineError> {
         let shared = Arc::clone(&self.store);
         let store = locked(&shared);
-        self.refresh_config(&store, now.timestamp())?;
+        let versions = store.versions()?;
+        self.refresh_config(&versions, now.timestamp())?;
         let today = logical_date(now, self.config.day_starts_at);
         let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
-        Ok(store.night_log(&nights)?)
+        Ok((store.night_log(&nights)?, versions))
     }
 
     fn record(&self, records: &[Record]) {
@@ -113,9 +118,12 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         }
     }
 
-    fn refresh_config(&mut self, store: &Store, now: Timestamp) -> Result<(), EngineError> {
-        let versions = store.versions()?;
-        let version = in_force(&versions, now);
+    fn refresh_config(
+        &mut self,
+        versions: &[StoredVersion],
+        now: Timestamp,
+    ) -> Result<(), EngineError> {
+        let version = in_force(versions, now);
         let id = version.map(|version| version.id);
         if id == self.version {
             return Ok(());
@@ -123,6 +131,32 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         self.config = parsed(version)?;
         self.version = id;
         Ok(())
+    }
+
+    fn earliest_shutdown(
+        &self,
+        versions: &[StoredVersion],
+        window: &LockWindow,
+        now: Timestamp,
+    ) -> Timestamp {
+        let (Some(current), Some(after)) = (in_force(versions, now), window.shutdown_after) else {
+            return Timestamp::MIN;
+        };
+        let since = versions
+            .iter()
+            .rev()
+            .filter(|version| version.effective_at <= now)
+            .take_while(|version| self.has_rule(version, window))
+            .last()
+            .unwrap_or(current);
+        later_by(since.effective_at, after)
+    }
+
+    fn has_rule(&self, version: &StoredVersion, window: &LockWindow) -> bool {
+        if Some(version.id) == self.version {
+            return holds_rule(&self.config, window);
+        }
+        parse(&version.text).is_ok_and(|config| holds_rule(&config, window))
     }
 
     fn send_warnings(&mut self, now: &ZonedDateTime, warnings: &[Warning], language: Language) {
@@ -150,6 +184,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         &mut self,
         log: &NightLog,
         lock: &ActiveLock,
+        earliest_shutdown: Timestamp,
         now: Timestamp,
         language: Language,
     ) -> Outcome {
@@ -170,9 +205,10 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 ended: false,
                 shut_down: false,
             });
+        let notice = later_by(shown.first_shown, SHUTDOWN_NOTICE);
         let shutdown_at = lock
             .shutdown_at
-            .map(|at| at.max(later_by(shown.first_shown, SHUTDOWN_NOTICE)));
+            .map(|at| at.max(earliest_shutdown).max(notice));
         self.enforcer.show_lock(LockView {
             shutdown_at,
             ..lock_view(lock, language.tag())
@@ -257,6 +293,12 @@ pub fn lock_view(lock: &ActiveLock, language: &str) -> LockView {
         shutdown_at: lock.shutdown_at,
         language: language.to_owned(),
     }
+}
+
+fn holds_rule(config: &Config, window: &LockWindow) -> bool {
+    config
+        .rule_set_for(window.logical_date.weekday())
+        .is_some_and(|set| set.locks.iter().any(|rule| rule.id == window.rule_id))
 }
 
 fn parsed(version: Option<&StoredVersion>) -> Result<Config, EngineError> {
