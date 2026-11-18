@@ -140,3 +140,210 @@ fn finds_the_version_in_force_and_the_pending_one() {
         None
     );
 }
+
+#[test]
+fn a_start_window_compares_both_bounds() {
+    let starting =
+        |start: &str| parse(&no_jitter().replace(r#"start = "bedtime""#, start)).unwrap();
+    let result = classify(
+        &starting("start = \"22:00\"\nstart_jitter = \"60m\""),
+        &starting(r#"start = "22:50""#),
+    );
+    assert_eq!(result.kind, ChangeKind::Loosen);
+    assert_eq!(result.changes[0].id, "change-lock-starts-later");
+    assert_eq!(
+        result.changes[0].args[2..],
+        [("old", "22:00–23:00".into()), ("new", "22:50".into())]
+    );
+}
+
+#[test]
+fn classifies_each_kind_of_change() {
+    let config = |edits: &[(&str, &str)]| {
+        let text = edits.iter().fold(no_jitter(), |text, (from, to)| {
+            assert!(text.contains(from), "the fixture has no {from}");
+            text.replace(from, to)
+        });
+        parse(&text).unwrap()
+    };
+    type Edits = &'static [(&'static str, &'static str)];
+    const PHRASE: (&str, &str) = (
+        "reason = true",
+        "reason = true\nphrase = \"Rest is enough\"",
+    );
+    let cases: &[(Edits, Edits, &str, ChangeKind)] = &[
+        (
+            &[],
+            &[(r#"wake = "07:00""#, r#"wake = "08:00""#)],
+            "change-lock-ends-later",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[(r#"wake = "07:00""#, r#"wake = "06:00""#)],
+            "change-lock-ends-earlier",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(r#"bedtime = "23:00""#, r#"bedtime = "05:30""#)],
+            "change-lock-ends-earlier",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(
+                r#"start = "bedtime""#,
+                "start = \"22:30\"\nstart_jitter = \"60m\"",
+            )],
+            "change-lock-starts-later",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(
+                r#"start = "bedtime""#,
+                "start = \"22:00\"\nstart_jitter = \"60m\"",
+            )],
+            "change-lock-starts-earlier",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[(r#"shutdown_after = "30m""#, "")],
+            &[],
+            "change-shutdown-added",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[(r#"shutdown_after = "30m""#, "")],
+            "change-shutdown-removed",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(r#"shutdown_after = "30m""#, r#"shutdown_after = "10m""#)],
+            "change-shutdown-sooner",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[(r#"shutdown_after = "30m""#, r#"shutdown_after = "1h""#)],
+            "change-shutdown-later",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(r#"wait = "2m""#, r#"wait = "5m""#)],
+            "change-wait-longer",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[(r#"wait = "2m""#, r#"wait = "1m""#)],
+            "change-wait-shorter",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[("reason = true", "reason = false")],
+            &[],
+            "change-reason-required",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[("reason = true", "reason = false")],
+            "change-reason-dropped",
+            ChangeKind::Loosen,
+        ),
+        (&[], &[PHRASE], "change-phrase-added", ChangeKind::Tighten),
+        (&[PHRASE], &[], "change-phrase-dropped", ChangeKind::Loosen),
+        (
+            &[PHRASE],
+            &[(
+                "reason = true",
+                "reason = true\nphrase = \"Tomorrow starts tonight\"",
+            )],
+            "change-phrase-changed",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[("extensions = 1", "extensions = 0")],
+            "change-fewer-extensions",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[("extensions = 1", "extensions = 2")],
+            "change-more-extensions",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(r#"extension_length = "20m""#, r#"extension_length = "10m""#)],
+            "change-shorter-extensions",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[(r#"extension_length = "20m""#, r#"extension_length = "30m""#)],
+            "change-longer-extensions",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(r#"loosening_delay = "24h""#, r#"loosening_delay = "48h""#)],
+            "change-delay-longer",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[(r#"loosening_delay = "24h""#, r#"loosening_delay = "12h""#)],
+            "change-delay-shorter",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(r#"day_starts_at = "05:00""#, r#"day_starts_at = "04:00""#)],
+            "change-day-start",
+            ChangeKind::Loosen,
+        ),
+        (
+            &[],
+            &[(r#""thu"]"#, r#""thu", "fri"]"#)],
+            "change-lock-added",
+            ChangeKind::Tighten,
+        ),
+        (
+            &[],
+            &[(r#"id = "bedtime""#, "id = \"bedtime\"\nlabel = \"Sleep\"")],
+            "change-label",
+            ChangeKind::Neutral,
+        ),
+        (
+            &[],
+            &[(r#"warnings = ["5m", "15m", "1m"]"#, r#"warnings = ["10m"]"#)],
+            "change-warnings",
+            ChangeKind::Neutral,
+        ),
+        (
+            &[],
+            &[(r#"language = "pt-BR""#, r#"language = "en""#)],
+            "change-language",
+            ChangeKind::Neutral,
+        ),
+    ];
+    for &(current, proposed, id, kind) in cases {
+        let result = classify(&config(current), &config(proposed));
+        assert!(
+            result
+                .changes
+                .iter()
+                .any(|change| (change.id, change.kind) == (id, kind)),
+            "{id}: {:?}",
+            result.changes
+        );
+        assert_eq!(result.kind, kind, "{id}");
+    }
+}

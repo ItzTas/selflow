@@ -50,12 +50,13 @@ impl<'c> Side<'c> {
         self.set.map_or(&[], |set| &set.locks)
     }
 
-    fn start(&self, lock: &LockRule) -> SignedDuration {
-        after(self.day_starts_at, latest_start(lock))
+    fn start_bounds(&self, lock: &LockRule) -> [SignedDuration; 2] {
+        let earliest = after(self.day_starts_at, lock.start);
+        [earliest, earliest + lock.start_jitter]
     }
 
     fn end(&self, lock: &LockRule) -> SignedDuration {
-        self.start(lock) + after(latest_start(lock), lock.end)
+        after(self.day_starts_at, lock.start) + after(lock.start, lock.end)
     }
 }
 
@@ -119,22 +120,9 @@ fn challenge_findings(current: Side, proposed: Side) -> Vec<Finding> {
 }
 
 fn lock_changes(old: &LockRule, new: &LockRule, current: Side, proposed: Side) -> Vec<Change> {
-    let (old_start, new_start) = (latest_start(old), latest_start(new));
     [
-        (old_start != new_start).then(|| {
-            moved(
-                proposed.start(new) < current.start(old),
-                ("change-lock-starts-earlier", "change-lock-starts-later"),
-                old_new(old_start, new_start, clock),
-            )
-        }),
-        (old.end != new.end).then(|| {
-            moved(
-                proposed.end(new) > current.end(old),
-                ("change-lock-ends-later", "change-lock-ends-earlier"),
-                old_new(old.end, new.end, clock),
-            )
-        }),
+        start(old, new, current, proposed),
+        end(old, new, current, proposed),
         shutdown(old.shutdown_after, new.shutdown_after),
         (old.warnings != new.warnings).then(|| {
             let args = old_new(&old.warnings, &new.warnings, |warnings| {
@@ -154,6 +142,36 @@ fn lock_changes(old: &LockRule, new: &LockRule, current: Side, proposed: Side) -
     .into_iter()
     .flatten()
     .collect()
+}
+
+fn start(old: &LockRule, new: &LockRule, current: Side, proposed: Side) -> Option<Change> {
+    if !start_moved(old, new) {
+        return None;
+    }
+    let [old_earliest, old_latest] = current.start_bounds(old);
+    let [new_earliest, new_latest] = proposed.start_bounds(new);
+    let args = old_new(old, new, start_window);
+    if new_earliest > old_earliest || new_latest > old_latest {
+        return Some(change("change-lock-starts-later", ChangeKind::Loosen, args));
+    }
+    (new_earliest < old_earliest || new_latest < old_latest)
+        .then(|| change("change-lock-starts-earlier", ChangeKind::Tighten, args))
+}
+
+fn end(old: &LockRule, new: &LockRule, current: Side, proposed: Side) -> Option<Change> {
+    let (old_end, new_end) = (current.end(old), proposed.end(new));
+    let shifted = old.end != new.end || start_moved(old, new);
+    (shifted && old_end != new_end).then(|| {
+        moved(
+            new_end > old_end,
+            ("change-lock-ends-later", "change-lock-ends-earlier"),
+            old_new(old.end, new.end, clock),
+        )
+    })
+}
+
+fn start_moved(old: &LockRule, new: &LockRule) -> bool {
+    old.start != new.start || old.start_jitter != new.start_jitter
 }
 
 fn challenge_changes(old: &Challenges, new: &Challenges) -> Vec<Change> {
@@ -257,8 +275,12 @@ fn old_new<T>(old: T, new: T, show: impl Fn(T) -> String) -> Args {
     vec![("old", show(old)), ("new", show(new))]
 }
 
-fn latest_start(lock: &LockRule) -> Time {
-    lock.start.wrapping_add(lock.start_jitter)
+fn start_window(lock: &LockRule) -> String {
+    if lock.start_jitter.is_zero() {
+        return clock(lock.start);
+    }
+    let latest = lock.start.wrapping_add(lock.start_jitter);
+    format!("{}–{}", clock(lock.start), clock(latest))
 }
 
 fn after(from: Time, to: Time) -> SignedDuration {
