@@ -1,4 +1,4 @@
-cli-daemon-unreachable = O Selflow não está rodando agora. Inicie-o e tente de novo.
+cli-daemon-unreachable = O Selflow não está rodando agora. Para iniciá-lo, rode: systemctl --user start selflowd.service
 cli-no-runtime-dir = O Selflow não encontrou sua pasta de execução. Confira se XDG_RUNTIME_DIR está definido.
 cli-protocol-error = A conversa com o Selflow foi interrompida. Nada foi alterado.
 cli-editor-failed = Seu editor não terminou direito, então nada foi salvo.
