@@ -44,15 +44,16 @@ pub fn instant_on(date: Date, at: Time, day_starts_at: Time, tz: &TimeZone) -> Z
 }
 
 pub fn next_after(after: &ZonedDateTime, at: Time) -> ZonedDateTime {
-    let tz = after.time_zone().clone();
-    let mut date = after.date();
-    loop {
-        let candidate = instant_on(date, at, Time::midnight(), &tz);
-        if candidate.timestamp() > after.timestamp() && candidate.time() == at {
-            return candidate;
-        }
-        date = date.tomorrow().expect("date is within the supported range");
+    let tz = after.time_zone();
+    let today = instant_on(after.date(), at, Time::midnight(), tz);
+    if today.timestamp() > after.timestamp() {
+        return today;
     }
+    let tomorrow = after
+        .date()
+        .tomorrow()
+        .expect("date is within the supported range");
+    instant_on(tomorrow, at, Time::midnight(), tz)
 }
 
 pub fn jitter(seed: Seed, key: &str, date: Date, window: SignedDuration) -> SignedDuration {

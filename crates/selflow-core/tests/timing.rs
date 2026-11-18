@@ -114,12 +114,11 @@ fn instant_on_moves_a_time_in_a_spring_forward_gap_past_it() {
 }
 
 #[test]
-fn next_after_skips_a_day_whose_time_falls_in_the_gap() {
+fn next_after_resolves_a_gap_time_forward_like_instant_on() {
     let after = date(2026, 3, 7)
-        .at(12, 0, 0, 0)
+        .at(2, 30, 0, 0)
         .to_zoned_datetime(new_york())
         .unwrap();
     let next = next_after(&after, time(2, 30, 0, 0));
-    assert_eq!(next.date(), date(2026, 3, 9));
-    assert_eq!(next.time(), time(2, 30, 0, 0));
+    assert_eq!(next.to_string(), "2026-03-08T03:30:00-04:00[-04:00]");
 }
