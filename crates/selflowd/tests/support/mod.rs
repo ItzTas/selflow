@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use jiff::{
     ZonedDateTime,
@@ -150,5 +151,32 @@ pub fn extension(from: (i8, i8), until: (i8, i8)) -> GrantedExtension {
         granted_at: at(19, from.0, from.1).timestamp(),
         until: at(19, until.0, until.1).timestamp(),
         reason: "talking to my sister".to_owned(),
+    }
+}
+
+pub fn sample_view() -> LockView {
+    LockView {
+        label: "bedtime".to_owned(),
+        ends_at: at(20, 7, 0).timestamp(),
+        extension_available_at: at(19, 23, 2).timestamp(),
+        extensions_left: 1,
+        extension_minutes: 20,
+        reason_required: true,
+        phrase: None,
+        shutdown_at: Some(at(19, 23, 30).timestamp()),
+        language: "pt-BR".to_owned(),
+    }
+}
+
+pub async fn wait_for(limit: Duration, condition: impl Fn() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if condition() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
