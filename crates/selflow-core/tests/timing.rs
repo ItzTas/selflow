@@ -5,9 +5,11 @@ use std::collections::BTreeSet;
 use jiff::{
     SignedDuration,
     civil::{date, time},
+    tz::TimeZone,
 };
 use selflow_core::timing::{
-    Seed, TimingError, fnv1a64, instant_on, jitter, logical_date, parse_clock, parse_duration,
+    Seed, TimingError, fnv1a64, instant_on, jitter, logical_date, next_after, parse_clock,
+    parse_duration,
 };
 use support::{at, brt};
 
@@ -79,4 +81,45 @@ fn jitter_is_stable_within_a_day_and_stays_in_the_window() {
 fn fnv1a_matches_the_reference_vectors() {
     assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
     assert_eq!(fnv1a64(b"a"), 0xaf63dc4c8601ec8c);
+}
+
+#[test]
+fn next_after_picks_the_same_day_when_the_time_is_later() {
+    assert_eq!(next_after(&at(19, 10, 0), time(23, 0, 0, 0)), at(19, 23, 0));
+}
+
+#[test]
+fn next_after_picks_the_next_day_when_the_time_is_earlier() {
+    assert_eq!(next_after(&at(19, 10, 0), time(8, 0, 0, 0)), at(20, 8, 0));
+}
+
+#[test]
+fn next_after_is_strictly_after() {
+    assert_eq!(next_after(&at(19, 23, 0), time(23, 0, 0, 0)), at(20, 23, 0));
+}
+
+fn new_york() -> TimeZone {
+    TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap()
+}
+
+#[test]
+fn instant_on_moves_a_time_in_a_spring_forward_gap_past_it() {
+    let instant = instant_on(
+        date(2026, 3, 8),
+        time(2, 30, 0, 0),
+        time(0, 0, 0, 0),
+        &new_york(),
+    );
+    assert_eq!(instant.to_string(), "2026-03-08T03:30:00-04:00[-04:00]");
+}
+
+#[test]
+fn next_after_skips_a_day_whose_time_falls_in_the_gap() {
+    let after = date(2026, 3, 7)
+        .at(12, 0, 0, 0)
+        .to_zoned_datetime(new_york())
+        .unwrap();
+    let next = next_after(&after, time(2, 30, 0, 0));
+    assert_eq!(next.date(), date(2026, 3, 9));
+    assert_eq!(next.time(), time(2, 30, 0, 0));
 }
