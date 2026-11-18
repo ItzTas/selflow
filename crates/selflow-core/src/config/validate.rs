@@ -23,22 +23,18 @@ struct Context<'r> {
     day_starts_at: Option<Time>,
 }
 
-#[derive(Clone, Copy)]
-struct Times {
-    start: Time,
-    end: Time,
-    jitter: SignedDuration,
-}
-
 struct Window<'r> {
     id: &'r str,
-    start: SignedDuration,
-    end: SignedDuration,
+    at: &'r Spanned<String>,
+    start: Time,
+    length: SignedDuration,
 }
 
 impl Window<'_> {
-    fn overlaps(&self, other: &Window) -> bool {
-        self.start < other.end && other.start < self.end
+    fn overlaps(&self, other: &Window, day_starts_at: Time, shift: SignedDuration) -> bool {
+        let start = minutes_after(day_starts_at, self.start);
+        let other_start = minutes_after(day_starts_at, other.start) + shift;
+        start < other_start + other.length && other_start < start + self.length
     }
 }
 
@@ -110,20 +106,12 @@ impl Check<'_> {
         let days = self.days(set, claimed);
         let challenges = self.challenges(&set.challenges);
         self.duplicate_locks(set);
-        let times: Vec<_> = set
-            .lock
-            .iter()
-            .map(|lock| self.times(lock, context))
-            .collect();
+        let (locks, windows): (Vec<_>, Vec<_>) =
+            set.lock.iter().map(|lock| self.lock(lock, context)).unzip();
         if let Some(day_starts_at) = context.day_starts_at {
-            self.windows(set, &times, day_starts_at);
+            let windows: Vec<_> = windows.into_iter().flatten().collect();
+            self.overlaps(set, &days, &windows, day_starts_at);
         }
-        let locks: Vec<_> = set
-            .lock
-            .iter()
-            .zip(times)
-            .map(|(lock, times)| self.lock(lock, times))
-            .collect();
         Some(RuleSet {
             name: set.name.get_ref().clone(),
             days,
@@ -205,75 +193,91 @@ impl Check<'_> {
         }
     }
 
-    fn times(&mut self, lock: &RawLock, context: &Context) -> Option<Times> {
-        let start = self.moment(&lock.start, context);
-        let end = self.moment(&lock.end, context);
-        let jitter = self.jitter(lock.start_jitter.as_ref());
-        Some(Times {
-            start: start?,
-            end: end?,
-            jitter: jitter?,
-        })
-    }
-
-    fn windows(&mut self, set: &RawRuleSet, times: &[Option<Times>], day_starts_at: Time) {
-        let mut placed: Vec<Window> = Vec::new();
-        for (lock, times) in set.lock.iter().zip(times) {
-            let Some(window) = times.and_then(|times| self.window(lock, times, day_starts_at))
-            else {
-                continue;
-            };
-            for earlier in placed.iter().filter(|earlier| earlier.overlaps(&window)) {
-                let args = vec![
-                    ("first", earlier.id.to_owned()),
-                    ("second", window.id.to_owned()),
-                    ("set", set.name.get_ref().clone()),
-                ];
-                self.report(&lock.start, "config-locks-overlap", args);
+    fn lock<'r>(
+        &mut self,
+        raw: &'r RawLock,
+        context: &Context,
+    ) -> (Option<LockRule>, Option<Window<'r>>) {
+        let start = self.moment(&raw.start, context);
+        let end = self.moment(&raw.end, context);
+        let jitter = self.jitter(raw.start_jitter.as_ref());
+        let warnings = self.warnings(raw.warnings.as_deref());
+        let shutdown_after = self.optional_duration(raw.shutdown_after.as_ref());
+        let window = start
+            .zip(end)
+            .and_then(|(start, end)| self.window(raw, start, end, jitter));
+        let rule = match (start, end, jitter, warnings, shutdown_after) {
+            (Some(start), Some(end), Some(start_jitter), Some(warnings), Some(shutdown_after)) => {
+                Some(LockRule {
+                    id: raw.id.get_ref().clone(),
+                    label: raw.label.as_ref().unwrap_or(&raw.id).get_ref().clone(),
+                    start,
+                    start_jitter,
+                    end,
+                    warnings,
+                    shutdown_after,
+                })
             }
-            placed.push(window);
-        }
+            _ => None,
+        };
+        (rule, window)
     }
 
     fn window<'r>(
         &mut self,
         lock: &'r RawLock,
-        times: Times,
-        day_starts_at: Time,
+        start: Time,
+        end: Time,
+        jitter: Option<SignedDuration>,
     ) -> Option<Window<'r>> {
-        let length = minutes_after(times.start, times.end);
+        let length = minutes_after(start, end);
         if length.is_zero() {
             let args = vec![("id", lock.id.get_ref().clone())];
             self.report(&lock.end, "config-empty-window", args);
             return None;
         }
-        if let Some(jitter) = &lock.start_jitter
-            && times.jitter >= length
+        if let Some(value) = &lock.start_jitter
+            && jitter.is_some_and(|jitter| jitter >= length)
         {
             let args = vec![("id", lock.id.get_ref().clone())];
-            self.report(jitter, "config-jitter-too-long", args);
+            self.report(value, "config-jitter-too-long", args);
         }
-        let start = minutes_after(day_starts_at, times.start);
         Some(Window {
             id: lock.id.get_ref(),
+            at: &lock.start,
             start,
-            end: start + length,
+            length,
         })
     }
 
-    fn lock(&mut self, raw: &RawLock, times: Option<Times>) -> Option<LockRule> {
-        let warnings = self.warnings(raw.warnings.as_deref());
-        let shutdown_after = self.optional_duration(raw.shutdown_after.as_ref());
-        let times = times?;
-        Some(LockRule {
-            id: raw.id.get_ref().clone(),
-            label: raw.label.as_ref().unwrap_or(&raw.id).get_ref().clone(),
-            start: times.start,
-            start_jitter: times.jitter,
-            end: times.end,
-            warnings: warnings?,
-            shutdown_after: shutdown_after?,
-        })
+    fn overlaps(
+        &mut self,
+        set: &RawRuleSet,
+        days: &HashSet<Weekday>,
+        windows: &[Window],
+        day_starts_at: Time,
+    ) {
+        let next_day_too = days.iter().any(|day| days.contains(&day.next()));
+        let shifts = if next_day_too { -1..=1 } else { 0..=0 };
+        for (index, later) in windows.iter().enumerate() {
+            let overlapping = windows[..index].iter().filter(|earlier| {
+                shifts.clone().any(|offset| {
+                    earlier.overlaps(
+                        later,
+                        day_starts_at,
+                        SignedDuration::from_hours(24 * offset),
+                    )
+                })
+            });
+            for earlier in overlapping {
+                let args = vec![
+                    ("first", earlier.id.to_owned()),
+                    ("second", later.id.to_owned()),
+                    ("set", set.name.get_ref().clone()),
+                ];
+                self.report(later.at, "config-locks-overlap", args);
+            }
+        }
     }
 
     fn warnings(&mut self, values: Option<&[Spanned<String>]>) -> Option<Vec<SignedDuration>> {

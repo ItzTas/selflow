@@ -102,3 +102,54 @@ fn both_default_files_describe_the_same_rules() {
     );
     assert_eq!(without_labels(en), without_labels(pt));
 }
+
+fn with_morning_lock(text: &str) -> String {
+    format!("{text}\n[[rule_set.lock]]\nid = \"morning\"\nstart = \"06:00\"\nend = \"08:00\"\n")
+}
+
+fn error_ids(text: &str) -> Vec<&'static str> {
+    parse(text).unwrap_err().iter().map(|e| e.id).collect()
+}
+
+#[test]
+fn reports_an_empty_window_next_to_a_bad_jitter() {
+    let text = VALID
+        .replace(r#"start_jitter = "15m""#, r#"start_jitter = "soon""#)
+        .replace(r#"end = "wake""#, r#"end = "bedtime""#);
+    assert_eq!(
+        error_ids(&text),
+        ["config-bad-duration", "config-empty-window"]
+    );
+}
+
+#[test]
+fn reports_an_empty_window_when_the_day_start_is_bad() {
+    let text = VALID
+        .replace(r#"day_starts_at = "05:00""#, r#"day_starts_at = "5am""#)
+        .replace(r#"end = "wake""#, r#"end = "bedtime""#);
+    assert_eq!(error_ids(&text), ["config-bad-time", "config-empty-window"]);
+}
+
+#[test]
+fn rejects_a_lock_that_overlaps_the_night_lock_after_the_day_start() {
+    let errors = parse(&with_morning_lock(VALID)).unwrap_err();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].id, "config-locks-overlap");
+    assert_eq!(
+        errors[0].args,
+        vec![
+            ("first", "bedtime".into()),
+            ("second", "morning".into()),
+            ("set", "weeknight".into())
+        ]
+    );
+}
+
+#[test]
+fn compares_locks_across_the_day_start_only_on_consecutive_days() {
+    let text = VALID.replace(
+        r#"days = ["sun", "mon", "tue", "wed", "thu"]"#,
+        r#"days = ["mon", "wed"]"#,
+    );
+    assert!(parse(&with_morning_lock(&text)).is_ok());
+}
