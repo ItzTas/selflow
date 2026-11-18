@@ -1,6 +1,7 @@
 pub mod commands;
 mod types;
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -12,6 +13,11 @@ use crate::render::message_text;
 pub use types::{Cli, CliError, Command, ConfigAction, ConfigArgs, ReportArgs};
 
 pub fn run() -> ExitCode {
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(std::io::stderr().is_terminal())
+        .try_init();
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Config(args) => commands::config_cmd(args),
