@@ -13,6 +13,7 @@ use selflow_core::versions::{StoredVersion, in_force};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::LockView;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::Receiver;
 
 use crate::clock::Clock;
@@ -204,6 +205,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 first_shown: now,
                 ended: false,
                 shut_down: false,
+                test: window.test,
             });
         let notice = later_by(shown.first_shown, SHUTDOWN_NOTICE);
         let shutdown_at = lock
@@ -221,6 +223,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 &shown.label,
                 window.logical_date,
                 kind,
+                shown.test,
             ))
         };
         let mut records = Vec::new();
@@ -259,6 +262,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 &shown.label,
                 shown.logical_date,
                 EventKind::LockEnded,
+                shown.test,
             )));
         }
         Outcome {
@@ -333,14 +337,22 @@ fn lock_event(
     label: &str,
     logical_date: civil::Date,
     kind: EventKind,
+    test: bool,
 ) -> Event {
     Event {
         at,
         logical_date,
         kind,
         key: key.to_owned(),
-        detail: Some(serde_json::json!({ "label": label }).to_string()),
+        detail: Some(event_detail(json!({ "label": label }), test)),
     }
+}
+
+pub(crate) fn event_detail(mut detail: Value, test: bool) -> String {
+    if test {
+        detail["test"] = Value::Bool(true);
+    }
+    detail.to_string()
 }
 
 fn locked(store: &Mutex<Store>) -> MutexGuard<'_, Store> {

@@ -71,6 +71,7 @@ async fn run_bound(listener: UnixListener, store_path: &Path) -> Result<(), AppE
         clock,
         wake,
         views,
+        power,
     });
     let mut server = tokio::spawn(serve(listener, shared));
     tracing::info!("selflowd is running");

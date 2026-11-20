@@ -12,6 +12,7 @@ use selflow_core::enforce::GrantedExtension;
 use selflow_core::versions::ChangeKind;
 use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
 use selflowd::clock::Clock;
+use selflowd::enforcer::PowerMode;
 use selflowd::engine::{Enforcer, Engine};
 use selflowd::ipc::{Shared, bind, serve};
 use selflowd::store::Store;
@@ -119,9 +120,13 @@ pub fn engine_on(store: Arc<Mutex<Store>>, clock: Arc<TestClock>) -> (TestEngine
 }
 
 pub fn save_no_jitter(store: &Store) {
+    save_text(store, &no_jitter());
+}
+
+pub fn save_text(store: &Store, text: &str) {
     let saved_at = at(18, 10, 0).timestamp();
     store
-        .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
+        .save_version(text, saved_at, saved_at, ChangeKind::Tighten)
         .unwrap();
 }
 
@@ -247,10 +252,34 @@ pub async fn start_with_config(now: ZonedDateTime) -> (TestClient, Arc<Shared>, 
     start_on(store, now).await
 }
 
+pub async fn start_with(
+    text: &str,
+    power: PowerMode,
+    view: Option<LockView>,
+    now: ZonedDateTime,
+) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
+    let store = Store::open_in_memory().unwrap();
+    save_text(&store, text);
+    let clock = Arc::new(TestClock::new(now));
+    let (_, views) = watch::channel(view);
+    let (dir, stream, shared) = launch(store, clock.clone(), views, power).await;
+    let client = TestClient {
+        stream: tokio::sync::Mutex::new(BufReader::new(stream)),
+        _dir: dir,
+    };
+    (client, shared, clock)
+}
+
 pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
     let (sender, views) = watch::channel(None);
     let clock = Arc::new(TestClock::new(at(19, 23, 0)));
-    let (dir, stream, _shared) = launch(Store::open_in_memory().unwrap(), clock, views).await;
+    let (dir, stream, _shared) = launch(
+        Store::open_in_memory().unwrap(),
+        clock,
+        views,
+        PowerMode::Real,
+    )
+    .await;
     let mut stream = BufReader::new(stream);
     write_message(stream.get_mut(), &Request::SubscribeLock)
         .await
@@ -261,7 +290,7 @@ pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
 async fn start_on(store: Store, now: ZonedDateTime) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
     let clock = Arc::new(TestClock::new(now));
     let (_, views) = watch::channel(None);
-    let (dir, stream, shared) = launch(store, clock.clone(), views).await;
+    let (dir, stream, shared) = launch(store, clock.clone(), views, PowerMode::Real).await;
     let client = TestClient {
         stream: tokio::sync::Mutex::new(BufReader::new(stream)),
         _dir: dir,
@@ -273,6 +302,7 @@ async fn launch(
     store: Store,
     clock: Arc<dyn Clock>,
     views: watch::Receiver<Option<LockView>>,
+    power: PowerMode,
 ) -> (TempDir, UnixStream, Arc<Shared>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("selflow/daemon.sock");
@@ -283,6 +313,7 @@ async fn launch(
         clock,
         wake,
         views,
+        power,
     });
     tokio::spawn(serve(listener, Arc::clone(&shared)));
     let stream = UnixStream::connect(&path).await.unwrap();

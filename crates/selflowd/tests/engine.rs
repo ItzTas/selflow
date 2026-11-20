@@ -3,10 +3,27 @@ mod support;
 use std::fs::{Permissions, set_permissions};
 use std::os::unix::fs::PermissionsExt;
 
+use jiff::ZonedDateTime;
 use jiff::civil::date;
+use selflow_core::config::parse;
+use selflow_core::plan::{LockWindow, windows_for};
+use selflow_core::timing::Seed;
 use selflow_core::versions::ChangeKind;
 use selflowd::store::{EventKind, Store};
+use serde_json::{Value, json};
 use support::{Call, at, brt, engine_on, extension, no_jitter, setup, setup_on, setup_over};
+
+fn test_window(starts_at: ZonedDateTime, ends_at: ZonedDateTime) -> LockWindow {
+    let config = parse(&no_jitter()).unwrap();
+    let rule = windows_for(&config, Seed(0), date(2026, 11, 19), &brt()).remove(0);
+    LockWindow {
+        rule_set: format!("weeknight#test-{}", starts_at.timestamp().as_second()),
+        starts_at,
+        ends_at,
+        test: true,
+        ..rule
+    }
+}
 
 #[test]
 fn keeps_enforcing_when_the_store_cannot_record() {
@@ -226,6 +243,50 @@ fn a_shutdown_that_would_come_after_the_lock_ends_is_dropped() {
             Call::Show("bedtime".into(), 1),
             Call::Show("bedtime".into(), 1),
             Call::Hide
+        ]
+    );
+}
+
+#[test]
+fn a_test_lock_shows_and_marks_its_events_as_a_test() {
+    let (mut engine, calls, clock, store) = setup(at(19, 20, 0));
+    store
+        .lock()
+        .unwrap()
+        .record_started(&test_window(at(19, 20, 0), at(19, 20, 40)))
+        .unwrap();
+    engine.tick().unwrap();
+    for minute in [30, 40] {
+        clock.set(at(19, 20, minute));
+        engine.tick().unwrap();
+    }
+    assert_eq!(
+        calls.take(),
+        vec![
+            Call::Show("bedtime".into(), 1),
+            Call::Show("bedtime".into(), 1),
+            Call::ShutDown,
+            Call::Hide
+        ]
+    );
+    let events: Vec<(EventKind, Value)> = store
+        .lock()
+        .unwrap()
+        .events_for(date(2026, 11, 19))
+        .unwrap()
+        .into_iter()
+        .map(|event| {
+            let detail = serde_json::from_str(event.detail.as_deref().unwrap()).unwrap();
+            (event.kind, detail)
+        })
+        .collect();
+    let marked = json!({ "label": "bedtime", "test": true });
+    assert_eq!(
+        events,
+        vec![
+            (EventKind::LockStarted, marked.clone()),
+            (EventKind::Shutdown, marked.clone()),
+            (EventKind::LockEnded, marked)
         ]
     );
 }

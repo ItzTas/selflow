@@ -16,6 +16,7 @@ cli-status-no-pending = No changes are waiting.
 cli-status-pending = A change is waiting and takes effect on { $when }:
 cli-report-heading = Report for { $date }
 cli-report-empty = Nothing to report for this day.
+cli-test-lock-started = Test lock "{ $label }" until { $time }.
 cli-moment = { $weekday } { $day } { $month }, { $time }
 
 weekday-short-mon = Mon

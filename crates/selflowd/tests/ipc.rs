@@ -1,9 +1,63 @@
 mod support;
 
+use jiff::SignedDuration;
+use jiff::civil::date;
 use selflow_core::config::parse;
-use selflow_protocol::ipc::{ChangeKindView, RefusalView, Request, Response};
+use selflow_core::plan::{LockWindow, windows_for};
+use selflow_core::timing::Seed;
+use selflow_protocol::ipc::{
+    ChangeKindView, MessageView, RefusalView, ReportEntry, Request, Response,
+};
+use selflowd::enforcer::PowerMode;
 use selflowd::ipc::{IpcError, bind};
-use support::{at, no_jitter, sample_view, start, start_with_config, subscribe};
+use selflowd::store::{Event, EventKind};
+use serde_json::{Value, json};
+use support::{at, brt, no_jitter, sample_view, start, start_with, start_with_config, subscribe};
+
+fn with_weekend() -> String {
+    format!(
+        "{}{}",
+        no_jitter(),
+        r#"
+[[rule_set]]
+name = "weekend"
+days = ["fri", "sat"]
+
+[rule_set.challenges]
+wait = "5m"
+reason = true
+extensions = 2
+extension_length = "10m"
+
+[[rule_set.lock]]
+id = "late"
+label = "Late night"
+start = "01:00"
+end = "wake"
+"#
+    )
+}
+
+fn test_lock(rule: Option<&str>, minutes: i64) -> Request {
+    Request::TestLock {
+        rule: rule.map(str::to_owned),
+        duration: SignedDuration::from_mins(minutes),
+    }
+}
+
+fn error(id: &str, args: &[(&str, &str)]) -> Response {
+    Response::Error(MessageView {
+        id: id.to_owned(),
+        args: args
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect(),
+    })
+}
+
+fn detail(event: &Event) -> Value {
+    serde_json::from_str(event.detail.as_deref().unwrap()).unwrap()
+}
 
 #[tokio::test]
 async fn an_invalid_file_is_rejected_with_positions_and_not_saved() {
@@ -119,4 +173,250 @@ async fn a_second_daemon_cannot_take_the_socket() {
     let path = dir.path().join("selflow/daemon.sock");
     let _first = bind(&path).unwrap();
     assert!(matches!(bind(&path), Err(IpcError::AlreadyRunning)));
+}
+
+#[tokio::test]
+async fn a_test_lock_is_refused_with_real_power() {
+    let (client, _shared, _clock) =
+        start_with(&no_jitter(), PowerMode::Real, None, at(19, 20, 0)).await;
+    assert_eq!(
+        client.request(test_lock(None, 5)).await,
+        error("ipc-test-lock-real-power", &[])
+    );
+}
+
+#[tokio::test]
+async fn a_test_lock_lasts_from_one_minute_to_two_hours() {
+    let (client, _shared, _clock) =
+        start_with(&no_jitter(), PowerMode::LogOnly, None, at(19, 20, 0)).await;
+    let too_short = Request::TestLock {
+        rule: None,
+        duration: SignedDuration::from_secs(59),
+    };
+    for request in [too_short, test_lock(None, 121)] {
+        assert_eq!(
+            client.request(request).await,
+            error("ipc-test-lock-duration", &[("min", "1"), ("max", "120")])
+        );
+    }
+    assert!(matches!(
+        client.request(test_lock(None, 120)).await,
+        Response::TestLockStarted { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_test_lock_waits_for_the_lock_on_screen_to_end() {
+    let (client, _shared, _clock) = start_with(
+        &no_jitter(),
+        PowerMode::LogOnly,
+        Some(sample_view()),
+        at(19, 20, 0),
+    )
+    .await;
+    assert_eq!(
+        client.request(test_lock(None, 5)).await,
+        error("ipc-test-lock-busy", &[])
+    );
+}
+
+#[tokio::test]
+async fn a_test_lock_needs_a_rule_for_today() {
+    let (client, _shared, _clock) =
+        start_with(&no_jitter(), PowerMode::LogOnly, None, at(20, 20, 0)).await;
+    assert_eq!(
+        client.request(test_lock(None, 5)).await,
+        error("ipc-test-lock-no-rule", &[])
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_rule_is_refused_with_the_valid_ones() {
+    let (client, _shared, _clock) =
+        start_with(&with_weekend(), PowerMode::LogOnly, None, at(19, 20, 0)).await;
+    assert_eq!(
+        client.request(test_lock(Some("weeknight/nap"), 5)).await,
+        error(
+            "ipc-test-lock-unknown-rule",
+            &[
+                ("rule", "weeknight/nap"),
+                ("rules", "weeknight/bedtime, weekend/late")
+            ]
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_test_lock_starts_now_with_todays_first_rule() {
+    let (client, shared, _clock) =
+        start_with(&no_jitter(), PowerMode::LogOnly, None, at(19, 20, 0)).await;
+    assert_eq!(
+        client.request(test_lock(None, 10)).await,
+        Response::TestLockStarted {
+            label: "bedtime".to_owned(),
+            ends_at: at(19, 20, 10).timestamp(),
+        }
+    );
+    let config = parse(&no_jitter()).unwrap();
+    let rule = windows_for(&config, Seed(0), date(2026, 11, 19), &brt()).remove(0);
+    let started = shared
+        .store
+        .lock()
+        .unwrap()
+        .night_log(&[date(2026, 11, 19)])
+        .unwrap()
+        .started;
+    assert_eq!(
+        started,
+        vec![LockWindow {
+            rule_set: format!("weeknight#test-{}", at(19, 20, 0).timestamp().as_second()),
+            starts_at: at(19, 20, 0),
+            ends_at: at(19, 20, 10),
+            test: true,
+            ..rule
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_test_lock_can_use_a_rule_from_another_day() {
+    let (client, shared, _clock) =
+        start_with(&with_weekend(), PowerMode::LogOnly, None, at(19, 20, 0)).await;
+    assert_eq!(
+        client.request(test_lock(Some("weekend/late"), 5)).await,
+        Response::TestLockStarted {
+            label: "Late night".to_owned(),
+            ends_at: at(19, 20, 5).timestamp(),
+        }
+    );
+    let started = shared
+        .store
+        .lock()
+        .unwrap()
+        .night_log(&[date(2026, 11, 19)])
+        .unwrap()
+        .started;
+    assert_eq!(
+        started
+            .iter()
+            .map(|window| (
+                window.rule_set.as_str(),
+                window.rule_id.as_str(),
+                window.test
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            format!("weekend#test-{}", at(19, 20, 0).timestamp().as_second()).as_str(),
+            "late",
+            true
+        )]
+    );
+    assert_eq!(started[0].challenges.extensions, 2);
+}
+
+#[tokio::test]
+async fn an_extension_in_a_test_lock_is_recorded_as_a_test() {
+    let (client, shared, clock) =
+        start_with(&no_jitter(), PowerMode::LogOnly, None, at(19, 20, 0)).await;
+    client.request(test_lock(None, 30)).await;
+    clock.set(at(19, 20, 2));
+    assert_eq!(
+        client
+            .request(Request::RequestExtension {
+                reason: "checking the lock screen".into(),
+                phrase: String::new(),
+            })
+            .await,
+        Response::ExtensionGranted {
+            until: at(19, 20, 22).timestamp()
+        }
+    );
+    let events = shared
+        .store
+        .lock()
+        .unwrap()
+        .events_for(date(2026, 11, 19))
+        .unwrap();
+    let granted: Vec<Value> = events
+        .iter()
+        .filter(|event| event.kind == EventKind::ExtensionGranted)
+        .map(detail)
+        .collect();
+    assert_eq!(
+        granted,
+        vec![json!({
+            "label": "bedtime",
+            "minutes": 20,
+            "reason": "checking the lock screen",
+            "test": true
+        })]
+    );
+}
+
+#[tokio::test]
+async fn the_report_tells_test_locks_apart() {
+    let (client, shared, _clock) = start_with_config(at(20, 12, 0)).await;
+    let label = json!({ "label": "bedtime", "test": true }).to_string();
+    let extension = json!({
+        "label": "bedtime",
+        "minutes": 20,
+        "reason": "checking the lock screen",
+        "test": true
+    })
+    .to_string();
+    let events = [
+        (EventKind::LockStarted, 0, &label),
+        (EventKind::ExtensionGranted, 2, &extension),
+        (EventKind::Shutdown, 3, &label),
+        (EventKind::LockEnded, 4, &label),
+    ];
+    for (kind, minute, detail) in events {
+        shared
+            .store
+            .lock()
+            .unwrap()
+            .record_event(&Event {
+                at: at(19, 20, minute).timestamp(),
+                logical_date: date(2026, 11, 19),
+                kind,
+                key: format!("weeknight#test-1/bedtime/{minute}"),
+                detail: Some(detail.clone()),
+            })
+            .unwrap();
+    }
+    let Response::Report(report) = client
+        .request(Request::Report {
+            logical_date: Some(date(2026, 11, 19)),
+        })
+        .await
+    else {
+        panic!("expected Report")
+    };
+    let entry = |minute, id: &str, args: &[(&str, &str)]| ReportEntry {
+        at: at(19, 20, minute).timestamp(),
+        message: MessageView {
+            id: id.to_owned(),
+            args: args
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        },
+    };
+    assert_eq!(
+        report.entries,
+        vec![
+            entry(0, "report-lock-started-test", &[("label", "bedtime")]),
+            entry(
+                2,
+                "report-extension-test",
+                &[
+                    ("label", "bedtime"),
+                    ("minutes", "20"),
+                    ("reason", "checking the lock screen")
+                ]
+            ),
+            entry(3, "report-shutdown-test", &[("label", "bedtime")]),
+            entry(4, "report-lock-ended-test", &[("label", "bedtime")]),
+        ]
+    );
 }

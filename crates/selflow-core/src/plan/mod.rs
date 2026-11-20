@@ -35,6 +35,7 @@ pub fn windows_for(
                 warnings: rule.warnings.clone(),
                 shutdown_after: rule.shutdown_after,
                 challenges: set.challenges.clone(),
+                test: false,
             }
         })
         .collect()

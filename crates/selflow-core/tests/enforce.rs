@@ -2,8 +2,8 @@ mod support;
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil::date};
 use selflow_core::config::{Challenges, Config, parse};
-use selflow_core::enforce::{Enforcement, NightLog, evaluate};
-use selflow_core::plan::windows_for;
+use selflow_core::enforce::{Enforcement, GrantedExtension, NightLog, evaluate};
+use selflow_core::plan::{LockWindow, windows_for};
 use selflow_core::timing::Seed;
 use support::{at, brt, no_jitter, one_extension};
 
@@ -226,4 +226,43 @@ fn a_started_lock_takes_only_the_stricter_settings_of_a_new_configuration() {
         looser.window.shutdown_after,
         Some(SignedDuration::from_mins(30))
     );
+}
+
+#[test]
+fn a_test_window_stays_apart_from_the_real_window_of_its_rule() {
+    let c = parse(&no_jitter()).unwrap();
+    let real = windows_for(&c, Seed(7), date(2026, 11, 19), &brt()).remove(0);
+    let test = LockWindow {
+        rule_set: "weeknight#test-1".to_owned(),
+        starts_at: at(19, 20, 0),
+        ends_at: at(19, 20, 30),
+        test: true,
+        ..real.clone()
+    };
+    let log = NightLog {
+        started: vec![test.clone()],
+        extensions: vec![GrantedExtension {
+            rule_set: test.rule_set.clone(),
+            rule_id: "bedtime".to_owned(),
+            logical_date: date(2026, 11, 19),
+            granted_at: at(19, 20, 2).timestamp(),
+            until: at(19, 20, 22).timestamp(),
+            reason: "checking the lock screen".to_owned(),
+        }],
+    };
+    let during = evaluate(&at(19, 20, 25), &c, Seed(7), &log);
+    let Enforcement::Locked(lock) = during.enforcement else {
+        panic!("expected the test lock")
+    };
+    assert_eq!(lock.window, test);
+    assert_eq!(lock.extensions_left, 0);
+    assert!(during.warnings.iter().any(|warning| {
+        warning.key == "weeknight/bedtime" && warning.lock_at == at(19, 23, 0).timestamp()
+    }));
+    let Enforcement::Locked(lock) = evaluate(&at(19, 23, 0), &c, Seed(7), &log).enforcement else {
+        panic!("expected the real lock")
+    };
+    assert_eq!(lock.window, real);
+    assert!(!lock.window.test);
+    assert_eq!(lock.extensions_left, 1);
 }

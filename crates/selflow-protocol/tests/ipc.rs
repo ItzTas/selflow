@@ -60,6 +60,38 @@ async fn round_trips_extension_refusals() {
     }
 }
 
+#[tokio::test]
+async fn round_trips_a_test_lock_request_and_its_answer() {
+    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
+    let mut reader = tokio::io::BufReader::new(other_end);
+    let requests = [
+        Request::TestLock {
+            rule: Some("every-night/bedtime".into()),
+            duration: jiff::SignedDuration::from_mins(5),
+        },
+        Request::TestLock {
+            rule: None,
+            duration: jiff::SignedDuration::from_secs(90),
+        },
+    ];
+    for sent in requests {
+        write_message(&mut writer, &sent).await.unwrap();
+        assert_eq!(
+            read_message::<Request>(&mut reader).await.unwrap(),
+            Some(sent)
+        );
+    }
+    let sent = Response::TestLockStarted {
+        label: "Bedtime".into(),
+        ends_at: jiff::Timestamp::from_second(1_000).unwrap(),
+    };
+    write_message(&mut writer, &sent).await.unwrap();
+    assert_eq!(
+        read_message::<Response>(&mut reader).await.unwrap(),
+        Some(sent)
+    );
+}
+
 #[test]
 fn the_socket_lives_under_the_runtime_dir() {
     assert_eq!(

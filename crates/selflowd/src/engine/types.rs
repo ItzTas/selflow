@@ -27,6 +27,7 @@ pub(super) struct ShownLock {
     pub(super) first_shown: Timestamp,
     pub(super) ended: bool,
     pub(super) shut_down: bool,
+    pub(super) test: bool,
 }
 
 #[derive(Debug)]

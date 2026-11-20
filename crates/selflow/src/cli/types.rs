@@ -3,7 +3,7 @@ use jiff::civil;
 use selflow_protocol::ipc::MessageView;
 use std::io;
 
-use super::commands::LockArgs;
+use super::commands::{LockArgs, TestLockArgs};
 use crate::lock::LockError;
 
 #[derive(Debug, Parser)]
@@ -17,6 +17,7 @@ pub struct Cli {
 pub enum Command {
     Config(ConfigArgs),
     Report(ReportArgs),
+    TestLock(TestLockArgs),
     #[command(hide = true)]
     Lock(LockArgs),
 }

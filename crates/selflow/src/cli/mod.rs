@@ -22,6 +22,7 @@ pub fn run() -> ExitCode {
     let result = match cli.command {
         Command::Config(args) => commands::config_cmd(args),
         Command::Report(args) => commands::report_cmd(args),
+        Command::TestLock(args) => commands::test_lock_cmd(args),
         Command::Lock(args) => commands::lock_cmd(args),
     };
     match result {

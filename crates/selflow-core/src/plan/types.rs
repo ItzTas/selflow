@@ -14,6 +14,8 @@ pub struct LockWindow {
     pub warnings: Vec<SignedDuration>,
     pub shutdown_after: Option<SignedDuration>,
     pub challenges: Challenges,
+    #[serde(default)]
+    pub test: bool,
 }
 
 impl LockWindow {

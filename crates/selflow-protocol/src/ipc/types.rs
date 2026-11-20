@@ -1,5 +1,5 @@
-use jiff::Timestamp;
 use jiff::civil::Date;
+use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -7,11 +7,22 @@ use serde::{Deserialize, Serialize};
 pub enum Request {
     Status,
     SubscribeLock,
-    RequestExtension { reason: String, phrase: String },
+    RequestExtension {
+        reason: String,
+        phrase: String,
+    },
     GetConfig,
-    SaveConfig { text: String },
+    SaveConfig {
+        text: String,
+    },
     ConfigStatus,
-    Report { logical_date: Option<Date> },
+    Report {
+        logical_date: Option<Date>,
+    },
+    TestLock {
+        rule: Option<String>,
+        duration: SignedDuration,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +48,10 @@ pub enum Response {
     },
     ConfigStatus(ConfigStatusView),
     Report(ReportView),
+    TestLockStarted {
+        label: String,
+        ends_at: Timestamp,
+    },
     Error(MessageView),
 }
 

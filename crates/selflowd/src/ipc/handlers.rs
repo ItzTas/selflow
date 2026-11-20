@@ -1,10 +1,10 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use jiff::{Timestamp, ZonedDateTime, civil};
+use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 use selflow_core::challenge::{ExtensionAnswer, Refusal, request_extension};
-use selflow_core::config::{Config, ConfigError, parse};
+use selflow_core::config::{Config, ConfigError, LockRule, RuleSet, parse};
 use selflow_core::enforce::{Enforcement, GrantedExtension, evaluate};
-use selflow_core::plan::windows_around;
+use selflow_core::plan::{LockWindow, windows_around};
 use selflow_core::timing::logical_date;
 use selflow_core::versions::{
     Change, ChangeKind, Classification, StoredVersion, classify, effective_at, in_force, pending,
@@ -18,8 +18,10 @@ use selflow_protocol::ipc::{
 use serde_json::{Value, json};
 use tokio::sync::watch;
 
+use super::constants::{TEST_LOCK_MAX, TEST_LOCK_MIN};
 use super::types::{IpcError, Shared};
-use crate::engine::{EngineError, config_in_force};
+use crate::enforcer::PowerMode;
+use crate::engine::{EngineError, config_in_force, event_detail};
 use crate::store::{Event, EventKind, Store};
 
 pub fn handle(request: Request, shared: &Shared) -> Response {
@@ -35,6 +37,9 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
         Request::SaveConfig { text } => save(&store, &now, text),
         Request::ConfigStatus => config_status(&store, now.timestamp()),
         Request::Report { logical_date } => report(&store, &now, logical_date),
+        Request::TestLock { rule, duration } => {
+            test_lock(&store, &now, shared, rule.as_deref(), duration)
+        }
     };
     drop(store);
     let response = answer.unwrap_or_else(|error| {
@@ -43,7 +48,9 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
     });
     if matches!(
         response,
-        Response::Saved { .. } | Response::ExtensionGranted { .. }
+        Response::Saved { .. }
+            | Response::ExtensionGranted { .. }
+            | Response::TestLockStarted { .. }
     ) {
         let _ = shared.wake.try_send(());
     }
@@ -164,10 +171,85 @@ fn extend(
         Err(refusal) => return Ok(Response::ExtensionRefused(refusal_view(refusal))),
     };
     store.record_extension(&extension)?;
-    record(store, &granted_event(&extension, &lock.window.label));
+    record(
+        store,
+        &granted_event(&extension, &lock.window.label, lock.window.test),
+    );
     Ok(Response::ExtensionGranted {
         until: extension.until,
     })
+}
+
+fn test_lock(
+    store: &Store,
+    now: &ZonedDateTime,
+    shared: &Shared,
+    rule: Option<&str>,
+    duration: SignedDuration,
+) -> Result<Response, IpcError> {
+    if shared.power == PowerMode::Real {
+        return Ok(Response::Error(message("ipc-test-lock-real-power", &[])));
+    }
+    if !(TEST_LOCK_MIN..=TEST_LOCK_MAX).contains(&duration) {
+        let bounds = [
+            ("min", TEST_LOCK_MIN.as_mins().to_string()),
+            ("max", TEST_LOCK_MAX.as_mins().to_string()),
+        ];
+        return Ok(Response::Error(message("ipc-test-lock-duration", &bounds)));
+    }
+    if shared.views.borrow().is_some() {
+        return Ok(Response::Error(message("ipc-test-lock-busy", &[])));
+    }
+    let config = config_in_force(store, now.timestamp())?;
+    let today = logical_date(now, config.day_starts_at);
+    let (set, lock) = match chosen_rule(&config, today, rule) {
+        Ok(chosen) => chosen,
+        Err(refusal) => return Ok(Response::Error(refusal)),
+    };
+    let window = LockWindow {
+        rule_set: format!("{}#test-{}", set.name, now.timestamp().as_second()),
+        rule_id: lock.id.clone(),
+        label: lock.label.clone(),
+        logical_date: today,
+        starts_at: now.clone(),
+        ends_at: now.checked_add(duration)?,
+        warnings: lock.warnings.clone(),
+        shutdown_after: lock.shutdown_after,
+        challenges: set.challenges.clone(),
+        test: true,
+    };
+    store.record_started(&window)?;
+    Ok(Response::TestLockStarted {
+        label: window.label,
+        ends_at: window.ends_at.timestamp(),
+    })
+}
+
+fn chosen_rule<'a>(
+    config: &'a Config,
+    today: civil::Date,
+    slug: Option<&str>,
+) -> Result<(&'a RuleSet, &'a LockRule), MessageView> {
+    let Some(slug) = slug else {
+        return config
+            .rule_set_for(today.weekday())
+            .and_then(|set| set.locks.first().map(|lock| (set, lock)))
+            .ok_or_else(|| message("ipc-test-lock-no-rule", &[]));
+    };
+    let rules: Vec<(&RuleSet, &LockRule)> = config
+        .rule_sets
+        .iter()
+        .flat_map(|set| set.locks.iter().map(move |lock| (set, lock)))
+        .collect();
+    let slug_of = |(set, lock): &(&RuleSet, &LockRule)| format!("{}/{}", set.name, lock.id);
+    if let Some(found) = rules.iter().find(|rule| slug_of(rule) == slug) {
+        return Ok(*found);
+    }
+    let valid: Vec<String> = rules.iter().map(slug_of).collect();
+    Err(message(
+        "ipc-test-lock-unknown-rule",
+        &[("rule", slug.to_owned()), ("rules", valid.join(", "))],
+    ))
 }
 
 fn report(
@@ -206,7 +288,7 @@ fn report_entry(event: &Event) -> ReportEntry {
         Value::Null => String::new(),
         other => other.to_string(),
     };
-    let (id, names): (String, &[&str]) = match event.kind {
+    let (mut id, names): (String, &[&str]) = match event.kind {
         EventKind::LockStarted => ("report-lock-started".to_owned(), &["label"]),
         EventKind::LockEnded => ("report-lock-ended".to_owned(), &["label"]),
         EventKind::ExtensionGranted => (
@@ -216,6 +298,9 @@ fn report_entry(event: &Event) -> ReportEntry {
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
         EventKind::ConfigSaved => (format!("report-config-saved-{}", field("kind")), &[]),
     };
+    if detail["test"] == true {
+        id.push_str("-test");
+    }
     ReportEntry {
         at: event.at,
         message: MessageView {
@@ -238,7 +323,7 @@ fn detail_of(event: &Event) -> Value {
     })
 }
 
-fn granted_event(extension: &GrantedExtension, label: &str) -> Event {
+fn granted_event(extension: &GrantedExtension, label: &str, test: bool) -> Event {
     let minutes = extension
         .granted_at
         .duration_until(extension.until)
@@ -251,9 +336,10 @@ fn granted_event(extension: &GrantedExtension, label: &str) -> Event {
             "{}/{}/{}/{}",
             extension.rule_set, extension.rule_id, extension.logical_date, extension.granted_at
         ),
-        detail: Some(
-            json!({ "label": label, "minutes": minutes, "reason": extension.reason }).to_string(),
-        ),
+        detail: Some(event_detail(
+            json!({ "label": label, "minutes": minutes, "reason": extension.reason }),
+            test,
+        )),
     }
 }
 
