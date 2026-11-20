@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -41,12 +39,4 @@ pub async fn read_message<T: DeserializeOwned>(
     serde_json::from_slice(&line)
         .map(Some)
         .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
-}
-
-pub fn socket_path_from(runtime_dir: Option<&OsStr>) -> Option<PathBuf> {
-    runtime_dir.map(|dir| Path::new(dir).join("selflow").join("daemon.sock"))
-}
-
-pub fn socket_path() -> Option<PathBuf> {
-    socket_path_from(std::env::var_os("XDG_RUNTIME_DIR").as_deref())
 }

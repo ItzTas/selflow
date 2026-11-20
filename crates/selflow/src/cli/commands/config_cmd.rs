@@ -3,7 +3,8 @@ use std::process::ExitCode;
 use jiff::tz::TimeZone;
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
-use selflow_protocol::ipc::{MessageView, Request, Response, socket_path};
+use selflow_platform::paths::socket_path;
+use selflow_protocol::ipc::{MessageView, Request, Response};
 
 use crate::cli::{CliError, ConfigAction, ConfigArgs};
 use crate::client::Client;

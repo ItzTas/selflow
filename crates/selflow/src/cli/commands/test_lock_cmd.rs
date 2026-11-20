@@ -4,7 +4,8 @@ use clap::Args;
 use jiff::SignedDuration;
 use jiff::tz::TimeZone;
 use selflow_i18n::localizer::{Arg, Localizer};
-use selflow_protocol::ipc::{Request, Response, socket_path};
+use selflow_platform::paths::socket_path;
+use selflow_protocol::ipc::{Request, Response};
 
 use super::config_cmd::{daemon_language, unexpected};
 use crate::cli::CliError;

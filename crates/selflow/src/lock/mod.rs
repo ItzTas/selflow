@@ -16,9 +16,9 @@ use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
+use selflow_platform::transport::connect;
 use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
 use tokio::io::BufReader;
-use tokio::net::UnixStream;
 
 pub use model::{ExtensionArea, FormError, LockEffect, LockEvent, LockModel, Screen};
 
@@ -234,7 +234,7 @@ fn daemon_events(socket: PathBuf) -> impl Stream<Item = Message> {
 }
 
 async fn follow_lock(socket: &Path, output: &mut mpsc::Sender<Message>) -> io::Result<()> {
-    let mut stream = BufReader::new(UnixStream::connect(socket).await?);
+    let mut stream = BufReader::new(connect(socket).await?);
     write_message(stream.get_mut(), &Request::SubscribeLock).await?;
     while let Some(response) = read_message(&mut stream).await? {
         let Some(event) = lock_event(response) else {
@@ -283,7 +283,7 @@ async fn ask_for_extension(socket: PathBuf, reason: String, phrase: String) -> L
 }
 
 async fn exchange(socket: &Path, request: &Request) -> io::Result<Response> {
-    let mut stream = BufReader::new(UnixStream::connect(socket).await?);
+    let mut stream = BufReader::new(connect(socket).await?);
     write_message(stream.get_mut(), request).await?;
     read_message(&mut stream).await?.ok_or_else(|| {
         io::Error::new(

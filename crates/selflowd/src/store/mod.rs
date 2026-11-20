@@ -1,10 +1,7 @@
 mod migrations;
 mod types;
 
-use std::ffi::OsStr;
-use std::fs::{DirBuilder, OpenOptions, Permissions};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use jiff::{Timestamp, civil};
 use rusqlite::{Connection, OptionalExtension, Row, params};
@@ -12,6 +9,7 @@ use selflow_core::enforce::{GrantedExtension, NightLog};
 use selflow_core::plan::LockWindow;
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredVersion};
+use selflow_platform::secure_fs::{private_dir, private_file};
 
 use migrations::MIGRATIONS;
 pub use types::{Event, EventKind, StoreError};
@@ -52,21 +50,6 @@ fn event_kind_from(text: &str) -> Result<EventKind, StoreError> {
         .ok_or_else(|| StoreError::UnknownKind(text.to_owned()))
 }
 
-pub fn default_path_from(state_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
-    let base = match state_home.filter(|value| !value.is_empty()) {
-        Some(state) => PathBuf::from(state),
-        None => Path::new(home?).join(".local/state"),
-    };
-    Some(base.join("selflow/selflow.db"))
-}
-
-pub fn default_path() -> Option<PathBuf> {
-    default_path_from(
-        std::env::var_os("XDG_STATE_HOME").as_deref(),
-        std::env::var_os("HOME").as_deref(),
-    )
-}
-
 pub struct Store {
     conn: Connection,
 }
@@ -74,18 +57,9 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> Result<Store, StoreError> {
         if let Some(parent) = path.parent() {
-            DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(parent)?;
-            std::fs::set_permissions(parent, Permissions::from_mode(0o700))?;
+            private_dir(parent)?;
         }
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)?;
-        std::fs::set_permissions(path, Permissions::from_mode(0o600))?;
+        private_file(path)?;
         Store::migrated(Connection::open(path)?)
     }
 

@@ -19,8 +19,6 @@ pub struct Shared {
 
 #[derive(Debug, Error)]
 pub enum IpcError {
-    #[error("another daemon is already answering on the socket")]
-    AlreadyRunning,
     #[error("socket error: {0}")]
     Io(#[from] std::io::Error),
     #[error("store error: {0}")]

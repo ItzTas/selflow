@@ -1,15 +1,15 @@
 use std::path::Path;
 
+use selflow_platform::transport::{Stream, connect};
 use selflow_protocol::ipc::{Request, Response, read_message, write_message};
 use tokio::io::BufReader;
-use tokio::net::UnixStream;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::cli::CliError;
 
 pub struct Client {
     runtime: Runtime,
-    stream: BufReader<UnixStream>,
+    stream: BufReader<Stream>,
 }
 
 impl Client {
@@ -19,7 +19,7 @@ impl Client {
             .build()
             .map_err(CliError::Protocol)?;
         let stream = runtime
-            .block_on(UnixStream::connect(path))
+            .block_on(connect(path))
             .map_err(|_| CliError::DaemonUnreachable)?;
         Ok(Client {
             runtime,

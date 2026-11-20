@@ -1,6 +1,5 @@
 use std::ffi::OsStr;
 use std::fmt;
-use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerMode {
@@ -33,11 +32,7 @@ pub fn shut_down(mode: PowerMode) {
         tracing::warn!("shutdown requested");
         return;
     }
-    let spawned = Command::new("systemctl")
-        .arg("poweroff")
-        .stdin(Stdio::null())
-        .spawn();
-    if let Err(error) = spawned {
-        tracing::error!(%error, "couldn't start systemctl poweroff");
+    if let Err(error) = crate::os::power_off() {
+        tracing::error!(%error, "couldn't start the shutdown");
     }
 }

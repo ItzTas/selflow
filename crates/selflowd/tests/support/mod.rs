@@ -10,15 +10,15 @@ use jiff::{
 };
 use selflow_core::enforce::GrantedExtension;
 use selflow_core::versions::ChangeKind;
+use selflow_platform::transport::{Stream, connect, listen};
 use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
 use selflowd::clock::Clock;
 use selflowd::enforcer::PowerMode;
 use selflowd::engine::{Enforcer, Engine};
-use selflowd::ipc::{Shared, bind, serve};
+use selflowd::ipc::{Shared, serve};
 use selflowd::store::Store;
 use tempfile::TempDir;
 use tokio::io::BufReader;
-use tokio::net::UnixStream;
 use tokio::sync::{mpsc, watch};
 
 pub struct TestClock(Mutex<ZonedDateTime>);
@@ -212,7 +212,7 @@ pub async fn wait_for(limit: Duration, condition: impl Fn() -> bool) -> bool {
 }
 
 pub struct TestClient {
-    stream: tokio::sync::Mutex<BufReader<UnixStream>>,
+    stream: tokio::sync::Mutex<BufReader<Stream>>,
     _dir: TempDir,
 }
 
@@ -228,7 +228,7 @@ impl TestClient {
 }
 
 pub struct Subscriber {
-    stream: BufReader<UnixStream>,
+    stream: BufReader<Stream>,
     _dir: TempDir,
 }
 
@@ -315,10 +315,10 @@ async fn launch(
     clock: Arc<dyn Clock>,
     views: watch::Receiver<Option<LockView>>,
     power: PowerMode,
-) -> (TempDir, UnixStream, Arc<Shared>) {
+) -> (TempDir, Stream, Arc<Shared>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("selflow/daemon.sock");
-    let listener = bind(&path).unwrap();
+    let listener = listen(&path).unwrap();
     let (wake, _) = mpsc::channel(1);
     let shared = Arc::new(Shared {
         store: Arc::new(Mutex::new(store)),
@@ -328,6 +328,6 @@ async fn launch(
         power,
     });
     tokio::spawn(serve(listener, Arc::clone(&shared)));
-    let stream = UnixStream::connect(&path).await.unwrap();
+    let stream = connect(&path).await.unwrap();
     (dir, stream, shared)
 }

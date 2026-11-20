@@ -9,7 +9,6 @@ use selflow_protocol::ipc::{
     ChangeKindView, MessageView, RefusalView, ReportEntry, Request, Response,
 };
 use selflowd::enforcer::PowerMode;
-use selflowd::ipc::{IpcError, bind};
 use selflowd::store::{Event, EventKind};
 use serde_json::{Value, json};
 use support::{at, brt, no_jitter, sample_view, start, start_with, start_with_config, subscribe};
@@ -165,14 +164,6 @@ async fn a_lock_subscriber_gets_the_view_then_the_end() {
     assert_eq!(subscriber.next().await, Some(Response::Lock(sample_view())));
     views.send(None).unwrap();
     assert_eq!(subscriber.next().await, Some(Response::LockEnded));
-}
-
-#[tokio::test]
-async fn a_second_daemon_cannot_take_the_socket() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("selflow/daemon.sock");
-    let _first = bind(&path).unwrap();
-    assert!(matches!(bind(&path), Err(IpcError::AlreadyRunning)));
 }
 
 #[tokio::test]

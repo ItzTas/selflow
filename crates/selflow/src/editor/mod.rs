@@ -1,10 +1,10 @@
 use std::ffi::OsStr;
-use std::fs::DirBuilder;
 use std::io::{self, Write};
-use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
-use std::process::Command;
 
+use crate::os::run_editor;
+use selflow_platform::paths::{runtime_dir, runtime_dir_from};
+use selflow_platform::secure_fs::private_dir;
 use selflow_protocol::ipc::{PositionedMessage, Response};
 
 pub trait Editor {
@@ -17,12 +17,12 @@ pub struct TempfileEditor {
 
 impl TempfileEditor {
     pub fn new() -> TempfileEditor {
-        TempfileEditor::from_runtime_dir(std::env::var_os("XDG_RUNTIME_DIR").as_deref())
+        TempfileEditor { dir: runtime_dir() }
     }
 
     pub fn from_runtime_dir(runtime_dir: Option<&OsStr>) -> TempfileEditor {
         TempfileEditor {
-            dir: runtime_dir.map(|dir| PathBuf::from(dir).join("selflow")),
+            dir: runtime_dir_from(runtime_dir),
         }
     }
 }
@@ -39,17 +39,14 @@ impl Editor for TempfileEditor {
         builder.suffix(".toml");
         let mut file = match &self.dir {
             Some(dir) => {
-                DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+                private_dir(dir)?;
                 builder.tempfile_in(dir)?
             }
             None => builder.tempfile()?,
         };
         file.write_all(text.as_bytes())?;
         file.flush()?;
-        let status = Command::new("sh")
-            .args(["-c", r#"${VISUAL:-${EDITOR:-vi}} "$1""#, "sh"])
-            .arg(file.path())
-            .status()?;
+        let status = run_editor(file.path())?;
         if !status.success() {
             return Err(io::Error::other("the editor exited with an error"));
         }

@@ -9,7 +9,7 @@ use selflow_core::enforce::NightLog;
 use selflow_core::plan::windows_for;
 use selflow_core::timing::Seed;
 use selflow_core::versions::ChangeKind;
-use selflowd::store::{Event, EventKind, Store, default_path_from};
+use selflowd::store::{Event, EventKind, Store};
 use support::{at, brt, extension, no_jitter};
 
 #[test]
@@ -90,18 +90,6 @@ fn creates_files_only_the_user_can_read() {
     Store::open(&path).unwrap();
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!((mode(&path), mode(path.parent().unwrap())), (0o600, 0o700));
-}
-
-#[test]
-fn the_default_path_follows_xdg_state_home() {
-    assert_eq!(
-        default_path_from(Some("/s".as_ref()), Some("/h".as_ref())),
-        Some("/s/selflow/selflow.db".into())
-    );
-    assert_eq!(
-        default_path_from(None, Some("/h".as_ref())),
-        Some("/h/.local/state/selflow/selflow.db".into())
-    );
 }
 
 #[test]

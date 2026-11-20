@@ -2,18 +2,18 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use selflow_protocol::ipc::socket_path;
+use selflow_platform::paths::{socket_path, store_path};
+use selflow_platform::transport::{ListenError, Listener, listen};
 use thiserror::Error;
-use tokio::net::UnixListener;
-use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 
 use crate::clock::SystemClock;
 use crate::enforcer::{LockSupervisor, Notifier, SystemEnforcer, lock_program_from, power_mode};
 use crate::engine::{Engine, EngineError};
-use crate::ipc::{IpcError, Shared, bind, serve};
-use crate::store::{Store, StoreError, default_path};
+use crate::ipc::{IpcError, Shared, serve};
+use crate::os::StopSignal;
+use crate::store::{Store, StoreError};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -36,11 +36,11 @@ pub enum AppError {
 }
 
 pub async fn run() -> Result<(), AppError> {
-    let store_path = default_path().ok_or(AppError::NoStatePath)?;
+    let store_path = store_path().ok_or(AppError::NoStatePath)?;
     let socket = socket_path().ok_or(AppError::NoRuntimeDir)?;
-    let listener = bind(&socket).map_err(|error| match error {
-        IpcError::AlreadyRunning => AppError::AlreadyRunning(socket.clone()),
-        other => AppError::Ipc(other),
+    let listener = listen(&socket).map_err(|error| match error {
+        ListenError::AlreadyRunning => AppError::AlreadyRunning(socket.clone()),
+        ListenError::Io(error) => AppError::Io(error),
     })?;
     let outcome = run_bound(listener, &store_path).await;
     if let Err(error) = std::fs::remove_file(&socket) {
@@ -49,7 +49,7 @@ pub async fn run() -> Result<(), AppError> {
     outcome
 }
 
-async fn run_bound(listener: UnixListener, store_path: &Path) -> Result<(), AppError> {
+async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError> {
     let store = Arc::new(Mutex::new(Store::open(store_path)?));
     let clock = Arc::new(SystemClock);
     let supervisor = LockSupervisor::new(
@@ -61,7 +61,7 @@ async fn run_bound(listener: UnixListener, store_path: &Path) -> Result<(), AppE
     let enforcer = SystemEnforcer::new(supervisor, Notifier, power);
     let views = enforcer.views();
     let mut engine = Engine::new(Arc::clone(&clock), enforcer, Arc::clone(&store))?;
-    let mut terminate = signal(SignalKind::terminate())?;
+    let mut terminate = StopSignal::new()?;
     if let Err(error) = engine.tick() {
         tracing::error!(%error, "the first enforcement tick failed");
     }

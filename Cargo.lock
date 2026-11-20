@@ -3036,6 +3036,7 @@ dependencies = [
  "iced_exwlshell",
  "jiff",
  "selflow-i18n",
+ "selflow-platform",
  "selflow-protocol",
  "serde_json",
  "tempfile",
@@ -3067,6 +3068,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "selflow-platform"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "selflow-protocol"
 version = "0.1.0"
 dependencies = [
@@ -3086,6 +3096,7 @@ dependencies = [
  "rusqlite",
  "selflow-core",
  "selflow-i18n",
+ "selflow-platform",
  "selflow-protocol",
  "serde",
  "serde_json",

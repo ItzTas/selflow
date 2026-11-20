@@ -1,5 +1,5 @@
 use selflow_protocol::ipc::{
-    MAX_LINE_BYTES, RefusalView, Request, Response, read_message, socket_path_from, write_message,
+    MAX_LINE_BYTES, RefusalView, Request, Response, read_message, write_message,
 };
 
 #[tokio::test]
@@ -90,13 +90,4 @@ async fn round_trips_a_test_lock_request_and_its_answer() {
         read_message::<Response>(&mut reader).await.unwrap(),
         Some(sent)
     );
-}
-
-#[test]
-fn the_socket_lives_under_the_runtime_dir() {
-    assert_eq!(
-        socket_path_from(Some("/run/user/1000".as_ref())),
-        Some("/run/user/1000/selflow/daemon.sock".into())
-    );
-    assert_eq!(socket_path_from(None), None);
 }

@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use clap::Args;
-use selflow_protocol::ipc::socket_path;
+use selflow_platform::paths::socket_path;
 
 use crate::cli::CliError;
 use crate::lock::{run_preview, run_session_lock};

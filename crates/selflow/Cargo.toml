@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 selflow-i18n.workspace = true
 selflow-protocol.workspace = true
+selflow-platform.workspace = true
 clap.workspace = true
 iced.workspace = true
 iced_exwlshell.workspace = true
