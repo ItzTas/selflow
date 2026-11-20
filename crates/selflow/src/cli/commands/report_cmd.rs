@@ -1,13 +1,13 @@
 use std::process::ExitCode;
 
 use jiff::tz::TimeZone;
+use selflow_client::client::Client;
 use selflow_i18n::localizer::Localizer;
 use selflow_platform::paths::socket_path;
 use selflow_protocol::ipc::{Request, Response};
 
 use super::config_cmd::{daemon_language, unexpected};
 use crate::cli::{CliError, ReportArgs};
-use crate::client::Client;
 use crate::render::render_report;
 
 pub fn report_cmd(args: ReportArgs) -> Result<ExitCode, CliError> {

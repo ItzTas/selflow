@@ -3,13 +3,13 @@ use std::process::ExitCode;
 use clap::Args;
 use jiff::SignedDuration;
 use jiff::tz::TimeZone;
+use selflow_client::client::Client;
 use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_platform::paths::socket_path;
 use selflow_protocol::ipc::{Request, Response};
 
 use super::config_cmd::{daemon_language, unexpected};
 use crate::cli::CliError;
-use crate::client::Client;
 
 #[derive(Debug, Args)]
 pub struct TestLockArgs {

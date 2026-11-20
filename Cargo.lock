@@ -3035,6 +3035,7 @@ dependencies = [
  "iced",
  "iced_exwlshell",
  "jiff",
+ "selflow-client",
  "selflow-i18n",
  "selflow-platform",
  "selflow-protocol",
@@ -3044,6 +3045,18 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "selflow-client"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "selflow-platform",
+ "selflow-protocol",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

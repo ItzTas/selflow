@@ -15,6 +15,7 @@ selflow-core = { path = "crates/selflow-core" }
 selflow-i18n = { path = "crates/selflow-i18n" }
 selflow-protocol = { path = "crates/selflow-protocol" }
 selflow-platform = { path = "crates/selflow-platform" }
+selflow-client = { path = "crates/selflow-client" }
 clap = { version = "4.6", features = ["derive"] }
 fastrand = "2.5"
 fluent-bundle = "0.16"

@@ -1,5 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 use jiff::civil;
+use selflow_client::client::ClientError;
 use selflow_protocol::ipc::MessageView;
 use std::io;
 
@@ -56,4 +57,13 @@ pub enum CliError {
     Daemon(MessageView),
     #[error("the lock screen failed: {0}")]
     Lock(#[from] LockError),
+}
+
+impl From<ClientError> for CliError {
+    fn from(error: ClientError) -> Self {
+        match error {
+            ClientError::Unreachable => CliError::DaemonUnreachable,
+            ClientError::Protocol(source) => CliError::Protocol(source),
+        }
+    }
 }
