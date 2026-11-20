@@ -1,4 +1,4 @@
-.PHONY: check test
+.PHONY: check test install
 
 check:
 	cargo fmt --check
@@ -7,3 +7,9 @@ check:
 
 test:
 	cargo test
+
+install:
+	cargo install --locked --path crates/selflowd
+	cargo install --locked --path crates/selflow
+	install -Dm644 contrib/selflowd.service ~/.config/systemd/user/selflowd.service
+	systemctl --user daemon-reload
