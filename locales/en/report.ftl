@@ -5,7 +5,6 @@ report-shutdown = The computer shut down during the { $label } lock.
 report-lock-started-test = Test lock "{ $label }" started.
 report-lock-ended-test = Test lock "{ $label }" ended.
 report-extension-test = You asked for { $minutes } more min during the test lock "{ $label }". Your reason: { $reason }
-report-shutdown-test = During the test lock "{ $label }", the computer would have shut down here.
 report-config-saved-tighten = You saved a change that makes the rules firmer. It applied right away.
 report-config-saved-loosen = You saved a change that loosens the rules. It waits a while before it applies.
 report-config-saved-neutral = You saved your settings.

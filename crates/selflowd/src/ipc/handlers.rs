@@ -202,6 +202,15 @@ fn test_lock(
     }
     let config = config_in_force(store, now.timestamp())?;
     let today = logical_date(now, config.day_starts_at);
+    let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
+    let open_test = store
+        .night_log(&nights)?
+        .started
+        .iter()
+        .any(|window| window.test && window.ends_at.timestamp() > now.timestamp());
+    if open_test {
+        return Ok(Response::Error(message("ipc-test-lock-busy", &[])));
+    }
     let (set, lock) = match chosen_rule(&config, today, rule) {
         Ok(chosen) => chosen,
         Err(refusal) => return Ok(Response::Error(refusal)),
@@ -214,7 +223,7 @@ fn test_lock(
         starts_at: now.clone(),
         ends_at: now.checked_add(duration)?,
         warnings: lock.warnings.clone(),
-        shutdown_after: lock.shutdown_after,
+        shutdown_after: None,
         challenges: set.challenges.clone(),
         test: true,
     };
@@ -298,7 +307,7 @@ fn report_entry(event: &Event) -> ReportEntry {
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
         EventKind::ConfigSaved => (format!("report-config-saved-{}", field("kind")), &[]),
     };
-    if detail["test"] == true {
+    if detail["test"] == true && event.kind != EventKind::Shutdown {
         id.push_str("-test");
     }
     ReportEntry {

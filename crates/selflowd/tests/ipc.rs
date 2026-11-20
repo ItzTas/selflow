@@ -187,7 +187,7 @@ async fn a_test_lock_is_refused_with_real_power() {
 
 #[tokio::test]
 async fn a_test_lock_lasts_from_one_minute_to_two_hours() {
-    let (client, _shared, _clock) =
+    let (client, _shared, clock) =
         start_with(&no_jitter(), PowerMode::LogOnly, None, at(19, 20, 0)).await;
     let too_short = Request::TestLock {
         rule: None,
@@ -199,10 +199,46 @@ async fn a_test_lock_lasts_from_one_minute_to_two_hours() {
             error("ipc-test-lock-duration", &[("min", "1"), ("max", "120")])
         );
     }
-    assert!(matches!(
+    assert_eq!(
+        client.request(test_lock(None, 1)).await,
+        Response::TestLockStarted {
+            label: "bedtime".to_owned(),
+            ends_at: at(19, 20, 1).timestamp(),
+        }
+    );
+    clock.set(at(19, 20, 1));
+    assert_eq!(
         client.request(test_lock(None, 120)).await,
+        Response::TestLockStarted {
+            label: "bedtime".to_owned(),
+            ends_at: at(19, 22, 1).timestamp(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_second_test_lock_waits_for_the_open_one_to_end() {
+    let (client, _shared, clock) =
+        start_with(&no_jitter(), PowerMode::LogOnly, None, at(19, 20, 0)).await;
+    assert!(matches!(
+        client.request(test_lock(None, 10)).await,
         Response::TestLockStarted { .. }
     ));
+    for minute in [0, 9] {
+        clock.set(at(19, 20, minute));
+        assert_eq!(
+            client.request(test_lock(None, 5)).await,
+            error("ipc-test-lock-busy", &[])
+        );
+    }
+    clock.set(at(19, 20, 10));
+    assert_eq!(
+        client.request(test_lock(None, 5)).await,
+        Response::TestLockStarted {
+            label: "bedtime".to_owned(),
+            ends_at: at(19, 20, 15).timestamp(),
+        }
+    );
 }
 
 #[tokio::test]
@@ -259,6 +295,7 @@ async fn a_test_lock_starts_now_with_todays_first_rule() {
     );
     let config = parse(&no_jitter()).unwrap();
     let rule = windows_for(&config, Seed(0), date(2026, 11, 19), &brt()).remove(0);
+    assert_eq!(rule.shutdown_after, Some(SignedDuration::from_mins(30)));
     let started = shared
         .store
         .lock()
@@ -272,6 +309,7 @@ async fn a_test_lock_starts_now_with_todays_first_rule() {
             rule_set: format!("weeknight#test-{}", at(19, 20, 0).timestamp().as_second()),
             starts_at: at(19, 20, 0),
             ends_at: at(19, 20, 10),
+            shutdown_after: None,
             test: true,
             ..rule
         }]
@@ -367,7 +405,6 @@ async fn the_report_tells_test_locks_apart() {
     let events = [
         (EventKind::LockStarted, 0, &label),
         (EventKind::ExtensionGranted, 2, &extension),
-        (EventKind::Shutdown, 3, &label),
         (EventKind::LockEnded, 4, &label),
     ];
     for (kind, minute, detail) in events {
@@ -415,7 +452,6 @@ async fn the_report_tells_test_locks_apart() {
                     ("reason", "checking the lock screen")
                 ]
             ),
-            entry(3, "report-shutdown-test", &[("label", "bedtime")]),
             entry(4, "report-lock-ended-test", &[("label", "bedtime")]),
         ]
     );

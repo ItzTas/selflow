@@ -270,6 +270,18 @@ pub async fn start_with(
     (client, shared, clock)
 }
 
+pub fn shared_over(store: Arc<Mutex<Store>>, clock: Arc<TestClock>, power: PowerMode) -> Shared {
+    let (wake, _) = mpsc::channel(1);
+    let (_, views) = watch::channel(None);
+    Shared {
+        store,
+        clock,
+        wake,
+        views,
+        power,
+    }
+}
+
 pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
     let (sender, views) = watch::channel(None);
     let clock = Arc::new(TestClock::new(at(19, 23, 0)));

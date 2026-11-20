@@ -3,27 +3,17 @@ mod support;
 use std::fs::{Permissions, set_permissions};
 use std::os::unix::fs::PermissionsExt;
 
-use jiff::ZonedDateTime;
+use jiff::SignedDuration;
 use jiff::civil::date;
-use selflow_core::config::parse;
-use selflow_core::plan::{LockWindow, windows_for};
-use selflow_core::timing::Seed;
 use selflow_core::versions::ChangeKind;
+use selflow_protocol::ipc::{Request, Response};
+use selflowd::enforcer::PowerMode;
+use selflowd::ipc::handle;
 use selflowd::store::{EventKind, Store};
 use serde_json::{Value, json};
-use support::{Call, at, brt, engine_on, extension, no_jitter, setup, setup_on, setup_over};
-
-fn test_window(starts_at: ZonedDateTime, ends_at: ZonedDateTime) -> LockWindow {
-    let config = parse(&no_jitter()).unwrap();
-    let rule = windows_for(&config, Seed(0), date(2026, 11, 19), &brt()).remove(0);
-    LockWindow {
-        rule_set: format!("weeknight#test-{}", starts_at.timestamp().as_second()),
-        starts_at,
-        ends_at,
-        test: true,
-        ..rule
-    }
-}
+use support::{
+    Call, at, brt, engine_on, extension, no_jitter, setup, setup_on, setup_over, shared_over,
+};
 
 #[test]
 fn keeps_enforcing_when_the_store_cannot_record() {
@@ -248,13 +238,17 @@ fn a_shutdown_that_would_come_after_the_lock_ends_is_dropped() {
 }
 
 #[test]
-fn a_test_lock_shows_and_marks_its_events_as_a_test() {
+fn a_test_lock_shows_marks_its_events_and_never_shuts_down() {
     let (mut engine, calls, clock, store) = setup(at(19, 20, 0));
-    store
-        .lock()
-        .unwrap()
-        .record_started(&test_window(at(19, 20, 0), at(19, 20, 40)))
-        .unwrap();
+    let shared = shared_over(store.clone(), clock.clone(), PowerMode::LogOnly);
+    let request = Request::TestLock {
+        rule: None,
+        duration: SignedDuration::from_mins(40),
+    };
+    assert!(matches!(
+        handle(request, &shared),
+        Response::TestLockStarted { .. }
+    ));
     engine.tick().unwrap();
     for minute in [30, 40] {
         clock.set(at(19, 20, minute));
@@ -265,7 +259,6 @@ fn a_test_lock_shows_and_marks_its_events_as_a_test() {
         vec![
             Call::Show("bedtime".into(), 1),
             Call::Show("bedtime".into(), 1),
-            Call::ShutDown,
             Call::Hide
         ]
     );
@@ -285,7 +278,6 @@ fn a_test_lock_shows_and_marks_its_events_as_a_test() {
         events,
         vec![
             (EventKind::LockStarted, marked.clone()),
-            (EventKind::Shutdown, marked.clone()),
             (EventKind::LockEnded, marked)
         ]
     );
