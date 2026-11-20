@@ -1,9 +1,13 @@
 # Selflow: design
 
 - **Status:** approved by the owner on 2026-11-18
-- **Created:** 2026-11-17. **Updated:** 2026-11-18 with the answers to the builder check and the
-  database choice.
-- **Name:** Selflow. Binaries: `selflow`, `selflowd`, `selflow-server`.
+- **Created:** 2026-11-17. **Updated:** 2026-11-18 with the answers to the builder check, the
+  database choice and the Claude Code integration (section 8.12). **Updated:** 2026-11-20 with
+  rules that need no lock (section 8.3), Claude Code steps inside rules (section 8.12), modes as
+  defaults and limits (section 8.10), the terminal unlock (section 8.13), the split between the
+  command line and the graphical binary (section 6.1), and the operating system layer
+  (section 19).
+- **Name:** Selflow. Binaries: `selflow`, `selflowd`, `selflow-server`, and from M2 `selflow-ui`.
 
 Decisions marked "Claude's call" were settled by Claude while writing this document and are open
 to the owner's veto. Everything else was decided by the owner during the design conversation.
@@ -41,7 +45,8 @@ devices, rules and data.
   lock is ignored, a shutdown.
 - Support a routine that serves the autistic side and the ADHD side at once (section 9).
 - Shape the day around the user's medication schedule (section 10).
-- Let users configure everything: rules, timings, challenges, intensity, and each routine behavior.
+- Let users configure everything: rules, timings, challenges, intensity, messages, and each routine
+  behavior.
 - Let each user pick how strict Selflow is during onboarding (section 8.10).
 - Stay light enough for a laptop with 8 GB of RAM and a Raspberry Pi server (section 15).
 - Run self-hosted, with several users on one server.
@@ -92,13 +97,22 @@ These would count as failure even if the app technically works:
 |---|---|
 | `selflow-server` | Self-hosted server, backed by PostgreSQL. It stores accounts and devices, each user's configuration (with versions, section 8.9), the activity and event log, workday totals, the unlock and extension log, and the next-day reports. It holds each user's live enforcement state and pushes it to their devices. From phase 4 it also sends email. |
 | `selflowd` | The daemon. One per machine, run as a systemd user service with `Restart=always`. It watches windows, processes and time, evaluates rules, triggers warnings, locks, app blocks and shutdowns, and talks to the server. It keeps a local SQLite store (section 6.7) and doesn't link any GUI library. |
-| `selflow --tray` | A small process that holds the tray icon (StatusNotifierItem, through `ksni`) and talks to the daemon over a local socket. Hyprland starts it at login from the `hyprland.start` hook of the owner's Lua config (Hyprland 0.57). |
-| `selflow` | The command line and the window. The CLI covers onboarding (`selflow init`), configuration (`selflow config edit`, `selflow config status`) and reports (`selflow report`). In phase 1 the window is small: it shows what is active and handles unblocking (section 8.6, Claude's call). The full GUI editor comes in phase 6. Only one window runs at a time, and calling `selflow` again brings the open one to the front. |
-| Lock screen | Part of the `selflow` binary, started by the daemon. An iced UI running as a real Wayland session lock (section 8.5). |
+| `selflow` | The command line. From M2 it links no GUI library. It covers onboarding (`selflow init`), configuration (`selflow config edit`, `selflow config status`), reports (`selflow report`), the terminal unlock (`selflow unlock`, section 8.13) and the Claude Code hooks (section 8.12). While the daemon runs in test mode (`SELFLOW_POWER=log`, where a shutdown is only logged), `selflow test-lock` starts a short lock with a chosen rule, so the owner can check the lock screen without waiting for bedtime. |
+| `selflow-ui` | The graphical binary, from M2. It holds the window, the tray and the lock screen, and it is the only binary that links iced. (The name is Claude's call.) |
+| `selflow-ui --tray` | A small process that holds the tray icon (StatusNotifierItem, through `ksni`) and talks to the daemon over a local socket. Hyprland starts it at login from the `hyprland.start` hook of the owner's Lua config (Hyprland 0.57). |
+| Window | `selflow-ui` started with no arguments. In phase 1 the window is small: it shows what is active and handles unblocking (section 8.6, Claude's call). The full GUI editor comes in phase 6. Only one window runs at a time, and starting `selflow-ui` again brings the open one to the front. |
+| Lock screen | Part of `selflow-ui`, started by the daemon. An iced UI running as a real Wayland session lock (section 8.5). |
 
 Killing the tray icon doesn't stop enforcement, because the daemon is a separate process. The
 daemon is also a separate binary, so it never links the GUI library. The owner approved this split
 together with the repository layout (section 19).
+
+M1 ships the command line and the lock screen together in the `selflow` binary. The owner chose on
+2026-11-20 to split them in M2, for two reasons Claude gave. The terminal unlock (section 8.13) is
+the way out when the screen fails, so it shouldn't share a binary with the graphics stack that
+failed. And the Claude Code hooks start the command line on every prompt and every tool call, so it
+should stay small. The code both binaries use to talk to the daemon moves to a library crate,
+because binaries never depend on each other (section 19).
 
 ### 6.2 Offline behavior
 
@@ -125,6 +139,11 @@ active and open windows, closing windows, and locking the screen. Phases 1 to 6 
 Hyprland adapter. GNOME, KDE, X11 or other systems can be added later as new adapters without
 touching the rules engine.
 
+Code that depends on the operating system rather than the desktop has a layer of its own
+(section 19): where files live, the local connection to the daemon, files only the user can open,
+and shutting the machine down. Another operating system, such as Windows, would come in the same
+way, as new files beside the Linux ones.
+
 ### 6.5 Enforcement follows the user (Claude's call)
 
 Moving to another machine is the easiest way around a lock, and work that carries on from one
@@ -133,8 +152,8 @@ instead of the machine.
 
 - A lock or app block that starts on one device applies to all of that user's online devices
   within a few seconds.
-- The extension budget (section 8.5) is one budget per user per night, shared by all their
-  devices. Inhibits draw from it too.
+- Each rule's extension budget for the day (section 8.5) is shared by all of the user's devices.
+  An inhibit draws from the budget of the lock it delays.
 - An offline device can spend at most the budget it knew about at its last sync. If two offline
   devices overspend, the server reconciles the log once they reconnect, and the next-day report
   shows the overspend.
@@ -156,7 +175,7 @@ inside the daemon, with no extra process, which fits the resource budget and wor
 - The file lives in `$XDG_STATE_HOME/selflow/` (by default `~/.local/state/selflow/`). Only the
   user can read it: the directory has mode 0700 and the file mode 0600.
 - It holds what enforcement and sync need: the effective configuration and the versions still
-  waiting, the offline event queue, local activity counters, and the last known extension budget.
+  waiting, the offline event queue, local activity counters, and the last known extension budgets.
   Events are deleted once the server confirms it received them.
 - Events record the app class, the rule that matched and the durations. They don't record window
   titles, which can contain private text such as document names or browser tab titles. Rules can
@@ -185,6 +204,8 @@ this section are Claude's call.
   created at install time is the admin.
 - Failed logins are rate limited, with a growing delay per account and per address.
 - Two-factor login (TOTP) is optional and arrives in phase 4.
+- From phase 4 an account has an email address, where the server sends email steps (section 8.3)
+  and email reminders (section 11).
 
 ### 7.2 Devices
 
@@ -204,6 +225,31 @@ this section are Claude's call.
 - A reverse proxy on the Pi terminates HTTPS, and `selflow-server` listens only on localhost
   behind it.
 - Daemons refuse to talk to the server over plain HTTP, except to localhost during development.
+
+### 7.5 Secrets in the daemon's memory
+
+The owner asked for this on 2026-11-18. The measures are Claude's call.
+
+The daemon holds secrets in memory: the device token (section 7.2) from M3, and from phase 3 the
+key of the local store (section 6.7). Other programs running as the same user are the main risk,
+so the daemon:
+
+- sets itself non-dumpable (`PR_SET_DUMPABLE` at 0), so those programs can't read its memory
+  through `/proc` or attach a debugger, and a crash leaves no core dump with the secret in it;
+- locks the memory pages that hold secrets with `mlock`, so they never reach swap;
+- overwrites a secret with zeros as soon as it is no longer needed.
+
+The owner suggested the kernel keyring as an option for secrets that only need to live for a
+while. A key kept in the daemon's own process keyring stays in kernel memory, never reaches swap,
+can expire on a timeout, and other processes can't read it. It doesn't help when two processes
+need to share a secret, because that takes the user keyring, which every program of the same user
+can read. Where the device token is stored between restarts is decided in M3.
+
+The owner chose the libraries on 2026-11-20. `secrecy` wraps every secret, so it prints as
+`[REDACTED]` in `Debug` output and logs and is read only through an explicit `expose_secret()`
+call. `zeroize` overwrites the value when the wrapper is dropped. Zeroing clears only the current
+copy, so code that handles a secret allocates it once at its final size and never clones or
+formats it.
 
 ## 8. Rules engine
 
@@ -231,20 +277,88 @@ The workday total is built from that classification.
   The rule says which.
 - At a time, with an optional random window: "between 22:00 and 22:30" instead of "at 22:00". The
   bounds are predictable, which the autistic side needs. The exact minute and the wording of the
-  message change from day to day, so the ADHD side doesn't learn to ignore them.
+  message change from day to day, so the ADHD side doesn't learn to ignore them. The user's own
+  messages vary too when the user writes them as a list of variants (section 8.3).
 
-### 8.3 Actions
+### 8.3 Actions and steps
 
-- Show a desktop notification or warning.
+Updated with the owner on 2026-11-20. The actions a rule takes are its steps:
+
+- Show a desktop notification or warning (a notice).
+- Send a message to the agent in open Claude Code sessions, with a level that limits what it takes
+  on from then on (section 8.12).
 - Lock the screen for X time, until a given time, or for the rest of a time window.
-- Shut the machine down after a lock has been ignored or bypassed for a configured time.
+- Shut the machine down.
 - Block an app (section 8.6).
 - Inhibit a lock (section 8.4).
 - From phase 4, send an email.
 
-The default escalation goes from warnings to a lock to a shutdown, and each step is configurable.
-Countdown warnings come before the lock and before the shutdown, so nothing is cut off without
-notice.
+A rule can combine any of these, and none of them is required (owner). A rule with only a notice,
+only an email, or a notice and an email, with no lock at all, is a normal rule. Two of the owner's
+examples: after a long time in one app (section 8.1), a notice that says "you've used this app too
+much, I recommend switching"; and an email at a set time, which reaches the phone while the
+computer is off.
+
+Night rules start from a default escalation, from notices to a lock to a shutdown, and every step
+in it can be changed or left out.
+
+When steps happen (Claude's call):
+
+- Each step is placed relative to one of the rule's moments: the moment the rule fires (a time, an
+  anchor or a condition, sections 8.1 and 8.2) and, when the rule has them, its lock and its
+  shutdown. Examples: a notice 15 minutes before the lock, a Claude message 30 minutes before the
+  shutdown.
+- A step follows the moment it is tied to. The random window (section 8.2) picks the lock's minute,
+  an extension moves the moment the lock comes back, and the shutdown counts from when the lock
+  started, so steps tied to them move with them.
+- Steps placed before the lock also come before the lock returns at the end of an extension, when
+  they fit inside the extension. M1 already does this for notices.
+- When the moment comes from a condition, such as two hours in one app, Selflow predicts it from
+  the current activity, so the notices before it still arrive on time.
+
+Shutdown (owner):
+
+- A rule can shut the machine down with or without a lock before it. The owner wants it for urgent
+  cases that aren't defined yet.
+- Nothing is cut off without notice. The user picks the notices, but one always comes at least a
+  minute before the shutdown, and that minute can't be turned off. M1 already keeps a minute
+  between the lock screen, which shows the shutdown time, and the shutdown.
+- A shutdown without a lock can't be postponed with an extension. With no lock screen there is no
+  place for the unlock challenges, and an urgent shutdown isn't meant to wait. (Claude's call)
+- The rule says whether a shutdown without a lock happens once or keeps happening (owner,
+  2026-11-20). Once: it comes at its time, and turning the machine back on afterwards doesn't shut
+  it down again. Repeating: until the rule ends (the end the rule sets, or else the next day
+  boundary), every boot gives the minute of notice and shuts down again. Once is the default.
+  (Claude's call)
+- To keep the machine off with a way out, a rule can use a lock with a shutdown instead. That
+  already repeats on every boot until the lock ends, and the unlock challenges are the exit.
+- An exception day skips the rule either way, and on the same day it goes through the unlock
+  challenges (section 8.9). Otherwise only a change to the configuration stops it, and loosening
+  waits (section 8.9).
+
+Messages (owner):
+
+- Notices, emails and Claude messages can all be the user's own text, per rule. When the user
+  writes none, Selflow uses its default texts in the user's language.
+- A custom message can be one text or a list of variants, and Selflow picks one per day, as it
+  does with its own texts (section 8.2). (Claude's call)
+
+Email, from phase 4 (Claude's proposal, confirmed by the owner):
+
+- An email step goes to the address of the user's account (section 7.1).
+- When the rule depends only on time (a time or an anchor), the server fires the email step itself,
+  so it arrives with every device off.
+- When the rule depends on something only a device can see, such as an app open for too long, the
+  device reports the step to the server, and the server sends the email.
+
+The server evaluates those time-only rules with the same `selflow-core` logic the daemon uses.
+(Claude's call)
+
+M1's configuration only knows the lock: `[[rule_set.lock]]`, with its notices in `warnings` and its
+shutdown in `shutdown_after`. It is the first case of this model. The M2 plan replaces the format
+with one that holds every kind of step. Selflow keeps each saved version as text, and a stored
+version that no longer parses makes every enforcement tick fail, so that plan either converts the
+versions M1 stored or starts from an empty store.
 
 ### 8.4 Inhibit
 
@@ -252,7 +366,7 @@ An inhibit only delays a lock and never cancels it. Its limits:
 
 - It applies only to conditions the user configured on purpose, such as a video call app.
 - Each inhibit has a maximum delay.
-- Each inhibit counts against the night's extension budget.
+- Each inhibit counts against the extension budget of the lock it delays (section 8.5).
 - Every inhibit is logged and shows up in the next-day report.
 
 ### 8.5 Lock screen and unlock challenges
@@ -261,17 +375,51 @@ The lock is a real Wayland session lock (`ext-session-lock`), so Alt+Tab or a wo
 can't get around it. The screen is calm and shows why it is locked, how long remains, and which
 challenges are available.
 
-The challenge types, configured per rule set:
+Each rule has its own challenges, and its rule set gives the defaults the rule inherits (owner,
+2026-11-20). The challenge types:
 
 1. A mandatory wait, for example two minutes before the unlock option appears.
 2. A written reason, which is logged and shown in the next-day report.
 3. A long sentence the user has to type.
-4. An extension budget: at most N extensions per night, each with a fixed length. When the budget
-   is gone, nothing unlocks the screen.
+4. An extension budget: at most N extensions per day for each rule, each with a fixed length.
+   When a rule's budget is gone, nothing unlocks that rule's lock. Each rule's budget is separate,
+   so an app unblocked in the afternoon leaves the bedtime lock's extensions alone.
 5. Optionally, a PIN that someone else holds.
 
 The default is a wait, a written reason and an extension budget. A PIN or security question the
 user knows by heart is never a default, because it doesn't interrupt an impulse.
+
+The same challenges also work from a terminal, when the screen fails or when the user simply
+prefers it (section 8.13).
+
+### 8.5.1 Lock screen themes
+
+The owner asked on 2026-11-20 for a lock screen as configurable as hyprlock's. The design below is
+Claude's proposal, approved by the owner.
+
+- The look lives in its own file, `~/.config/selflow/lock.toml`, apart from the rules. The session
+  lock blocks input whatever the screen looks like, so a theme never weakens enforcement. Theme
+  changes skip the loosening delay and the configuration versions (section 8.9), and the next lock
+  uses the saved file.
+- A theme is a list of widgets drawn with iced: a background (color, image, blur), labels (text,
+  font, size, color), images, shapes, a countdown and the challenge form. Each widget has a
+  position, an alignment and, optionally, the monitor it appears on.
+- Text can use variables filled in by the daemon: `$label`, `$ends_at`, `$shutdown_at`,
+  `$extension_in`, `$extensions_left` and `$time`. For example: `"$label until $ends_at"`.
+- Some things a theme can't remove. The challenge form and the shutdown time always show: when the
+  file leaves them out, Selflow draws them in their default place, so a theme can't hide the way
+  out or a coming shutdown (section 8.3).
+- Showing them also means they can be read. A theme can move and style those two, but Selflow
+  keeps them inside the screen, at a minimum size, on a backing plate with enough contrast, so a
+  theme can't make them tiny, push them off screen or paint them in the background color.
+  (Claude's call, after a review by another session)
+- A theme can't run commands, unlike hyprlock's `cmd[]`. A lock screen that runs scripts on a
+  timer breaks the resource budget (section 15) and is a risk on a locked screen.
+- Animations stay calm, with no flashing (section 4).
+- Today's screen becomes the default theme, and a command such as `selflow lock theme init` writes
+  a copy to start from. The graphical editor (section 13) edits themes later.
+- It needs `selflow-ui` (section 6.1), so it comes at the end of M2 or in a small milestone right
+  after it.
 
 ### 8.6 Blocking apps
 
@@ -282,9 +430,9 @@ through Selflow. The details below are Claude's call.
   the app's process, because some apps keep running in the tray after their window closes.
 - Hyprland reports new windows as events, so a block rule costs nothing while nothing opens.
 - After closing the app, Selflow shows a notification saying the app is blocked. Clicking it, or
-  opening `selflow`, starts the unblock flow.
-- Unblocking goes through the same challenges as the lock screen, lasts a fixed configured time,
-  and counts against the extension budget.
+  opening the window (`selflow-ui`), starts the unblock flow.
+- Unblocking goes through the block rule's challenges, lasts a fixed configured time, and counts
+  against that rule's extension budget (section 8.5).
 
 ### 8.7 Tamper resistance
 
@@ -304,13 +452,24 @@ Approved by the owner. This rule keeps "everything configurable" from turning in
 
 - A change that makes Selflow stricter takes effect right away.
 - A change that loosens it takes effect 24 hours after it is saved, and it never changes a
-  warning, lock or app block that has already started. Loosening means anything that weakens
-  enforcement: a later time, a shorter lock, a disabled or deleted rule, more or longer
-  extensions, a shorter wait, fewer challenges, more inhibit, a higher workday limit, an anchor
-  moved past its allowed shift (section 9), or a lighter mode (section 8.10). When the app can't
-  tell whether a change loosens or tightens, it treats it as loosening.
+  warning, lock, app block or Claude level that has already started. Loosening means anything
+  that weakens enforcement: a later time, a shorter lock, a disabled or deleted rule, a lock or
+  shutdown step removed from a rule, a repeating shutdown changed to one that happens once
+  (section 8.3), more or longer extensions, a shorter wait, fewer challenges,
+  more inhibit, a higher workday limit, an anchor moved past its allowed shift (section 9), a
+  Claude step removed, moved later, set to a lighter level or covering fewer folders
+  (section 8.12), or a lighter mode (section 8.10). When the app can't tell whether a change
+  loosens or tightens, it treats it as loosening.
+- Changing a notice, an email or the text of a message is neutral and takes effect right away.
+  (Claude's call)
+- Each change in a save keeps its own clock (owner, 2026-11-20). The stricter and neutral changes
+  in a save take effect right away, and its loosening changes wait their 24 hours. A later save
+  doesn't restart the wait of a change already waiting: it only adds its own changes, each with
+  its own time. Changes that depend on each other, such as a lighter mode and a value only that
+  mode allows, take effect together at the later of their times. (That last point is Claude's
+  call.)
 - The 24-hour delay is configurable, and shortening it counts as loosening.
-- The server stores the configuration as versions, each with the time it takes effect.
+- The server keeps every saved configuration and the time each of its changes takes effect.
   `selflow config status` shows the changes still waiting, and the next-day report lists them.
 - Exception days (a holiday, a sick day, an on-call night) pass without friction when scheduled at
   least 24 hours ahead. On the same day, they go through the unlock challenges and show up in the
@@ -320,15 +479,34 @@ Approved by the owner. This rule keeps "everything configurable" from turning in
 
 ### 8.10 Strictness modes and onboarding
 
-The owner asked for a mode, lighter or stricter, chosen during onboarding. The three presets below
-are Claude's call. A mode is a set of starting values. Every setting stays individually
-configurable afterwards, and switching to a lighter mode counts as loosening (section 8.9).
+The owner asked for a mode, lighter or stricter, chosen during onboarding. Reworked with the owner
+on 2026-11-20: a mode never stops the user from adding a rule, and it doesn't define any rule or
+behavior either. Every kind of step and every Claude level (section 8.12) is available in every
+mode. A mode does two things:
 
-| Mode | What it sets |
-|---|---|
-| Light | Warnings and locks with a short wait to unlock, a generous extension budget, no shutdown step, a short loosening delay |
-| Balanced | The defaults described in this document: a wait, a written reason and a small extension budget, a shutdown after a long ignored lock, a 24-hour loosening delay |
-| Strict | Longer waits, no extensions after bedtime, an earlier shutdown, a loosening delay longer than 24 hours |
+1. It sets the defaults: the rules a new configuration starts with, and the value a field takes
+   when the user leaves it out.
+2. It sets how far the user can loosen. In Strict, for example, the unlock wait can't go below a
+   floor, while in Light it can go much lower.
+
+How the limits work (Claude's call, confirmed by the owner):
+
+- They apply only when loosening. A stricter value never runs into them.
+- Selflow checks a configuration against the limits of the mode it names. Saving one with a value
+  beyond a limit fails with a clear message in the user's language that names the mode and the
+  limit, like the other validation errors (section 8.11).
+- Limits can cover the unlock wait, the number and length of extensions, the loosening delay
+  (section 8.9), and how close to a lock or a shutdown the first notice can come.
+- Switching to a lighter mode counts as loosening (section 8.9), so the lighter limits only apply
+  once the switch takes effect.
+
+The three presets are Claude's call:
+
+| Mode | Defaults | Limits |
+|---|---|---|
+| Light | Notices and locks with a short wait to unlock, a generous extension budget, no shutdown step, a short loosening delay, Claude steps that only send messages | Loose: the wait and the loosening delay can go low, and the extensions can go high |
+| Balanced | The defaults described in this document: a wait, a written reason and a small extension budget, a shutdown after a long ignored lock, a 24-hour loosening delay, Claude steps at "Light tasks only" and then "No new work" | Moderate floors on the wait and the loosening delay, and a cap on extensions |
+| Strict | Longer waits, no extensions for the bedtime lock, an earlier shutdown, a loosening delay longer than 24 hours, and a last Claude step at "Save only" | High floors on the wait and the loosening delay, and a low cap on extensions |
 
 The builder picks the exact numbers, and they get tuned during real use.
 
@@ -348,6 +526,155 @@ Approved by the owner.
 - The next-day report arrives as a desktop notification in the morning, and `selflow report`
   shows the full report in the terminal.
 - The graphical editor comes near the end of the plan, in phase 6.
+
+### 8.12 Claude Code sessions
+
+Approved by the owner on 2026-11-18 and reworked with the owner on 2026-11-20. The owner's longest
+work stretches often happen inside Claude Code sessions, and a desktop notification is easy to
+ignore there. So before a rule's lock or shutdown, Selflow sends a message to the agent in each
+open session the rule covers, and each message can narrow what the agent takes on. Hearing it from
+the tool they are working in is harder to brush off than a notification, and the agent can write
+down where the work stopped, so letting go doesn't mean holding the whole task in their head until
+morning.
+
+The owner's example: they are about to leave work, don't notice the time, and ask Claude for
+something that takes an hour. A first message limits Claude to light tasks, and a later one asks it
+to refuse new work, so the session winds down with the workday instead of running past it.
+
+What Claude Code offers, checked against the official documentation on 2026-11-18 (Claude Code
+2.1.327 on the owner's laptop):
+
+- Each session binds an inbox socket for cross-session messages, and its path is exported to hooks
+  as `CLAUDE_CODE_MESSAGING_SOCKET`. A message sent to an idle session starts a new turn. This
+  needs Claude Code 2.1.224 or later. On Linux the socket is restricted to the user's own account
+  (on the owner's laptop, `/run/user/1000/cc-socks/` has mode 0700 and each socket 0600). Claude
+  Code closes a connection that hasn't sent a complete line within 30 seconds, so the daemon opens
+  it only when the message is ready. The documentation doesn't describe the framing of a message,
+  so the builder settles it with an experiment before anything else (section 21).
+- Claude Code also exports a per-session token, `CLAUDE_CODE_MESSAGING_TOKEN`. Selflow doesn't use
+  it. The token has two jobs: access control on native Windows, where the socket can't be limited
+  to the user's account, and proving that a message came from one of the session's own child
+  processes when Claude Code has no process evidence for that. On Linux, sending it is optional,
+  and `selflowd` is started by systemd, so it isn't a child of the session anyway. Leaving the
+  token out means Selflow holds no secret for this feature.
+- Inbound controls decide what happens to the message. When the session has no
+  `crossSessionInbound` value, a session that prompts for permissions (auto mode counts as
+  prompting) receives it, and a session that bypasses permission prompts holds it behind an
+  approval dialog. A `hold` or `refuse` value holds or drops it. A session that bypasses
+  permission prompts needs `crossSessionInbound` at `accept` to receive Selflow's messages.
+- Hooks run only on session events, so they can't wake an idle session. `SessionStart` and
+  `SessionEnd` fire when a session opens and closes. `UserPromptSubmit` can add context to the
+  user's prompt. `PreToolUse` can deny a tool call, and Claude reads the reason given.
+- Channels (`--channels`) can also push messages, but every session has to be started with a flag,
+  and a custom channel needs a development flag during the research preview. Selflow doesn't use
+  them.
+
+A message to Claude is one more kind of step in a rule (section 8.3), next to notices, the lock
+and the shutdown, so any rule can use it, such as bedtime or the end of the workday (owner). It
+lives in the user's configuration file, so the loosening rule (section 8.9) covers it.
+Each Claude step has:
+
+- a time, placed like any other step, for example 60 minutes before the rule's lock or 30 minutes
+  before its shutdown (section 8.3);
+- a message, with default texts in the user's language that the user can replace (owner);
+- a level, which sets what Claude takes on from that step on (owner);
+- optionally, a list of folders. A folder covers every session whose working directory is inside
+  it, and `~` covers the whole home folder. A step with no folders covers every session.
+  (Claude's call)
+- optionally, a switch that makes it cover runs nobody is watching too. It is off by default
+  (owner, 2026-11-20).
+
+Claude steps cover the sessions someone is typing in (owner, 2026-11-20). Runs nobody is watching,
+such as `claude -p` in a script, an Agent SDK program or a scheduled run, carry on as normal unless
+the step turns that switch on. The next-day report lists the ones that ran while a level was
+active, so using them to get around "No new work" shows up the next day. An interactive session
+left running on its own still counts as attended, and a step's folder list can leave it out.
+
+The levels go from lightest to firmest. The owner described the middle two, and the rest is
+Claude's call:
+
+| Level | What Claude is asked to do | How Selflow holds it |
+|---|---|---|
+| Message only | Pass the message on. Nothing else changes. | The message. |
+| Light tasks only | Finish what is underway and take on only small tasks. | The message, and from then on every prompt carries a reminder of the time and the level. |
+| No new work | Take on nothing new. Help save the work, write down where it stopped and what the next step is, and tell the user to go rest. | The message and the reminder on every prompt. |
+| Save only | Everything in No new work. | Also a `PreToolUse` hook that denies file edits and shell commands. A configurable list of commands stays allowed so the work can be saved, by default `git status`, `git diff`, `git add`, `git commit` and `git stash`. |
+
+How levels behave (Claude's call):
+
+- A level holds from its step until the rule ends: the end of its lock, the end the rule sets, or
+  otherwise the next day boundary (the `day_starts_at` the lock uses).
+- When several levels cover one session, the firmest wins. For example, an end-of-work rule can
+  put the work repositories at "Light tasks only" at 17:30, and the bedtime rule can put every
+  session at "No new work" later that night.
+- Sessions that no step covers get nothing.
+
+Default steps for the bedtime rule (Claude's call), covering every session:
+
+1. Wind down, 60 minutes before the lock, at "Light tasks only".
+2. Wrap up, 15 minutes before the lock, at "No new work".
+
+Every level is available in every mode. The mode only sets the default levels and how far a step
+can be loosened (section 8.10): Light sends both default steps as messages only, and Strict sets
+the second one to "Save only". The lock (section 8.5) still comes at its time, whatever the
+sessions are doing.
+
+How it works (Claude's call):
+
+1. A `SessionStart` hook runs `selflow claude hook session-start`. The command reads the session
+   id and working directory from the hook input and the socket path from the environment, and
+   passes them to `selflowd` over the daemon's local socket.
+2. A `SessionEnd` hook removes the session. The daemon also drops sessions whose socket is gone.
+   The prompt hook sends the same data as the start hook, so sessions opened before a daemon
+   restart register again on their next prompt.
+3. When a Claude step fires, `selflowd` sends its message to every registered session the step
+   covers.
+4. A `UserPromptSubmit` hook runs `selflow claude hook prompt`. It asks the daemon which level
+   holds for the session's folder, and when it is "Light tasks only" or firmer, it prints the
+   reminder as additional context.
+5. A `PreToolUse` hook runs `selflow claude hook tool`. When the level is "Save only", it denies
+   file edits and shell commands outside the allowed list, with a reason Claude can pass on.
+6. Hook commands answer within a short timeout. When the daemon can't be reached, they let the
+   prompt or the tool call through. Stopping the daemon already shows up as a gap (section 8.7).
+
+Selflow installs the hooks itself, because the owner wants to set this up through Selflow rather
+than by hand. `selflow claude install` adds Selflow's hook entries to `~/.claude/settings.json`,
+which applies to every session, merges them with the user's own hooks, and shows the change
+before writing it. It also checks the Claude Code version, and it warns when the user's settings
+would keep the messages from arriving: `crossSessionInbound` at `hold` or `refuse`, or permission
+prompts bypassed by default without `accept`. Running it again updates the entries, and
+`selflow claude uninstall` removes only Selflow's. Removing the hooks by hand is a bypass Selflow
+can't prevent, in the same spirit as section 8.7. The graphical editor (section 13) edits the
+Claude steps later on.
+
+Selflow never reads transcripts or prompts. Events record the rule, the step, the level, the
+folder, and whether the message was delivered or a tool call was denied. The next-day report lists
+them.
+
+### 8.13 Unlocking from the terminal
+
+The owner asked for this on 2026-11-20. The lock screen can fail: its client dies, freezes or stops
+taking input, and the compositor keeps the session locked. So the user can also lift a lock from
+another TTY (for example Ctrl+Alt+F4), through the same challenges as the screen. The owner wants
+it as an everyday option too: on any night, the user can pick the screen or the terminal.
+
+How it works (Claude's proposal, confirmed by the owner):
+
+- `selflow unlock` talks to the daemon over its local socket and asks for the same things as the
+  screen: the wait, the written reason, and the phrase when the rule set has one.
+- It draws on the same budget as the screen, the one of the rule whose lock is on, and grants the
+  same length.
+  The terminal is never an easier way out than the screen.
+- Once the daemon grants it, the screen really unlocks. The compositor may still be holding the
+  lock for a dead or frozen client, so the daemon stops that client and starts a new one that takes
+  over the lock (Hyprland's `allow_session_lock_restore`, through the adapter in section 6.4) and
+  releases it at once. Without that step, the daemon would count an extension while the screen
+  stayed locked.
+- The report says the extension came from the terminal, with its reason, so a screen that keeps
+  failing shows up the next day.
+- When the daemon can't be reached, the command can't check the challenges, so it doesn't unlock.
+  It says how to restart the daemon instead. Stopping the daemon is already a known gap
+  (section 8.7).
 
 ## 9. AuDHD routine (phase 2)
 
@@ -379,7 +706,7 @@ How the routine works in practice (Claude's call):
   instead of "lock at 23:00". Each anchor says whether it can move and by how much on the same
   day. Moving it within that limit is a normal re-plan. Moving it further is loosening
   (section 8.9). Bedtime can't move by default.
-- In phase 2 the `selflow` window gains a routine view with today's timeline and the re-plan
+- In phase 2 the window (`selflow-ui`) gains a routine view with today's timeline and the re-plan
   confirmation. The routine itself is still configured in the text file. Its visual design is
   still open (section 21).
 
@@ -411,8 +738,9 @@ How the routine works in practice (Claude's call):
 
 ## 11. Reach (phase 4)
 
-- Email reminders, sent by the server over SMTP, on a fixed schedule with an optional random
-  window. Their main job is reaching the phone at night while there is no phone client.
+- Email, sent by the server over SMTP to the account's address (section 7.1): email steps in rules
+  (section 8.3), and reminders on a fixed schedule with an optional random window. Their main job
+  is reaching the phone at night while there is no phone client.
 - URL and site rules, through a browser extension that reports the active tab to the local daemon.
 - Plugins, through a standard detector contract: a plugin watches something and reports it to the
   daemon. The builder picks the plugin mechanism (WASM, external processes or something else)
@@ -461,8 +789,10 @@ Neither the daemon nor the server may weigh on its machine. The rules:
    condition.
 4. Sync with the server is batched, except for enforcement changes, which must reach the user's
    other devices within seconds (section 6.5).
-5. The daemon has no GUI. `selflowd` doesn't link iced at all. iced runs only inside the `selflow`
-   binary, for the window and the lock screen, and only while one of them is on screen.
+5. The daemon has no GUI. `selflowd` doesn't link iced at all. iced runs only inside `selflow-ui`
+   (inside `selflow` until M2), for the window and the lock screen, and only while one of them is
+   on screen. From M2 the `selflow` command line links no GUI library either, so the Claude Code
+   hooks it runs on every prompt and tool call start a small binary (section 8.12).
 
 The targets have to be measured, not assumed. The daemon should use close to 0% CPU when idle and
 stay in the low tens of MB of RAM. The server process should run comfortably on the Pi next to the
@@ -485,15 +815,20 @@ Each phase ends with something used daily.
 
 1. **Stop.** The largest phase. It covers:
    - the server with accounts, device tokens, closed registration and the admin CLI;
-   - the daemon, the tray, the small `selflow` window and the lock screen;
+   - the daemon, the tray, the small window and the lock screen, with the graphical parts in
+     `selflow-ui` and a `selflow` command line that links no GUI library (section 6.1);
    - the Hyprland adapter, i18n and the systemd units;
-   - terminal onboarding with modes, and the text configuration with `selflow config edit` and
-     `selflow config status`;
+   - terminal onboarding with modes as defaults and limits (section 8.10), and the text
+     configuration with `selflow config edit` and `selflow config status`;
    - configuration versions, the loosening rules and exception days;
-   - rules by window, process, time, anchor and workday, and reusable rule sets;
-   - app blocking, unlock challenges, escalation up to shutdown, and bounded inhibit;
+   - rules by window, process, time, anchor and workday, with any mix of steps, including rules
+     with no lock and a shutdown with no lock, custom messages (section 8.3), and reusable rule
+     sets;
+   - app blocking, unlock challenges, the terminal unlock (section 8.13), escalation up to
+     shutdown, and bounded inhibit;
    - enforcement per user across devices, and the cross-device workday with its schedule fallback;
    - the next-day report;
+   - Claude Code steps with levels, in any rule (section 8.12);
    - deployment on the Pi behind HTTPS.
 
    Inside this phase, the plan should first reach a working night lock on one machine, then add
@@ -503,7 +838,11 @@ Each phase ends with something used daily.
 4. **Reach.** Section 11.
 5. **Tasks and reminders.** Section 12.
 6. **GUI editor.** Section 13.
-7. **Future.** A phone client (iPhone first) and other desktop environments.
+7. **Future.** A phone client (iPhone first) and other desktop environments. Two ideas from the
+   owner wait here too, and each needs its own design first (section 21):
+   - AI help: Selflow hands small decisions to an AI, through a Claude Code hook, an API token or a
+     local model. The owner's example is an AI that judges the reason given for an extension.
+   - Profiles: the user picks a profile, and a set of rules is active while it is.
 
 ## 18. Decided stack (status checked 2026-11-17, session lock rechecked 2026-11-18)
 
@@ -516,6 +855,7 @@ Each phase ends with something used daily.
 | Server database | PostgreSQL | The owner's choice: the shared instance on the Pi |
 | Local store | SQLite | The owner's choice. Encryption planned for phase 3 (section 6.7) |
 | i18n | `fluent` | Repository active |
+| Secrets in memory (from M3) | `secrecy` 0.10.3 and `zeroize` 1.9.2 | Checked 2026-11-20. `zeroize` released 2026-11-17 from the active RustCrypto repository. `secrecy` has had no release since October 2024, but its repository is active (last commit 2026-09-02) and OSV lists no advisories |
 
 ## 19. Repository layout
 
@@ -534,10 +874,12 @@ selflow/
 ├── crates/
 │   ├── selflow-core/       # pure domain logic: rules, rule sets, routine, challenges, medication; no I/O
 │   ├── selflow-protocol/   # message types shared by server, daemon, UI and a future phone client
-│   ├── selflow-i18n/       # fluent loading, used by all three binaries
+│   ├── selflow-i18n/       # fluent loading, used by every binary
+│   ├── selflow-platform/   # from M2: operating system code the binaries share (paths, local connections, private files)
 │   ├── selflow-server/     # binary `selflow-server`: server and admin CLI; sql/schema/ holds the PostgreSQL migrations
 │   ├── selflowd/           # binary `selflowd`: the daemon
-│   └── selflow/            # binary `selflow`: CLI, window, `--tray`, lock screen
+│   ├── selflow/            # binary `selflow`: the command line (it also holds the lock screen until M2)
+│   └── selflow-ui/         # from M2, binary `selflow-ui`: window, `--tray`, lock screen
 ├── locales/
 │   ├── en/                 # one .ftl file per area
 │   └── pt-BR/              # the same files, translated
@@ -549,9 +891,11 @@ selflow/
 └── .github/workflows/      # CI
 ```
 
-Dependency direction: `selflow-core` and `selflow-i18n` depend on no other workspace crate.
-`selflow-protocol` may depend on `selflow-core`. The three binary crates depend on the libraries
-and never on each other.
+Dependency direction: `selflow-core`, `selflow-i18n` and `selflow-platform` depend on no other
+workspace crate.
+`selflow-protocol` may depend on `selflow-core`. The binary crates depend on the libraries and
+never on each other. From M2, the code that `selflow` and `selflow-ui` share for talking to the
+daemon lives in a library crate.
 
 Daemon internals:
 
@@ -564,10 +908,42 @@ crates/selflowd/src/
 ├── detector/       # window, process, time (phase 4: url, plugins)
 ├── engine/         # evaluates the core rules, schedules timers
 ├── enforcer/       # notifications, app blocking, spawning the lock screen, shutdown
+├── os/             # from M2: operating system calls, shutting down and the signals that stop the daemon
 ├── store/          # local SQLite store: config cache, offline queue, counters
 ├── sync/           # server client, push channel, heartbeat
 └── ipc/            # local socket for the tray and the window
 ```
+
+Operating system code (from M2; Claude's call, approved by the owner on 2026-11-20):
+
+The owner asked for a layout that keeps a later port to another operating system, such as Windows,
+clean. Code that depends on the operating system stays in a few known places. Inside each one, a
+file per system holds the implementation, and `#[cfg]` picks it at compile time. Linux is the only
+system for now, so each place has a `unix.rs`. A port adds a `windows.rs` beside it and leaves the
+code that calls it alone.
+
+```
+crates/selflow-platform/src/
+├── lib.rs
+├── paths/          # where the store, the config folder (lock.toml), the runtime files and the daemon's socket live; unix.rs reads XDG_STATE_HOME, XDG_CONFIG_HOME and XDG_RUNTIME_DIR
+├── transport/      # listening for and opening local connections to the daemon; unix.rs uses a Unix socket
+└── secure_fs/      # folders and files only the user can open; unix.rs sets modes 0700 and 0600
+```
+
+- `selflow-platform` holds what more than one binary needs. Code that only one binary needs stays
+  in that binary, under `src/os/`. In the daemon, `os/` shuts the machine down and listens for the
+  signals that stop the daemon, while the enforcer still decides when to shut down. In the command
+  line, `os/` starts the editor for `selflow config edit`.
+- `selflow-core`, `selflow-i18n` and `selflow-protocol` hold no operating system code.
+  `selflow-protocol` reads and writes messages on a stream it is handed and never opens one, and
+  whoever opens the stream does it through `selflow-platform`. `make check` also builds these three
+  crates for a Windows target (for example `x86_64-pc-windows-msvc`), so Linux-only code that slips
+  into them fails the check.
+- The lock screen keeps its model, view and style apart from the session lock itself. The Wayland
+  session lock (`ext-session-lock` through `iced_exwlshell`) lives in
+  `selflow-ui/src/lock/backend/wayland.rs`, and another system adds its own file in `backend/`.
+- A dependency that builds on only one system goes in a `[target.'cfg(...)'.dependencies]` table of
+  the crate that uses it, such as `iced_exwlshell` under Linux.
 
 Conventions inside every crate:
 
@@ -586,19 +962,46 @@ Conventions inside every crate:
 
 ## 20. Left to the builder
 
-- The module layout inside `selflow-core`, `selflow-server` and `selflow`, following section 19.
+- The module layout inside `selflow-core`, `selflow-platform`, `selflow-server`, `selflow` and
+  `selflow-ui`, following section 19.
 - The daemon-to-server protocol and the push mechanism, within section 6.6.
 - The database schemas, and the PostgreSQL driver, SQLite driver and migration tool, each checked
   on crates.io before it is added. The owner's diario-alerr uses `tokio-postgres` with `deadpool`.
 - The details of the Hyprland IPC.
-- The format of the configuration file, as long as it is human editable, allows comments and gives
-  clear errors in both languages.
-- The exact values of the strictness modes (section 8.10).
+- The format of the configuration file, as long as it is human editable, allows comments, gives
+  clear errors in both languages and holds every kind of step (section 8.3). That includes the
+  names of the Claude levels in the file (section 8.12).
+- The exact defaults and limits of the strictness modes (section 8.10).
+- Which library crate holds the code `selflow` and `selflow-ui` share for talking to the daemon: a
+  new one or `selflow-protocol` (section 19). In `selflow-protocol`, that code works on a stream
+  the binary opens through `selflow-platform`.
+- Whether the tray uses `ksni` directly or through `tray-icon` with its `ksni` feature. Checked on
+  2026-11-20: `tray-icon` 0.26.1 with its default features off and `ksni` on runs on `ksni` under
+  Linux and pulls no GTK, and it also supports Windows, so the tray would need no port. Under Linux
+  its menus go through a snapshot mode nobody has tried on Hyprland yet, so the M2 plan tries it
+  first and keeps `ksni` directly if the menus misbehave.
+- Whether an email step that an offline device reports late is still sent (section 8.3).
+- How a saved configuration holds changes that take effect at different times (section 8.9). It
+  shapes the server's version schema in M3.
 - The plugin mechanism (section 11).
 
 ## 21. Open questions
 
-- The visual design of the routine view and of the `selflow` window. To settle before phase 2,
+- The visual design of the routine view and of the window (`selflow-ui`). To settle before phase 2,
   ideally with mockups.
 - The Pi's architecture and operating system, and how it is reached from the internet. To check
   before the deploy work in phase 1.
+- The message framing on the Claude Code inbox socket (section 8.12). It isn't
+  documented, so the first task of that milestone is an experiment against a live session. If no
+  stable format turns up, the integration ships with the hooks alone, and messages reach Claude on
+  the user's next prompt instead of waking an idle session.
+- How a hook tells a session someone is typing in from a run nobody is watching (section 8.12).
+  Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED` and `CLAUDE_CODE_ENTRYPOINT`, which were `1` and
+  `cli` in an interactive session on 2026-11-20. What they say in a `claude -p` run and inside a
+  hook hasn't been checked, so the M2b plan checks it before relying on them.
+- Profiles (phase 7). Before they are designed, settle how switching to a profile relates to
+  skipping a rule on purpose, so that a profile switch never becomes the easy bypass section 4
+  rules out.
+- AI help (phase 7). What an AI may see, since an extension reason is private text, and whether it
+  runs as a local model or through a hook or a token, which decides whether that text leaves the
+  machine.
