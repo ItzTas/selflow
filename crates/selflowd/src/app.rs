@@ -54,7 +54,7 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
     let clock = Arc::new(SystemClock);
     let supervisor = LockSupervisor::new(
         lock_program_from(&std::env::current_exe()?),
-        vec!["lock".into()],
+        vec!["--lock".into()],
     );
     let power = power_mode();
     tracing::info!("power mode: {power}");

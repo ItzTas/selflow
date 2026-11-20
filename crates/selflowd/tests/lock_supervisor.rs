@@ -97,14 +97,14 @@ async fn hiding_publishes_the_end_and_stops_the_client() {
 #[test]
 fn finds_the_lock_program_next_to_the_daemon() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("selflow"), "").unwrap();
+    std::fs::write(dir.path().join("selflow-ui"), "").unwrap();
     assert_eq!(
         lock_program_from(&dir.path().join("selflowd")),
-        dir.path().join("selflow")
+        dir.path().join("selflow-ui")
     );
     assert_eq!(
         lock_program_from(Path::new("/nowhere/selflowd")),
-        PathBuf::from("selflow")
+        PathBuf::from("selflow-ui")
     );
 }
 

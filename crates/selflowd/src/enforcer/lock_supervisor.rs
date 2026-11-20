@@ -128,11 +128,11 @@ impl Running {
 }
 
 pub fn lock_program_from(current_exe: &Path) -> PathBuf {
-    let sibling = current_exe.with_file_name("selflow");
+    let sibling = current_exe.with_file_name("selflow-ui");
     if sibling.exists() {
         return sibling;
     }
-    PathBuf::from("selflow")
+    PathBuf::from("selflow-ui")
 }
 
 fn start(shared: &Arc<Shared>) {

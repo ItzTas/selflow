@@ -1,8 +1,8 @@
+pub mod backend;
 mod model;
 mod style;
 mod view;
 
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -10,15 +10,12 @@ use iced::futures::channel::mpsc;
 use iced::futures::{SinkExt, Stream};
 use iced::keyboard::{self, key};
 use iced::{Element, Event, Subscription, Task, event, window};
-use iced_exwlshell::shell::{self, ShellEvent, ShellReceiver};
-use iced_exwlshell::{ExWlSettings, to_sessionlock_message};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
+use selflow_client::client::{ClientError, LockFeed, exchange};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
-use selflow_platform::transport::connect;
-use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
-use tokio::io::BufReader;
+use selflow_protocol::ipc::{LockView, Request, Response};
 
 pub use model::{ExtensionArea, FormError, LockEffect, LockEvent, LockModel, Screen};
 
@@ -28,30 +25,25 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
+    #[error("no runtime directory is set")]
+    NoRuntimeDir,
     #[error("the session lock failed: {0}")]
-    Session(#[from] iced_exwlshell::Error),
+    Session(#[from] backend::BackendError),
     #[error("the preview window failed: {0}")]
     Preview(#[from] iced::Error),
 }
 
-pub fn run_session_lock(socket: PathBuf) -> Result<(), LockError> {
-    let (shell_broadcast, shell) = shell::channel();
-    let boot = move || {
-        let session = Session {
-            socket: socket.clone(),
-            shell: shell.clone(),
-        };
-        LockScreen::new(Some(session), Language::En)
-    };
-    iced_exwlshell::sessionlock::application(boot, LockScreen::update, LockScreen::view)
-        .wl_settings(ExWlSettings {
-            shell_broadcast,
-            ..ExWlSettings::default()
-        })
-        .theme(style::theme())
-        .subscription(LockScreen::subscription)
-        .run()?;
-    Ok(())
+#[derive(Debug, Clone)]
+pub enum Message {
+    Lock(LockEvent),
+    Close,
+}
+
+pub struct LockScreen {
+    model: LockModel,
+    localizer: Localizer,
+    tz: TimeZone,
+    socket: Option<PathBuf>,
 }
 
 pub fn run_preview() -> Result<(), LockError> {
@@ -63,33 +55,17 @@ pub fn run_preview() -> Result<(), LockError> {
     Ok(())
 }
 
-#[to_sessionlock_message]
-#[derive(Debug, Clone)]
-enum Message {
-    Lock(LockEvent),
-    LockLost(ShellEvent),
-    Close,
-}
-
-struct Session {
-    socket: PathBuf,
-    shell: ShellReceiver,
-}
-
-struct LockScreen {
-    model: LockModel,
-    localizer: Localizer,
-    tz: TimeZone,
-    session: Option<Session>,
-}
-
 impl LockScreen {
-    fn new(session: Option<Session>, language: Language) -> Self {
+    pub fn session(socket: PathBuf) -> Self {
+        LockScreen::new(Some(socket), Language::En)
+    }
+
+    fn new(socket: Option<PathBuf>, language: Language) -> Self {
         LockScreen {
             model: LockModel::new(Timestamp::now()),
             localizer: Localizer::new(language),
             tz: TimeZone::system(),
-            session,
+            socket,
         }
     }
 
@@ -103,35 +79,25 @@ impl LockScreen {
         self.localizer.text("lock-brand", &[])
     }
 
-    fn update(&mut self, message: Message) -> Task<Message> {
+    pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Lock(event) => self.apply(event),
-            Message::LockLost(event) => {
-                tracing::warn!(
-                    ?event,
-                    "the compositor denied or ended the session lock; exiting so a new client takes it"
-                );
-                iced::exit()
-            }
             Message::Close => self.close(),
         }
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self) -> Element<'_, Message> {
         view::lock_screen(&self.model, &self.localizer, &self.tz).map(Message::Lock)
     }
 
-    fn subscription(&self) -> Subscription<Message> {
-        let sources = match &self.session {
-            Some(session) => Subscription::batch([
-                Subscription::run_with(session.socket.clone(), |socket| {
-                    daemon_events(socket.clone())
-                }),
-                session.shell.listen().filter_map(lock_lost),
-            ]),
+    pub fn subscription(&self) -> Subscription<Message> {
+        let source = match &self.socket {
+            Some(socket) => {
+                Subscription::run_with(socket.clone(), |socket| daemon_events(socket.clone()))
+            }
             None => event::listen_with(on_escape),
         };
-        Subscription::batch([ticks(), keyboard::listen().filter_map(on_enter), sources])
+        Subscription::batch([ticks(), keyboard::listen().filter_map(on_enter), source])
     }
 
     fn apply(&mut self, event: LockEvent) -> Task<Message> {
@@ -148,7 +114,7 @@ impl LockScreen {
     }
 
     fn close(&self) -> Task<Message> {
-        if self.session.is_some() {
+        if self.socket.is_some() {
             return Task::none();
         }
         iced::exit()
@@ -163,11 +129,11 @@ impl LockScreen {
     }
 
     fn request_extension(&self, reason: String, phrase: String) -> Task<Message> {
-        let Some(session) = &self.session else {
+        let Some(socket) = &self.socket else {
             return Task::none();
         };
         Task::perform(
-            ask_for_extension(session.socket.clone(), reason, phrase),
+            ask_for_extension(socket.clone(), reason, phrase),
             Message::Lock,
         )
     }
@@ -214,13 +180,6 @@ fn on_escape(event: Event, _status: event::Status, _window: window::Id) -> Optio
     Some(Message::Close)
 }
 
-fn lock_lost(event: ShellEvent) -> Option<Message> {
-    match event {
-        ShellEvent::LockDenied | ShellEvent::LockedFinished => Some(Message::LockLost(event)),
-        _ => None,
-    }
-}
-
 fn daemon_events(socket: PathBuf) -> impl Stream<Item = Message> {
     iced::stream::channel(8, async move |mut output: mpsc::Sender<Message>| {
         loop {
@@ -233,10 +192,9 @@ fn daemon_events(socket: PathBuf) -> impl Stream<Item = Message> {
     })
 }
 
-async fn follow_lock(socket: &Path, output: &mut mpsc::Sender<Message>) -> io::Result<()> {
-    let mut stream = BufReader::new(connect(socket).await?);
-    write_message(stream.get_mut(), &Request::SubscribeLock).await?;
-    while let Some(response) = read_message(&mut stream).await? {
+async fn follow_lock(socket: &Path, output: &mut mpsc::Sender<Message>) -> Result<(), ClientError> {
+    let mut feed = LockFeed::open(socket).await?;
+    while let Some(response) = feed.next().await? {
         let Some(event) = lock_event(response) else {
             continue;
         };
@@ -257,14 +215,14 @@ fn lock_event(response: Response) -> Option<LockEvent> {
 
 async fn ask_for_extension(socket: PathBuf, reason: String, phrase: String) -> LockEvent {
     let request = Request::RequestExtension { reason, phrase };
-    let answer = tokio::time::timeout(REQUEST_TIMEOUT, exchange(&socket, &request))
-        .await
-        .unwrap_or_else(|_| {
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "the daemon didn't answer in time",
-            ))
-        });
+    let Ok(answer) = tokio::time::timeout(REQUEST_TIMEOUT, exchange(&socket, &request)).await
+    else {
+        tracing::warn!(
+            timeout = ?REQUEST_TIMEOUT,
+            "the daemon didn't answer the extension request in time"
+        );
+        return LockEvent::RequestFailed;
+    };
     match answer {
         Ok(Response::ExtensionGranted { .. }) => LockEvent::Granted,
         Ok(Response::ExtensionRefused(refusal)) => LockEvent::Refused(refusal),
@@ -280,15 +238,4 @@ async fn ask_for_extension(socket: PathBuf, reason: String, phrase: String) -> L
             LockEvent::RequestFailed
         }
     }
-}
-
-async fn exchange(socket: &Path, request: &Request) -> io::Result<Response> {
-    let mut stream = BufReader::new(connect(socket).await?);
-    write_message(stream.get_mut(), request).await?;
-    read_message(&mut stream).await?.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the daemon closed the connection without answering",
-        )
-    })
 }

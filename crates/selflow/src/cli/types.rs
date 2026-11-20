@@ -4,8 +4,7 @@ use selflow_client::client::ClientError;
 use selflow_protocol::ipc::MessageView;
 use std::io;
 
-use super::commands::{LockArgs, TestLockArgs};
-use crate::lock::LockError;
+use super::commands::TestLockArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "selflow", arg_required_else_help = true)]
@@ -19,8 +18,6 @@ pub enum Command {
     Config(ConfigArgs),
     Report(ReportArgs),
     TestLock(TestLockArgs),
-    #[command(hide = true)]
-    Lock(LockArgs),
 }
 
 #[derive(Debug, Args)]
@@ -55,8 +52,6 @@ pub enum CliError {
     UnexpectedResponse,
     #[error("the daemon reported an error")]
     Daemon(MessageView),
-    #[error("the lock screen failed: {0}")]
-    Lock(#[from] LockError),
 }
 
 impl From<ClientError> for CliError {

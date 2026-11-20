@@ -1,7 +1,7 @@
 mod support;
 
-use selflow::lock::{ExtensionArea, FormError, LockEffect, LockEvent, LockModel, Screen};
 use selflow_protocol::ipc::{LockView, RefusalView};
+use selflow_ui::lock::{ExtensionArea, FormError, LockEffect, LockEvent, LockModel, Screen};
 use support::{at, view};
 
 #[test]

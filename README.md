@@ -32,14 +32,14 @@ The first time, run `selflow config edit`. It opens the default file in your lan
 
 Run `selflow config status` to see the version in force and any changes waiting to apply. Run `selflow report` to see what happened on past nights.
 
-`selflow lock --preview` shows the lock screen in a normal window, without locking.
+`selflow-ui --preview` shows the lock screen in a normal window, without locking.
 
 ### If another screen locker runs when you're idle
 
 Guard it so it doesn't take over during a Selflow lock. For example, start your locker like this in your idle settings:
 
 ```sh
-pgrep -f "selflow lock" >/dev/null || <your locker command>
+pgrep -f "selflow-ui --lock" >/dev/null || <your locker command>
 ```
 
 ### If a lock screen stays up after the lock ended
@@ -47,7 +47,7 @@ pgrep -f "selflow lock" >/dev/null || <your locker command>
 This can happen when the daemon restarts at the exact moment a lock ends. Switch to another TTY, log in and, while `selflowd` is running, start a new lock client:
 
 ```sh
-hyprctl --instance 0 dispatch exec "selflow lock"
+hyprctl --instance 0 dispatch exec "selflow-ui --lock"
 ```
 
 The new client sees that no lock is active and releases the session.
