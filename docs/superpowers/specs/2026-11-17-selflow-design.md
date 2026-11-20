@@ -412,7 +412,7 @@ Claude's proposal, approved by the owner.
 - Showing them also means they can be read. A theme can move and style those two, but Selflow
   keeps them inside the screen, at a minimum size, on a backing plate with enough contrast, so a
   theme can't make them tiny, push them off screen or paint them in the background color.
-  (Claude's call, after a review by another session)
+  (Claude's call after a review by another session, approved by the owner)
 - A theme can't run commands, unlike hyprlock's `cmd[]`. A lock screen that runs scripts on a
   timer breaks the resource budget (section 15) and is a risk on a locked screen.
 - Animations stay calm, with no flashing (section 4).
@@ -462,6 +462,9 @@ Approved by the owner. This rule keeps "everything configurable" from turning in
   loosens or tightens, it treats it as loosening.
 - Changing a notice, an email or the text of a message is neutral and takes effect right away.
   (Claude's call)
+- So is adding, deleting or moving a rule whose only steps are notices or emails, because it
+  enforces nothing. The "deleted rule" above means a rule with a lock, a shutdown, a block or a
+  Claude step. (Claude's call, approved by the owner on 2026-11-20)
 - Each change in a save keeps its own clock (owner, 2026-11-20). The stricter and neutral changes
   in a save take effect right away, and its loosening changes wait their 24 hours. A later save
   doesn't restart the wait of a change already waiting: it only adds its own changes, each with
