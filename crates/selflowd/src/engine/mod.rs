@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil, tz::TimeZone};
-use selflow_core::config::{Config, parse};
+use selflow_core::config::{Action, Config, parse};
 use selflow_core::enforce::{ActiveLock, Enforcement, NightLog, Warning, evaluate};
 use selflow_core::plan::LockWindow;
 use selflow_core::timing::{Seed, logical_date};
@@ -302,8 +302,9 @@ pub fn lock_view(lock: &ActiveLock, language: &str) -> LockView {
 
 fn holds_rule(config: &Config, window: &LockWindow) -> bool {
     config
-        .rule_set_for(window.logical_date.weekday())
-        .is_some_and(|set| set.locks.iter().any(|rule| rule.id == window.rule_id))
+        .rules_on(window.logical_date.weekday())
+        .iter()
+        .any(|rule| rule.id == window.rule_id && matches!(rule.action, Action::Lock { .. }))
 }
 
 fn parsed(version: Option<&StoredVersion>) -> Result<Config, EngineError> {

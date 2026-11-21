@@ -160,12 +160,13 @@ reason = true
 extensions = 1
 extension_length = "20m"
 
-[[rule_set.lock]]
+[[rule_set.rule]]
 id = "bedtime"
 start = "bedtime"
 start_jitter = "15m"
 end = "wake"
-warnings = ["5m", "15m", "1m"]
+notices = ["5m", "15m", "1m"]
+lock = true
 shutdown_after = "30m"
 "#;
 

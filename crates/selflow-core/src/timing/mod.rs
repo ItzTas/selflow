@@ -9,14 +9,25 @@ use jiff::{
 pub use types::{Seed, TimingError};
 
 pub fn parse_duration(text: &str) -> Result<SignedDuration, TimingError> {
-    let duration: SignedDuration = text
-        .trim()
-        .parse()
-        .map_err(|_| TimingError::Invalid(text.to_string()))?;
+    let duration = signed_duration(text)?;
     if duration <= SignedDuration::ZERO {
         return Err(TimingError::NotPositive(text.to_string()));
     }
     Ok(duration)
+}
+
+pub fn parse_offset(text: &str) -> Result<SignedDuration, TimingError> {
+    let duration = signed_duration(text)?;
+    if duration < SignedDuration::ZERO {
+        return Err(TimingError::Negative(text.to_string()));
+    }
+    Ok(duration)
+}
+
+fn signed_duration(text: &str) -> Result<SignedDuration, TimingError> {
+    text.trim()
+        .parse()
+        .map_err(|_| TimingError::Invalid(text.to_string()))
 }
 
 pub fn parse_clock(text: &str) -> Result<civil::Time, TimingError> {

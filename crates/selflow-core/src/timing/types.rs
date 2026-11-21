@@ -9,4 +9,6 @@ pub enum TimingError {
     Invalid(String),
     #[error("duration must be positive: {0}")]
     NotPositive(String),
+    #[error("duration must not be negative: {0}")]
+    Negative(String),
 }

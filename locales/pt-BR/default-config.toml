@@ -5,21 +5,21 @@ day_starts_at = "05:00"
 # Quanto tempo uma mudança que afrouxa as regras espera antes de valer.
 loosening_delay = "24h"
 
-# Horários com nome que um bloqueio pode usar como início ou fim.
+# Horários com nome que uma regra pode usar como início ou fim.
 [anchors]
 # O horário em que você pretende estar na cama.
 bedtime = "23:00"
 # O horário em que você pretende levantar.
 wake = "07:00"
 
-# Um grupo de bloqueios e desafios de desbloqueio para os dias listados abaixo.
+# Um grupo de regras e desafios de desbloqueio para os dias listados abaixo.
 [[rule_set]]
 # O nome deste conjunto de regras.
 name = "every-night"
 # Os dias que este conjunto de regras cobre, de "mon" (segunda) a "sun" (domingo).
 days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
-# O que é preciso para desbloquear a tela durante um bloqueio.
+# O que é preciso para desbloquear a tela durante um bloqueio; cada regra abaixo parte destes valores.
 [rule_set.challenges]
 # Quanto tempo esperar até a opção de desbloqueio aparecer.
 wait = "2m"
@@ -27,24 +27,46 @@ wait = "2m"
 reason = true
 # Uma frase para digitar antes de desbloquear; um valor vazio significa nenhuma.
 phrase = ""
-# Quantas extensões cada noite permite.
+# Quantas extensões cada regra permite por dia.
 extensions = 1
 # Quanto tempo dura cada extensão.
 extension_length = "20m"
 
-# Um bloqueio: a tela fica bloqueada do início ao fim.
-[[rule_set.lock]]
-# Um nome curto para este bloqueio, único dentro do seu conjunto de regras.
+# Uma regra: no início, o Selflow manda os avisos dela e depois faz a ação dela.
+[[rule_set.rule]]
+# Um nome curto para esta regra, único dentro do seu conjunto de regras.
 id = "bedtime"
-# O nome mostrado na tela de bloqueio.
+# O nome mostrado nos avisos e na tela de bloqueio.
 label = "Hora de dormir"
-# Quando o bloqueio começa: o nome de uma âncora ou um horário como "23:00".
+# Quando a regra começa: o nome de uma âncora ou um horário como "23:00".
 start = "bedtime"
-# O bloqueio começa num momento aleatório até este tempo depois do início; "0m" mantém o horário exato.
+# A regra começa num momento aleatório até este tempo depois do início; "0m" mantém o horário exato.
 start_jitter = "15m"
-# Quando o bloqueio termina: o nome de uma âncora ou um horário como "07:00".
+# Quando a regra termina: o nome de uma âncora ou um horário como "07:00"; length = "8h" também funciona.
 end = "wake"
-# Com quanta antecedência cada aviso chega antes do bloqueio.
-warnings = ["15m", "5m", "1m"]
+# Com quanta antecedência cada aviso chega antes do início; "0m" manda um bem no início.
+notices = ["15m", "5m", "1m"]
+# Bloqueia a tela do início ao fim.
+lock = true
 # Desliga o computador se a tela ficar bloqueada por este tempo; remova a linha para nunca desligar.
 shutdown_after = "30m"
+# Suas próprias palavras para os avisos; com uma lista, o Selflow escolhe uma a cada dia.
+# message = ["Hora de desacelerar.", "O dia terminou. Descanse bem."]
+# Em vez de lock e shutdown_after, uma regra pode desligar o computador no início; "repeat" desliga de novo a cada vez que ele liga, até a regra terminar.
+# shutdown = "once"
+
+# Desafios só para esta regra, por cima dos que vêm do conjunto de regras.
+# [rule_set.rule.challenges]
+# extensions = 0
+
+# Um lembrete: uma regra só com início e mensagem manda um aviso quando começa.
+# [[rule_set.rule]]
+# id = "stretch"
+# start = "21:00"
+# message = "Um bom momento para se alongar e beber um pouco de água."
+
+# Um dia de folga: nesta data, as regras listadas não acontecem, ou nenhuma regra quando rules fica de fora.
+# Adicionar um espera como qualquer mudança que afrouxa as regras, então adicione pelo menos um dia antes.
+# [[exception]]
+# date = "2026-12-25"
+# rules = ["bedtime"]

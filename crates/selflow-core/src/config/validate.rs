@@ -3,18 +3,19 @@ use std::collections::{HashMap, HashSet};
 
 use jiff::{
     SignedDuration,
-    civil::{Time, Weekday},
+    civil::{self, Time, Weekday},
 };
 use toml::Spanned;
 
 use super::constants::{
-    DAYS, DEFAULT_DAY_STARTS_AT, DEFAULT_EXTENSION_LENGTH, DEFAULT_EXTENSIONS, DEFAULT_LANGUAGE,
-    DEFAULT_LOOSENING_DELAY, DEFAULT_REASON, DEFAULT_WAIT, DEFAULT_WARNINGS, SUPPORTED_LANGUAGES,
+    DAYS, DEFAULT_CHALLENGES, DEFAULT_DAY_STARTS_AT, DEFAULT_LANGUAGE, DEFAULT_LOOSENING_DELAY,
+    SHUTDOWN_REPEATS, SUPPORTED_LANGUAGES,
 };
+use super::day_tag;
 use super::error::ConfigError;
-use super::raw::{RawChallenges, RawConfig, RawLock, RawRuleSet};
-use super::types::{Challenges, Config, LockRule, RuleSet};
-use crate::timing::{TimingError, parse_clock, parse_duration};
+use super::raw::{RawChallenges, RawConfig, RawException, RawRule, RawRuleSet};
+use super::types::{Action, Challenges, Config, Exception, Rule, RuleEnd, RuleSet};
+use crate::timing::{TimingError, parse_clock, parse_duration, parse_offset};
 
 type Args = Vec<(&'static str, String)>;
 
@@ -28,6 +29,7 @@ struct Window<'r> {
     at: &'r Spanned<String>,
     start: Time,
     length: SignedDuration,
+    locks: bool,
 }
 
 impl Window<'_> {
@@ -67,11 +69,13 @@ impl Check<'_> {
             day_starts_at,
         };
         let rule_sets = self.rule_sets(&raw.rule_set, &context);
+        let exceptions = self.exceptions(&raw.exception, &raw.rule_set);
         Some(Config {
             language: language?,
             day_starts_at: day_starts_at?,
             loosening_delay: loosening_delay?,
             rule_sets: rule_sets?,
+            exceptions: exceptions?,
         })
     }
 
@@ -104,19 +108,27 @@ impl Check<'_> {
         claimed: &mut HashMap<Weekday, &'r str>,
     ) -> Option<RuleSet> {
         let days = self.days(set, claimed);
-        let challenges = self.challenges(&set.challenges);
-        self.duplicate_locks(set);
-        let (locks, windows): (Vec<_>, Vec<_>) =
-            set.lock.iter().map(|lock| self.lock(lock, context)).unzip();
+        let challenges = self.challenges(&set.challenges, &DEFAULT_CHALLENGES);
+        let inherited = challenges.clone().unwrap_or(DEFAULT_CHALLENGES);
+        self.duplicate_rules(set);
+        let (rules, windows): (Vec<_>, Vec<_>) = set
+            .rule
+            .iter()
+            .map(|rule| self.rule(rule, context, &inherited))
+            .unzip();
         if let Some(day_starts_at) = context.day_starts_at {
-            let windows: Vec<_> = windows.into_iter().flatten().collect();
-            self.overlaps(set, &days, &windows, day_starts_at);
+            let locks: Vec<_> = windows
+                .into_iter()
+                .flatten()
+                .filter(|window| window.locks)
+                .collect();
+            self.overlaps(set, &days, &locks, day_starts_at);
         }
+        let rules: Option<Vec<Rule>> = rules.into_iter().collect();
         Some(RuleSet {
             name: set.name.get_ref().clone(),
             days,
-            challenges: challenges?,
-            locks: locks.into_iter().collect::<Option<_>>()?,
+            rules: challenges.and(rules)?,
         })
     }
 
@@ -156,97 +168,121 @@ impl Check<'_> {
         day
     }
 
-    fn challenges(&mut self, raw: &RawChallenges) -> Option<Challenges> {
-        let wait = self.duration_or(raw.wait.as_ref(), DEFAULT_WAIT);
+    fn challenges(&mut self, raw: &RawChallenges, inherited: &Challenges) -> Option<Challenges> {
+        let wait = self.duration_or(raw.wait.as_ref(), inherited.wait);
         let extension_length =
-            self.duration_or(raw.extension_length.as_ref(), DEFAULT_EXTENSION_LENGTH);
+            self.duration_or(raw.extension_length.as_ref(), inherited.extension_length);
         Some(Challenges {
             wait: wait?,
             reason: raw
                 .reason
                 .as_ref()
-                .map_or(DEFAULT_REASON, |reason| *reason.get_ref()),
-            phrase: raw
-                .phrase
-                .as_ref()
-                .map(|phrase| phrase.get_ref().clone())
-                .filter(|phrase| !phrase.is_empty()),
+                .map_or(inherited.reason, |reason| *reason.get_ref()),
+            phrase: raw.phrase.as_ref().map_or_else(
+                || inherited.phrase.clone(),
+                |phrase| Some(phrase.get_ref().clone()).filter(|phrase| !phrase.is_empty()),
+            ),
             extensions: raw
                 .extensions
                 .as_ref()
-                .map_or(DEFAULT_EXTENSIONS, |extensions| *extensions.get_ref()),
+                .map_or(inherited.extensions, |extensions| *extensions.get_ref()),
             extension_length: extension_length?,
         })
     }
 
-    fn duplicate_locks(&mut self, set: &RawRuleSet) {
+    fn duplicate_rules(&mut self, set: &RawRuleSet) {
         let mut ids = HashSet::new();
-        for lock in &set.lock {
-            if ids.insert(lock.id.get_ref()) {
+        for rule in &set.rule {
+            if ids.insert(rule.id.get_ref()) {
                 continue;
             }
             let args = vec![
-                ("id", lock.id.get_ref().clone()),
+                ("id", rule.id.get_ref().clone()),
                 ("set", set.name.get_ref().clone()),
             ];
-            self.report(&lock.id, "config-duplicate-lock", args);
+            self.report(&rule.id, "config-duplicate-rule", args);
         }
     }
 
-    fn lock<'r>(
+    fn rule<'r>(
         &mut self,
-        raw: &'r RawLock,
+        raw: &'r RawRule,
         context: &Context,
-    ) -> (Option<LockRule>, Option<Window<'r>>) {
+        inherited: &Challenges,
+    ) -> (Option<Rule>, Option<Window<'r>>) {
         let start = self.moment(&raw.start, context);
-        let end = self.moment(&raw.end, context);
+        let end = self.end(raw, context);
         let jitter = self.jitter(raw.start_jitter.as_ref());
-        let warnings = self.warnings(raw.warnings.as_deref());
-        let shutdown_after = self.optional_duration(raw.shutdown_after.as_ref());
         let window = start
             .zip(end)
-            .and_then(|(start, end)| self.window(raw, start, end, jitter));
-        let rule = match (start, end, jitter, warnings, shutdown_after) {
-            (Some(start), Some(end), Some(start_jitter), Some(warnings), Some(shutdown_after)) => {
-                Some(LockRule {
-                    id: raw.id.get_ref().clone(),
-                    label: raw.label.as_ref().unwrap_or(&raw.id).get_ref().clone(),
-                    start,
-                    start_jitter,
-                    end,
-                    warnings,
-                    shutdown_after,
-                })
-            }
-            _ => None,
-        };
+            .and_then(|(start, end)| self.window(raw, start, end, jitter, context.day_starts_at));
+        let rule = self.rule_with(raw, inherited, start, jitter, end);
         (rule, window)
+    }
+
+    fn rule_with(
+        &mut self,
+        raw: &RawRule,
+        inherited: &Challenges,
+        start: Option<Time>,
+        start_jitter: Option<SignedDuration>,
+        end: Option<RuleEnd>,
+    ) -> Option<Rule> {
+        let notices = self.notices(raw.notices.as_deref());
+        let message = self.message(raw);
+        let action = self.action(raw);
+        let challenges = self.challenges(&raw.challenges, inherited);
+        Some(Rule {
+            id: raw.id.get_ref().clone(),
+            label: raw.label.as_ref().unwrap_or(&raw.id).get_ref().clone(),
+            start: start?,
+            start_jitter: start_jitter?,
+            end: end?,
+            notices: notices?,
+            message: message?,
+            action: action?,
+            challenges: challenges?,
+        })
+    }
+
+    fn end(&mut self, raw: &RawRule, context: &Context) -> Option<RuleEnd> {
+        let end = raw.end.as_ref().map(|end| self.moment(end, context));
+        let length = raw.length.as_ref().map(|length| self.duration(length));
+        if let (Some(_), Some(value)) = (&raw.end, &raw.length) {
+            self.report(value, "config-end-and-length", id_arg(raw));
+            return None;
+        }
+        match (end, length) {
+            (Some(end), _) => end.map(RuleEnd::At),
+            (_, Some(length)) => length.map(RuleEnd::After),
+            (None, None) => Some(RuleEnd::DayEnd),
+        }
     }
 
     fn window<'r>(
         &mut self,
-        lock: &'r RawLock,
+        raw: &'r RawRule,
         start: Time,
-        end: Time,
+        end: RuleEnd,
         jitter: Option<SignedDuration>,
+        day_starts_at: Option<Time>,
     ) -> Option<Window<'r>> {
-        let length = minutes_after(start, end);
-        if length.is_zero() {
-            let args = vec![("id", lock.id.get_ref().clone())];
-            self.report(&lock.end, "config-empty-window", args);
+        let length = window_length(start, end, day_starts_at)?;
+        if let Some(value) = raw.end.as_ref().filter(|_| length.is_zero()) {
+            self.report(value, "config-empty-window", id_arg(raw));
             return None;
         }
-        if let Some(value) = &lock.start_jitter
+        if let Some(value) = &raw.start_jitter
             && jitter.is_some_and(|jitter| jitter >= length)
         {
-            let args = vec![("id", lock.id.get_ref().clone())];
-            self.report(value, "config-jitter-too-long", args);
+            self.report(value, "config-jitter-too-long", id_arg(raw));
         }
         Some(Window {
-            id: lock.id.get_ref(),
-            at: &lock.start,
+            id: raw.id.get_ref(),
+            at: &raw.start,
             start,
             length,
+            locks: locks(raw),
         })
     }
 
@@ -280,14 +316,134 @@ impl Check<'_> {
         }
     }
 
-    fn warnings(&mut self, values: Option<&[Spanned<String>]>) -> Option<Vec<SignedDuration>> {
+    fn notices(
+        &mut self,
+        values: Option<&[Spanned<String>]>,
+    ) -> Option<Option<Vec<SignedDuration>>> {
         let Some(values) = values else {
-            return Some(DEFAULT_WARNINGS.to_vec());
+            return Some(None);
         };
-        let parsed: Vec<_> = values.iter().map(|value| self.duration(value)).collect();
-        let mut warnings: Vec<_> = parsed.into_iter().collect::<Option<_>>()?;
-        warnings.sort_by_key(|warning| Reverse(*warning));
-        Some(warnings)
+        let parsed: Vec<_> = values.iter().map(|value| self.offset(value)).collect();
+        let mut notices: Vec<_> = parsed.into_iter().collect::<Option<_>>()?;
+        notices.sort_by_key(|notice| Reverse(*notice));
+        Some(Some(notices))
+    }
+
+    fn message(&mut self, raw: &RawRule) -> Option<Vec<String>> {
+        let Some(value) = &raw.message else {
+            return Some(Vec::new());
+        };
+        let Some(texts) = texts(value.get_ref()) else {
+            self.report(value, "config-bad-message", id_arg(raw));
+            return None;
+        };
+        if texts.iter().any(|text| text.trim().is_empty()) {
+            self.report(value, "config-empty-message", id_arg(raw));
+            return None;
+        }
+        Some(texts)
+    }
+
+    fn action(&mut self, raw: &RawRule) -> Option<Action> {
+        let shutdown_after = self.optional_duration(raw.shutdown_after.as_ref());
+        match raw.lock.as_ref().filter(|lock| *lock.get_ref()) {
+            Some(lock) => self.lock(raw, lock, shutdown_after),
+            None => self.without_lock(raw),
+        }
+    }
+
+    fn lock(
+        &mut self,
+        raw: &RawRule,
+        lock: &Spanned<bool>,
+        shutdown_after: Option<Option<SignedDuration>>,
+    ) -> Option<Action> {
+        let has_end = raw.end.is_some() || raw.length.is_some();
+        if !has_end {
+            self.report(lock, "config-lock-needs-end", id_arg(raw));
+        }
+        if let Some(shutdown) = &raw.shutdown {
+            self.report(shutdown, "config-shutdown-with-lock", id_arg(raw));
+        }
+        let shutdown_after = shutdown_after?;
+        (has_end && raw.shutdown.is_none()).then_some(Action::Lock { shutdown_after })
+    }
+
+    fn without_lock(&mut self, raw: &RawRule) -> Option<Action> {
+        let action = raw
+            .shutdown
+            .as_ref()
+            .map_or(Some(Action::Nothing), |value| self.shutdown(value));
+        let Some(value) = &raw.shutdown_after else {
+            return action;
+        };
+        self.report(value, "config-shutdown-after-needs-lock", id_arg(raw));
+        None
+    }
+
+    fn shutdown(&mut self, value: &Spanned<String>) -> Option<Action> {
+        let repeat = SHUTDOWN_REPEATS
+            .iter()
+            .find(|(name, _)| *name == value.get_ref().as_str())
+            .map(|(_, repeat)| *repeat);
+        if repeat.is_none() {
+            self.report(value, "config-bad-shutdown", value_arg(value));
+        }
+        repeat.map(|repeat| Action::ShutDown { repeat })
+    }
+
+    fn exceptions(&mut self, raw: &[RawException], sets: &[RawRuleSet]) -> Option<Vec<Exception>> {
+        let mut dates = HashSet::new();
+        let mut exceptions = Vec::new();
+        for exception in raw {
+            exceptions.push(self.exception(exception, sets, &mut dates));
+        }
+        exceptions.into_iter().collect()
+    }
+
+    fn exception(
+        &mut self,
+        raw: &RawException,
+        sets: &[RawRuleSet],
+        dates: &mut HashSet<civil::Date>,
+    ) -> Option<Exception> {
+        let date = self.date(&raw.date)?;
+        if !dates.insert(date) {
+            let args = vec![("date", raw.date.get_ref().clone())];
+            self.report(&raw.date, "config-duplicate-exception", args);
+        }
+        let known = rule_ids_on(sets, date.weekday());
+        for rule in raw
+            .rules
+            .iter()
+            .filter(|rule| !known.contains(rule.get_ref().as_str()))
+        {
+            let args = vec![
+                ("date", raw.date.get_ref().clone()),
+                ("rule", rule.get_ref().clone()),
+            ];
+            self.report(rule, "config-exception-unknown-rule", args);
+        }
+        Some(Exception {
+            date,
+            rules: raw
+                .rules
+                .iter()
+                .map(|rule| rule.get_ref().clone())
+                .collect(),
+        })
+    }
+
+    fn date(&mut self, value: &Spanned<String>) -> Option<civil::Date> {
+        let date = value
+            .get_ref()
+            .parse::<civil::Date>()
+            .ok()
+            .filter(|date| date.to_string() == *value.get_ref());
+        if date.is_none() {
+            self.report(value, "config-bad-date", value_arg(value));
+        }
+        date
     }
 
     fn moment(&mut self, value: &Spanned<String>, context: &Context) -> Option<Time> {
@@ -344,10 +500,23 @@ impl Check<'_> {
     }
 
     fn duration(&mut self, value: &Spanned<String>) -> Option<SignedDuration> {
-        let id = match parse_duration(value.get_ref()) {
+        self.timed(value, parse_duration)
+    }
+
+    fn offset(&mut self, value: &Spanned<String>) -> Option<SignedDuration> {
+        self.timed(value, parse_offset)
+    }
+
+    fn timed(
+        &mut self,
+        value: &Spanned<String>,
+        parse: fn(&str) -> Result<SignedDuration, TimingError>,
+    ) -> Option<SignedDuration> {
+        let id = match parse(value.get_ref()) {
             Ok(duration) => return Some(duration),
             Err(TimingError::Invalid(_)) => "config-bad-duration",
             Err(TimingError::NotPositive(_)) => "config-not-positive",
+            Err(TimingError::Negative(_)) => "config-negative-offset",
         };
         self.report(value, id, value_arg(value));
         None
@@ -371,8 +540,49 @@ impl Check<'_> {
     }
 }
 
+fn window_length(start: Time, end: RuleEnd, day_starts_at: Option<Time>) -> Option<SignedDuration> {
+    match end {
+        RuleEnd::At(end) => Some(minutes_after(start, end)),
+        RuleEnd::After(length) => Some(length),
+        RuleEnd::DayEnd => day_starts_at.map(|day_starts_at| {
+            SignedDuration::from_hours(24) - minutes_after(day_starts_at, start)
+        }),
+    }
+}
+
+fn texts(value: &toml::Value) -> Option<Vec<String>> {
+    match value {
+        toml::Value::String(text) => Some(vec![text.clone()]),
+        toml::Value::Array(items) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect(),
+        _ => None,
+    }
+}
+
+fn rule_ids_on(sets: &[RawRuleSet], day: Weekday) -> HashSet<&str> {
+    sets.iter()
+        .find(|set| set.days.iter().any(|value| value.get_ref() == day_tag(day)))
+        .map(|set| {
+            set.rule
+                .iter()
+                .map(|rule| rule.id.get_ref().as_str())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn locks(raw: &RawRule) -> bool {
+    raw.lock.as_ref().is_some_and(|lock| *lock.get_ref())
+}
+
 fn minutes_after(from: Time, to: Time) -> SignedDuration {
     SignedDuration::from_mins(to.duration_since(from).as_mins().rem_euclid(24 * 60))
+}
+
+fn id_arg(raw: &RawRule) -> Args {
+    vec![("id", raw.id.get_ref().clone())]
 }
 
 fn value_arg(value: &Spanned<String>) -> Args {

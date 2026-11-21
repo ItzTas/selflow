@@ -2,7 +2,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 use selflow_core::challenge::{ExtensionAnswer, Refusal, request_extension};
-use selflow_core::config::{Config, ConfigError, LockRule, RuleSet, parse};
+use selflow_core::config::{Action, Config, ConfigError, Rule, RuleSet, parse};
 use selflow_core::enforce::{Enforcement, GrantedExtension, evaluate};
 use selflow_core::plan::{LockWindow, windows_around};
 use selflow_core::timing::logical_date;
@@ -222,9 +222,9 @@ fn test_lock(
         logical_date: today,
         starts_at: now.clone(),
         ends_at: now.checked_add(duration)?,
-        warnings: lock.warnings.clone(),
+        warnings: lock.notice_offsets(),
         shutdown_after: None,
-        challenges: set.challenges.clone(),
+        challenges: lock.challenges.clone(),
         test: true,
     };
     store.record_started(&window)?;
@@ -238,19 +238,19 @@ fn chosen_rule<'a>(
     config: &'a Config,
     today: civil::Date,
     slug: Option<&str>,
-) -> Result<(&'a RuleSet, &'a LockRule), MessageView> {
+) -> Result<(&'a RuleSet, &'a Rule), MessageView> {
     let Some(slug) = slug else {
         return config
             .rule_set_for(today.weekday())
-            .and_then(|set| set.locks.first().map(|lock| (set, lock)))
+            .and_then(|set| lock_rules(set).next().map(|lock| (set, lock)))
             .ok_or_else(|| message("ipc-test-lock-no-rule", &[]));
     };
-    let rules: Vec<(&RuleSet, &LockRule)> = config
+    let rules: Vec<(&RuleSet, &Rule)> = config
         .rule_sets
         .iter()
-        .flat_map(|set| set.locks.iter().map(move |lock| (set, lock)))
+        .flat_map(|set| lock_rules(set).map(move |lock| (set, lock)))
         .collect();
-    let slug_of = |(set, lock): &(&RuleSet, &LockRule)| format!("{}/{}", set.name, lock.id);
+    let slug_of = |(set, lock): &(&RuleSet, &Rule)| format!("{}/{}", set.name, lock.id);
     if let Some(found) = rules.iter().find(|rule| slug_of(rule) == slug) {
         return Ok(*found);
     }
@@ -259,6 +259,12 @@ fn chosen_rule<'a>(
         "ipc-test-lock-unknown-rule",
         &[("rule", slug.to_owned()), ("rules", valid.join(", "))],
     ))
+}
+
+fn lock_rules(set: &RuleSet) -> impl Iterator<Item = &Rule> {
+    set.rules
+        .iter()
+        .filter(|rule| matches!(rule.action, Action::Lock { .. }))
 }
 
 fn report(

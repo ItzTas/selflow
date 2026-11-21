@@ -13,6 +13,8 @@ pub struct RawConfig {
     pub anchors: HashMap<String, Spanned<String>>,
     #[serde(default)]
     pub rule_set: Vec<RawRuleSet>,
+    #[serde(default)]
+    pub exception: Vec<RawException>,
 }
 
 #[derive(Deserialize)]
@@ -23,7 +25,7 @@ pub struct RawRuleSet {
     #[serde(default)]
     pub challenges: RawChallenges,
     #[serde(default)]
-    pub lock: Vec<RawLock>,
+    pub rule: Vec<RawRule>,
 }
 
 #[derive(Default, Deserialize)]
@@ -38,12 +40,26 @@ pub struct RawChallenges {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RawLock {
+pub struct RawRule {
     pub id: Spanned<String>,
     pub label: Option<Spanned<String>>,
     pub start: Spanned<String>,
     pub start_jitter: Option<Spanned<String>>,
-    pub end: Spanned<String>,
-    pub warnings: Option<Vec<Spanned<String>>>,
+    pub end: Option<Spanned<String>>,
+    pub length: Option<Spanned<String>>,
+    pub notices: Option<Vec<Spanned<String>>>,
+    pub message: Option<Spanned<toml::Value>>,
+    pub lock: Option<Spanned<bool>>,
     pub shutdown_after: Option<Spanned<String>>,
+    pub shutdown: Option<Spanned<String>>,
+    #[serde(default)]
+    pub challenges: RawChallenges,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawException {
+    pub date: Spanned<String>,
+    #[serde(default)]
+    pub rules: Vec<Spanned<String>>,
 }

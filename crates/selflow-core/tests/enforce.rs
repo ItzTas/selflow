@@ -116,8 +116,8 @@ fn huge_durations_saturate_instead_of_overflowing() {
     assert_eq!(lock.extension_available_at, Timestamp::MAX);
     assert_eq!(lock.shutdown_at, None);
     let early = parse(&no_jitter().replace(
-        r#"warnings = ["5m", "15m", "1m"]"#,
-        r#"warnings = ["200000000h"]"#,
+        r#"notices = ["5m", "15m", "1m"]"#,
+        r#"notices = ["200000000h"]"#,
     ))
     .unwrap();
     assert!(matches!(
@@ -129,7 +129,7 @@ fn huge_durations_saturate_instead_of_overflowing() {
 #[test]
 fn the_extension_budget_covers_the_whole_night() {
     let two_locks = parse(&format!(
-        "{}\n[[rule_set.lock]]\nid = \"dawn\"\nstart = \"04:30\"\nend = \"04:50\"\n",
+        "{}\n[[rule_set.rule]]\nid = \"dawn\"\nstart = \"04:30\"\nend = \"04:50\"\nlock = true\n",
         no_jitter().replace(r#"wake = "07:00""#, r#"wake = "04:00""#)
     ))
     .unwrap();
@@ -193,7 +193,7 @@ fn a_started_lock_takes_only_the_stricter_settings_of_a_new_configuration() {
             .replace("extensions = 1", "extensions = 0")
             .replace(r#"extension_length = "20m""#, r#"extension_length = "10m""#)
             .replace(r#"id = "bedtime""#, "id = \"bedtime\"\nlabel = \"sleep\"")
-            .replace(r#"warnings = ["5m", "15m", "1m"]"#, r#"warnings = ["10m"]"#)
+            .replace(r#"notices = ["5m", "15m", "1m"]"#, r#"notices = ["10m"]"#)
             .replace(r#"shutdown_after = "30m""#, r#"shutdown_after = "10m""#),
     );
     assert_eq!(

@@ -3,212 +3,213 @@ use jiff::{
     civil::{Time, Weekday},
 };
 
-use super::types::{Change, ChangeKind};
-use crate::config::{Challenges, Config, LockRule, RuleSet};
+use super::types::{Change, ChangeKind, Scope, UnitChange};
+use crate::config::{Action, Challenges, Config, DAYS, Exception, Rule, RuleEnd};
 
 type Args = Vec<(&'static str, String)>;
+type Field = (&'static str, Option<Change>);
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct Finding {
-    rule: String,
-    change: Change,
+pub(super) fn rules(old: &Config, new: &Config) -> Vec<UnitChange> {
+    DAYS.iter()
+        .flat_map(|(_, day)| on_day(old, new, *day))
+        .collect()
 }
 
-impl Finding {
-    pub(super) fn on(self, days: &[&str]) -> Change {
-        let args = [("rule", self.rule), ("days", days.join(", "))]
-            .into_iter()
-            .chain(self.change.args)
-            .collect();
-        Change {
-            id: self.change.id,
-            args,
-            kind: self.change.kind,
-        }
-    }
+pub(super) fn settings(old: &Config, new: &Config) -> Vec<UnitChange> {
+    let fields: [Field; 3] = [
+        (
+            "day_starts_at",
+            (old.day_starts_at != new.day_starts_at).then(|| {
+                let args = old_new(old.day_starts_at, new.day_starts_at, clock);
+                change("change-day-start", ChangeKind::Loosen, args)
+            }),
+        ),
+        (
+            "loosening_delay",
+            (old.loosening_delay != new.loosening_delay).then(|| {
+                moved(
+                    new.loosening_delay > old.loosening_delay,
+                    ("change-delay-longer", "change-delay-shorter"),
+                    old_new(old.loosening_delay, new.loosening_delay, friendly),
+                )
+            }),
+        ),
+        (
+            "language",
+            (old.language != new.language).then(|| {
+                let args = old_new(&old.language, &new.language, String::clone);
+                change("change-language", ChangeKind::Neutral, args)
+            }),
+        ),
+    ];
+    units(Scope::Setting, fields).collect()
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct Side<'c> {
-    day_starts_at: Time,
-    set: Option<&'c RuleSet>,
-}
-
-impl<'c> Side<'c> {
-    pub(super) fn of(config: &'c Config, day: Weekday) -> Side<'c> {
-        Side {
-            day_starts_at: config.day_starts_at,
-            set: config.rule_set_for(day),
-        }
-    }
-
-    fn set_with_locks(&self) -> Option<&'c RuleSet> {
-        self.set.filter(|set| !set.locks.is_empty())
-    }
-
-    fn locks(&self) -> &'c [LockRule] {
-        self.set.map_or(&[], |set| &set.locks)
-    }
-
-    fn start_bounds(&self, lock: &LockRule) -> [SignedDuration; 2] {
-        let earliest = after(self.day_starts_at, lock.start);
-        [earliest, earliest + lock.start_jitter]
-    }
-
-    fn end(&self, lock: &LockRule) -> SignedDuration {
-        after(self.day_starts_at, lock.start) + after(lock.start, lock.end)
-    }
-}
-
-pub(super) fn day(current: Side, proposed: Side) -> Vec<Finding> {
-    let (old_locks, new_locks) = (current.locks(), proposed.locks());
-    let mut findings = Vec::new();
-    for old in old_locks {
-        let changes = match new_locks.iter().find(|new| new.id == old.id) {
-            Some(new) => lock_changes(old, new, current, proposed),
-            None => vec![change(
-                "change-lock-removed",
-                ChangeKind::Loosen,
-                Vec::new(),
-            )],
+pub(super) fn exceptions(old: &Config, new: &Config) -> Vec<UnitChange> {
+    let kept_or_removed = old.exceptions.iter().map(|previous| {
+        let change = match new.exception_on(previous.date) {
+            Some(next) => coverage(previous, next),
+            None => Some(change(
+                "change-exception-removed",
+                ChangeKind::Tighten,
+                exception_args(previous),
+            )),
         };
-        findings.extend(about(&old.id, changes));
-    }
-    for new in new_locks
+        (previous.date, change)
+    });
+    let added = new
+        .exceptions
         .iter()
-        .filter(|new| !old_locks.iter().any(|old| old.id == new.id))
-    {
-        let added = change("change-lock-added", ChangeKind::Tighten, Vec::new());
-        findings.extend(about(&new.id, vec![added]));
-    }
-    findings.extend(challenge_findings(current, proposed));
-    findings
+        .filter(|next| old.exception_on(next.date).is_none())
+        .map(|next| {
+            let added = change(
+                "change-exception-added",
+                ChangeKind::Loosen,
+                exception_args(next),
+            );
+            (next.date, Some(added))
+        });
+    kept_or_removed
+        .chain(added)
+        .flat_map(|(date, change)| units(Scope::Exception(date), [("exception", change)]))
+        .collect()
 }
 
-pub(super) fn settings(old: &Config, new: &Config) -> Vec<Change> {
-    [
-        (old.day_starts_at != new.day_starts_at).then(|| {
-            let args = old_new(old.day_starts_at, new.day_starts_at, clock);
-            change("change-day-start", ChangeKind::Loosen, args)
-        }),
-        (old.loosening_delay != new.loosening_delay).then(|| {
-            moved(
-                new.loosening_delay > old.loosening_delay,
-                ("change-delay-longer", "change-delay-shorter"),
-                old_new(old.loosening_delay, new.loosening_delay, friendly),
-            )
-        }),
-        (old.language != new.language).then(|| {
-            let args = old_new(&old.language, &new.language, String::clone);
-            change("change-language", ChangeKind::Neutral, args)
-        }),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
-}
-
-fn challenge_findings(current: Side, proposed: Side) -> Vec<Finding> {
-    let (Some(old), Some(new)) = (current.set_with_locks(), proposed.set_with_locks()) else {
-        return Vec::new();
+fn on_day(old: &Config, new: &Config, day: Weekday) -> Vec<UnitChange> {
+    let reference = old.day_starts_at;
+    let (old_rules, new_rules) = (old.rules_on(day), new.rules_on(day));
+    let scope = |rule: &Rule| Scope::Rule {
+        day,
+        rule: rule.id.clone(),
     };
-    about(
-        &new.name,
-        challenge_changes(&old.challenges, &new.challenges),
-    )
-    .collect()
+    let mut changes = Vec::new();
+    for rule in old_rules {
+        let fields = match new_rules.iter().find(|next| next.id == rule.id) {
+            Some(next) => rule_fields(rule, next, reference),
+            None => vec![presence("change-rule-removed", ChangeKind::Loosen, rule)],
+        };
+        changes.extend(units(scope(rule), fields));
+    }
+    for rule in new_rules
+        .iter()
+        .filter(|next| !old_rules.iter().any(|previous| previous.id == next.id))
+    {
+        let added = presence("change-rule-added", ChangeKind::Tighten, rule);
+        changes.extend(units(scope(rule), [added]));
+    }
+    changes
 }
 
-fn lock_changes(old: &LockRule, new: &LockRule, current: Side, proposed: Side) -> Vec<Change> {
+fn rule_fields(old: &Rule, new: &Rule, reference: Time) -> Vec<Field> {
+    let enforcing = old.enforces() || new.enforces();
+    let judge = |change: Option<Change>| change.map(|change| judged(enforcing, change));
+    let [first_action, second_action] = action(old.action, new.action);
     [
-        start(old, new, current, proposed),
-        end(old, new, current, proposed),
-        shutdown(old.shutdown_after, new.shutdown_after),
-        (old.warnings != new.warnings).then(|| {
-            let args = old_new(&old.warnings, &new.warnings, |warnings| {
-                warnings
-                    .iter()
-                    .map(|warning| friendly(*warning))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            });
-            change("change-warnings", ChangeKind::Neutral, args)
-        }),
-        (old.label != new.label).then(|| {
-            let args = old_new(&old.label, &new.label, String::clone);
-            change("change-label", ChangeKind::Neutral, args)
-        }),
+        ("timing", judge(start(old, new, reference))),
+        ("timing", judge(end(old, new, reference))),
+        ("action", first_action),
+        ("action", second_action),
+        ("notices", notices(old, new)),
+        (
+            "message",
+            (old.message != new.message)
+                .then(|| change("change-message", ChangeKind::Neutral, Vec::new())),
+        ),
+        (
+            "label",
+            (old.label != new.label).then(|| {
+                let args = old_new(&old.label, &new.label, String::clone);
+                change("change-label", ChangeKind::Neutral, args)
+            }),
+        ),
     ]
     .into_iter()
-    .flatten()
+    .chain(challenge_fields(&old.challenges, &new.challenges))
     .collect()
 }
 
-fn start(old: &LockRule, new: &LockRule, current: Side, proposed: Side) -> Option<Change> {
-    if !start_moved(old, new) {
-        return None;
-    }
-    let [old_earliest, old_latest] = current.start_bounds(old);
-    let [new_earliest, new_latest] = proposed.start_bounds(new);
-    let args = old_new(old, new, start_window);
+fn presence(id: &'static str, kind: ChangeKind, rule: &Rule) -> Field {
+    let change = judged(rule.enforces(), change(id, kind, Vec::new()));
+    ("presence", Some(change))
+}
+
+fn start(old: &Rule, new: &Rule, reference: Time) -> Option<Change> {
+    let (old_bounds, new_bounds) = (start_bounds(old, reference), start_bounds(new, reference));
+    let [old_earliest, old_latest] = old_bounds;
+    let [new_earliest, new_latest] = new_bounds;
+    let args = old_new(old_bounds, new_bounds, |bounds| window(reference, bounds));
     if new_earliest > old_earliest || new_latest > old_latest {
-        return Some(change("change-lock-starts-later", ChangeKind::Loosen, args));
+        return Some(change("change-rule-starts-later", ChangeKind::Loosen, args));
     }
     (new_earliest < old_earliest || new_latest < old_latest)
-        .then(|| change("change-lock-starts-earlier", ChangeKind::Tighten, args))
+        .then(|| change("change-rule-starts-earlier", ChangeKind::Tighten, args))
 }
 
-fn end(old: &LockRule, new: &LockRule, current: Side, proposed: Side) -> Option<Change> {
-    let (old_end, new_end) = (current.end(old), proposed.end(new));
-    let shifted = old.end != new.end || start_moved(old, new);
-    (shifted && old_end != new_end).then(|| {
-        moved(
-            new_end > old_end,
-            ("change-lock-ends-later", "change-lock-ends-earlier"),
-            old_new(old.end, new.end, clock),
-        )
-    })
+fn end(old: &Rule, new: &Rule, reference: Time) -> Option<Change> {
+    let (old_bounds, new_bounds) = (end_bounds(old, reference), end_bounds(new, reference));
+    let [old_earliest, old_latest] = old_bounds;
+    let [new_earliest, new_latest] = new_bounds;
+    let args = old_new(old_bounds, new_bounds, |bounds| window(reference, bounds));
+    if new_earliest < old_earliest || new_latest < old_latest {
+        return Some(change("change-rule-ends-earlier", ChangeKind::Loosen, args));
+    }
+    (new_earliest > old_earliest || new_latest > old_latest)
+        .then(|| change("change-rule-ends-later", ChangeKind::Tighten, args))
 }
 
-fn start_moved(old: &LockRule, new: &LockRule) -> bool {
-    old.start != new.start || old.start_jitter != new.start_jitter
+fn start_bounds(rule: &Rule, reference: Time) -> [SignedDuration; 2] {
+    let earliest = after(reference, rule.start);
+    [earliest, earliest.saturating_add(rule.start_jitter)]
 }
 
-fn challenge_changes(old: &Challenges, new: &Challenges) -> Vec<Change> {
-    [
-        (old.wait != new.wait).then(|| {
-            moved(
-                new.wait > old.wait,
-                ("change-wait-longer", "change-wait-shorter"),
-                old_new(old.wait, new.wait, friendly),
-            )
-        }),
-        (old.reason != new.reason).then(|| {
-            moved(
-                new.reason,
-                ("change-reason-required", "change-reason-dropped"),
-                Vec::new(),
-            )
-        }),
-        phrase(old.phrase.as_ref(), new.phrase.as_ref()),
-        (old.extensions != new.extensions).then(|| {
-            moved(
-                new.extensions < old.extensions,
-                ("change-fewer-extensions", "change-more-extensions"),
-                old_new(old.extensions, new.extensions, |count| count.to_string()),
-            )
-        }),
-        (old.extension_length != new.extension_length).then(|| {
-            moved(
-                new.extension_length < old.extension_length,
-                ("change-shorter-extensions", "change-longer-extensions"),
-                old_new(old.extension_length, new.extension_length, friendly),
-            )
-        }),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+fn end_bounds(rule: &Rule, reference: Time) -> [SignedDuration; 2] {
+    let [earliest, latest] = start_bounds(rule, reference);
+    match rule.end {
+        RuleEnd::At(end) => [earliest + after(rule.start, end); 2],
+        RuleEnd::After(length) => [
+            earliest.saturating_add(length),
+            latest.saturating_add(length),
+        ],
+        RuleEnd::DayEnd => [SignedDuration::from_hours(24); 2],
+    }
+}
+
+fn action(old: Action, new: Action) -> [Option<Change>; 2] {
+    match (old, new) {
+        (
+            Action::Lock {
+                shutdown_after: old,
+            },
+            Action::Lock {
+                shutdown_after: new,
+            },
+        ) => [shutdown(old, new), None],
+        (Action::ShutDown { repeat: old }, Action::ShutDown { repeat: new }) => [
+            (old != new).then(|| {
+                moved(
+                    new,
+                    ("change-shutdown-repeats", "change-shutdown-once"),
+                    Vec::new(),
+                )
+            }),
+            None,
+        ],
+        _ => [
+            step_ids(old).map(|(_, removed)| change(removed, ChangeKind::Loosen, Vec::new())),
+            step_ids(new).map(|(added, _)| change(added, ChangeKind::Tighten, Vec::new())),
+        ],
+    }
+}
+
+fn step_ids(action: Action) -> Option<(&'static str, &'static str)> {
+    match action {
+        Action::Nothing => None,
+        Action::Lock { .. } => Some(("change-lock-added", "change-lock-removed")),
+        Action::ShutDown { .. } => Some((
+            "change-shutdown-at-start-added",
+            "change-shutdown-at-start-removed",
+        )),
+    }
 }
 
 fn shutdown(old: Option<SignedDuration>, new: Option<SignedDuration>) -> Option<Change> {
@@ -232,6 +233,65 @@ fn shutdown(old: Option<SignedDuration>, new: Option<SignedDuration>) -> Option<
     }
 }
 
+fn notices(old: &Rule, new: &Rule) -> Option<Change> {
+    (old.notices != new.notices).then(|| {
+        let args = old_new(old, new, |rule| {
+            rule.notice_offsets()
+                .into_iter()
+                .map(friendly)
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+        change("change-notices", ChangeKind::Neutral, args)
+    })
+}
+
+fn challenge_fields(old: &Challenges, new: &Challenges) -> [Field; 5] {
+    [
+        (
+            "wait",
+            (old.wait != new.wait).then(|| {
+                moved(
+                    new.wait > old.wait,
+                    ("change-wait-longer", "change-wait-shorter"),
+                    old_new(old.wait, new.wait, friendly),
+                )
+            }),
+        ),
+        (
+            "reason",
+            (old.reason != new.reason).then(|| {
+                moved(
+                    new.reason,
+                    ("change-reason-required", "change-reason-dropped"),
+                    Vec::new(),
+                )
+            }),
+        ),
+        ("phrase", phrase(old.phrase.as_ref(), new.phrase.as_ref())),
+        (
+            "extensions",
+            (old.extensions != new.extensions).then(|| {
+                moved(
+                    new.extensions < old.extensions,
+                    ("change-fewer-extensions", "change-more-extensions"),
+                    old_new(old.extensions, new.extensions, |count| count.to_string()),
+                )
+            }),
+        ),
+        (
+            "extension_length",
+            (old.extension_length != new.extension_length).then(|| {
+                moved(
+                    new.extension_length < old.extension_length,
+                    ("change-shorter-extensions", "change-longer-extensions"),
+                    old_new(old.extension_length, new.extension_length, friendly),
+                )
+            }),
+        ),
+    ]
+}
+
 fn phrase(old: Option<&String>, new: Option<&String>) -> Option<Change> {
     match (old, new) {
         (None, Some(new)) => Some(change(
@@ -253,11 +313,58 @@ fn phrase(old: Option<&String>, new: Option<&String>) -> Option<Change> {
     }
 }
 
-fn about(rule: &str, changes: Vec<Change>) -> impl Iterator<Item = Finding> + '_ {
-    changes.into_iter().map(move |change| Finding {
-        rule: rule.to_owned(),
-        change,
+fn coverage(old: &Exception, new: &Exception) -> Option<Change> {
+    let (id, kind) = match (includes(new, old), includes(old, new)) {
+        (true, true) => return None,
+        (true, false) => ("change-exception-wider", ChangeKind::Loosen),
+        (false, true) => ("change-exception-narrower", ChangeKind::Tighten),
+        (false, false) => ("change-exception-changed", ChangeKind::Loosen),
+    };
+    Some(change(id, kind, exception_args(new)))
+}
+
+fn includes(outer: &Exception, inner: &Exception) -> bool {
+    outer.rules.is_empty()
+        || (!inner.rules.is_empty() && inner.rules.iter().all(|rule| outer.covers(rule)))
+}
+
+fn exception_args(exception: &Exception) -> Args {
+    vec![
+        ("date", exception.date.to_string()),
+        ("rules", rules_arg(&exception.rules)),
+    ]
+}
+
+fn rules_arg(rules: &[String]) -> String {
+    if rules.is_empty() {
+        return "all".to_owned();
+    }
+    rules.join(", ")
+}
+
+fn units(
+    scope: Scope,
+    fields: impl IntoIterator<Item = Field>,
+) -> impl Iterator<Item = UnitChange> {
+    fields.into_iter().filter_map(move |(field, change)| {
+        change.map(|change| UnitChange {
+            scope: scope.clone(),
+            field,
+            id: change.id,
+            args: change.args,
+            kind: change.kind,
+        })
     })
+}
+
+fn judged(enforcing: bool, change: Change) -> Change {
+    if enforcing {
+        return change;
+    }
+    Change {
+        kind: ChangeKind::Neutral,
+        ..change
+    }
 }
 
 fn moved(tighter: bool, (tighten, loosen): (&'static str, &'static str), args: Args) -> Change {
@@ -275,12 +382,12 @@ fn old_new<T>(old: T, new: T, show: impl Fn(T) -> String) -> Args {
     vec![("old", show(old)), ("new", show(new))]
 }
 
-fn start_window(lock: &LockRule) -> String {
-    if lock.start_jitter.is_zero() {
-        return clock(lock.start);
+fn window(reference: Time, [earliest, latest]: [SignedDuration; 2]) -> String {
+    let at = |position| clock(reference.wrapping_add(position));
+    if earliest == latest {
+        return at(earliest);
     }
-    let latest = lock.start.wrapping_add(lock.start_jitter);
-    format!("{}–{}", clock(lock.start), clock(latest))
+    format!("{}–{}", at(earliest), at(latest))
 }
 
 fn after(from: Time, to: Time) -> SignedDuration {

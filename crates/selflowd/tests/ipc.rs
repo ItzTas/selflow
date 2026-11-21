@@ -28,11 +28,12 @@ reason = true
 extensions = 2
 extension_length = "10m"
 
-[[rule_set.lock]]
+[[rule_set.rule]]
 id = "late"
 label = "Late night"
 start = "01:00"
 end = "wake"
+lock = true
 "#
     )
 }
@@ -98,7 +99,7 @@ async fn a_loosening_save_says_when_it_takes_effect() {
         (kind, effective_at),
         (ChangeKindView::Loosen, at(19, 10, 0).timestamp())
     );
-    assert_eq!(changes[0].id, "change-lock-starts-later");
+    assert_eq!(changes[0].id, "change-rule-starts-later");
     let Response::ConfigStatus(status) = client.request(Request::ConfigStatus).await else {
         panic!("expected ConfigStatus")
     };
