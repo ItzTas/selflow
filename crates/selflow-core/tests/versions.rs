@@ -35,6 +35,12 @@ const EVENING: (&str, &str) = (
     "[[rule_set.rule]]",
     "[[rule_set.rule]]\nid = \"evening\"\nstart = \"21:00\"\n\n[[rule_set.rule]]",
 );
+const JITTER: (&str, &str) = (
+    r#"start = "bedtime""#,
+    "start = \"bedtime\"\nstart_jitter = \"15m\"",
+);
+const LENGTH: (&str, &str) = (r#"end = "wake""#, r#"length = "8h""#);
+const SHORTER_WAIT: (&str, &str) = (r#"wait = "2m""#, r#"wait = "1m""#);
 const RULE_WAIT: (&str, &str) = (
     "shutdown_after = \"30m\"\n",
     "shutdown_after = \"30m\"\n\n[rule_set.rule.challenges]\nwait = \"5m\"\n",
@@ -472,6 +478,45 @@ fn diff_judges_every_field() {
             Neutral,
         ),
         (
+            &[JITTER],
+            &[JITTER, LENGTH],
+            "thu/bedtime/timing",
+            "change-rule-ends-later",
+            Tighten,
+        ),
+        (
+            &[JITTER, LENGTH],
+            &[JITTER],
+            "thu/bedtime/timing",
+            "change-rule-ends-earlier",
+            Loosen,
+        ),
+        (
+            &[REPEAT, (r#"end = "wake""#, r#"end = "05:00""#)],
+            &[
+                REPEAT,
+                ("end = \"wake\"\n", ""),
+                (r#"day_starts_at = "05:00""#, r#"day_starts_at = "06:00""#),
+            ],
+            "thu/bedtime/timing",
+            "change-rule-ends-later",
+            Tighten,
+        ),
+        (
+            &[],
+            &[LENGTH],
+            "thu/bedtime/timing",
+            "change-rule-timing",
+            Loosen,
+        ),
+        (
+            &[NO_LOCK],
+            &[NO_LOCK, LENGTH],
+            "thu/bedtime/timing",
+            "change-rule-timing",
+            Neutral,
+        ),
+        (
             &[NO_LOCK],
             &[],
             "thu/bedtime/action",
@@ -600,6 +645,20 @@ fn diff_judges_every_field() {
         (
             &[],
             &[(r#"wait = "2m""#, r#"wait = "1m""#)],
+            "thu/bedtime/wait",
+            "change-wait-shorter",
+            Loosen,
+        ),
+        (
+            &[NO_LOCK],
+            &[NO_LOCK, SHORTER_WAIT],
+            "thu/bedtime/wait",
+            "change-wait-shorter",
+            Neutral,
+        ),
+        (
+            &[NO_LOCK],
+            &[SHORTER_WAIT],
             "thu/bedtime/wait",
             "change-wait-shorter",
             Loosen,
@@ -772,6 +831,46 @@ fn diff_keeps_each_weekday_apart() {
             args: vec![("old", "23:00".into()), ("new", "01:00".into())],
             kind: ChangeKind::Loosen,
         }
+    );
+}
+
+#[test]
+fn diff_measures_rule_times_from_the_old_day_start() {
+    let earlier_day = (r#"day_starts_at = "05:00""#, r#"day_starts_at = "04:00""#);
+    let timing = |proposed: &[(&str, &str)]| -> Vec<(&'static str, ChangeKind)> {
+        diff(&config(&[]), &config(proposed))
+            .into_iter()
+            .filter(|change| change.unit() == "thu/bedtime/timing")
+            .map(|change| (change.id, change.kind))
+            .collect()
+    };
+    assert!(timing(&[earlier_day]).is_empty());
+    assert_eq!(
+        timing(&[
+            earlier_day,
+            (r#"bedtime = "23:00""#, r#"bedtime = "22:00""#)
+        ]),
+        [("change-rule-starts-earlier", ChangeKind::Tighten)]
+    );
+}
+
+#[test]
+fn a_day_boundary_end_shows_each_sides_own_day_start() {
+    let changes = diff(
+        &config(&[REPEAT, (r#"end = "wake""#, r#"end = "05:00""#)]),
+        &config(&[
+            REPEAT,
+            ("end = \"wake\"\n", ""),
+            (r#"day_starts_at = "05:00""#, r#"day_starts_at = "06:00""#),
+        ]),
+    );
+    let end = changes
+        .iter()
+        .find(|change| change.unit() == "thu/bedtime/timing")
+        .unwrap();
+    assert_eq!(
+        end.args,
+        vec![("old", "05:00".into()), ("new", "06:00".into())]
     );
 }
 

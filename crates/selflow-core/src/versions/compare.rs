@@ -9,6 +9,12 @@ use crate::config::{Action, Challenges, Config, DAYS, Exception, Rule, RuleEnd};
 type Args = Vec<(&'static str, String)>;
 type Field = (&'static str, Option<Change>);
 
+#[derive(Clone, Copy)]
+struct Side<'r> {
+    rule: &'r Rule,
+    day_starts_at: Time,
+}
+
 pub(super) fn rules(old: &Config, new: &Config) -> Vec<UnitChange> {
     DAYS.iter()
         .flat_map(|(_, day)| on_day(old, new, *day))
@@ -76,7 +82,6 @@ pub(super) fn exceptions(old: &Config, new: &Config) -> Vec<UnitChange> {
 }
 
 fn on_day(old: &Config, new: &Config, day: Weekday) -> Vec<UnitChange> {
-    let reference = old.day_starts_at;
     let (old_rules, new_rules) = (old.rules_on(day), new.rules_on(day));
     let scope = |rule: &Rule| Scope::Rule {
         day,
@@ -85,7 +90,16 @@ fn on_day(old: &Config, new: &Config, day: Weekday) -> Vec<UnitChange> {
     let mut changes = Vec::new();
     for rule in old_rules {
         let fields = match new_rules.iter().find(|next| next.id == rule.id) {
-            Some(next) => rule_fields(rule, next, reference),
+            Some(next) => rule_fields(
+                Side {
+                    rule,
+                    day_starts_at: old.day_starts_at,
+                },
+                Side {
+                    rule: next,
+                    day_starts_at: new.day_starts_at,
+                },
+            ),
             None => vec![presence("change-rule-removed", ChangeKind::Loosen, rule)],
         };
         changes.extend(units(scope(rule), fields));
@@ -100,37 +114,60 @@ fn on_day(old: &Config, new: &Config, day: Weekday) -> Vec<UnitChange> {
     changes
 }
 
-fn rule_fields(old: &Rule, new: &Rule, reference: Time) -> Vec<Field> {
-    let enforcing = old.enforces() || new.enforces();
+fn rule_fields(old: Side, new: Side) -> Vec<Field> {
+    let (previous, next) = (old.rule, new.rule);
+    let enforcing = previous.enforces() || next.enforces();
     let judge = |change: Option<Change>| change.map(|change| judged(enforcing, change));
-    let [first_action, second_action] = action(old.action, new.action);
+    let [first_timing, second_timing] = timing(old, new);
+    let [first_action, second_action] = action(previous.action, next.action);
+    let challenges = challenge_fields(&previous.challenges, &next.challenges)
+        .map(|(field, change)| (field, judge(change)));
     [
-        ("timing", judge(start(old, new, reference))),
-        ("timing", judge(end(old, new, reference))),
+        ("timing", judge(first_timing)),
+        ("timing", judge(second_timing)),
         ("action", first_action),
         ("action", second_action),
-        ("notices", notices(old, new)),
+        ("notices", notices(previous, next)),
         (
             "message",
-            (old.message != new.message)
+            (previous.message != next.message)
                 .then(|| change("change-message", ChangeKind::Neutral, Vec::new())),
         ),
         (
             "label",
-            (old.label != new.label).then(|| {
-                let args = old_new(&old.label, &new.label, String::clone);
+            (previous.label != next.label).then(|| {
+                let args = old_new(&previous.label, &next.label, String::clone);
                 change("change-label", ChangeKind::Neutral, args)
             }),
         ),
     ]
     .into_iter()
-    .chain(challenge_fields(&old.challenges, &new.challenges))
+    .chain(challenges)
     .collect()
 }
 
 fn presence(id: &'static str, kind: ChangeKind, rule: &Rule) -> Field {
     let change = judged(rule.enforces(), change(id, kind, Vec::new()));
     ("presence", Some(change))
+}
+
+fn timing(old: Side, new: Side) -> [Option<Change>; 2] {
+    let reference = old.day_starts_at;
+    let moved = [
+        start(old.rule, new.rule, reference),
+        end(old, new, reference),
+    ];
+    if moved.iter().any(Option::is_some) || !rewritten(old.rule, new.rule) {
+        return moved;
+    }
+    [
+        Some(change("change-rule-timing", ChangeKind::Loosen, Vec::new())),
+        None,
+    ]
+}
+
+fn rewritten(old: &Rule, new: &Rule) -> bool {
+    (old.start, old.start_jitter, old.end) != (new.start, new.start_jitter, new.end)
 }
 
 fn start(old: &Rule, new: &Rule, reference: Time) -> Option<Change> {
@@ -145,7 +182,7 @@ fn start(old: &Rule, new: &Rule, reference: Time) -> Option<Change> {
         .then(|| change("change-rule-starts-earlier", ChangeKind::Tighten, args))
 }
 
-fn end(old: &Rule, new: &Rule, reference: Time) -> Option<Change> {
+fn end(old: Side, new: Side, reference: Time) -> Option<Change> {
     let (old_bounds, new_bounds) = (end_bounds(old, reference), end_bounds(new, reference));
     let [old_earliest, old_latest] = old_bounds;
     let [new_earliest, new_latest] = new_bounds;
@@ -162,7 +199,8 @@ fn start_bounds(rule: &Rule, reference: Time) -> [SignedDuration; 2] {
     [earliest, earliest.saturating_add(rule.start_jitter)]
 }
 
-fn end_bounds(rule: &Rule, reference: Time) -> [SignedDuration; 2] {
+fn end_bounds(side: Side, reference: Time) -> [SignedDuration; 2] {
+    let rule = side.rule;
     let [earliest, latest] = start_bounds(rule, reference);
     match rule.end {
         RuleEnd::At(end) => [earliest + after(rule.start, end); 2],
@@ -170,7 +208,9 @@ fn end_bounds(rule: &Rule, reference: Time) -> [SignedDuration; 2] {
             earliest.saturating_add(length),
             latest.saturating_add(length),
         ],
-        RuleEnd::DayEnd => [SignedDuration::from_hours(24); 2],
+        RuleEnd::DayEnd => {
+            [SignedDuration::from_hours(24) + side.day_starts_at.duration_since(reference); 2]
+        }
     }
 }
 

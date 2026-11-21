@@ -4,6 +4,7 @@ change-rule-starts-earlier = The rule `{ $rule }` starts earlier on { $days }: {
 change-rule-starts-later = The rule `{ $rule }` starts later on { $days }: { $old } → { $new }.
 change-rule-ends-later = The rule `{ $rule }` ends later on { $days }: { $old } → { $new }.
 change-rule-ends-earlier = The rule `{ $rule }` ends earlier on { $days }: { $old } → { $new }.
+change-rule-timing = The times of the rule `{ $rule }` are written differently on { $days }.
 change-lock-added = On { $days }, the rule `{ $rule }` now locks the screen.
 change-lock-removed = On { $days }, the rule `{ $rule }` no longer locks the screen.
 change-shutdown-added = On { $days }, the computer shuts down when the lock of `{ $rule }` has lasted { $new }.

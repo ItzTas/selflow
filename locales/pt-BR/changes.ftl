@@ -4,6 +4,7 @@ change-rule-starts-earlier = A regra `{ $rule }` começa mais cedo em { $days }:
 change-rule-starts-later = A regra `{ $rule }` começa mais tarde em { $days }: { $old } → { $new }.
 change-rule-ends-later = A regra `{ $rule }` termina mais tarde em { $days }: { $old } → { $new }.
 change-rule-ends-earlier = A regra `{ $rule }` termina mais cedo em { $days }: { $old } → { $new }.
+change-rule-timing = Os horários da regra `{ $rule }` estão escritos de outro jeito em { $days }.
 change-lock-added = Em { $days }, a regra `{ $rule }` passa a bloquear a tela.
 change-lock-removed = Em { $days }, a regra `{ $rule }` deixa de bloquear a tela.
 change-shutdown-added = Em { $days }, o computador desliga quando o bloqueio de `{ $rule }` chega a { $new }.
