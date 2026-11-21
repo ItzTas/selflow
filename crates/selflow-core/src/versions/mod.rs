@@ -3,7 +3,7 @@ mod clock;
 mod compare;
 mod types;
 
-use jiff::Timestamp;
+use jiff::{SignedDuration, Timestamp};
 
 use crate::config::{Config, day_tag};
 
@@ -123,4 +123,9 @@ fn with_days(rule: &str, entry: ShownChange, days: &[&str]) -> ShownChange {
         .chain(entry.args)
         .collect();
     ShownChange { args, ..entry }
+}
+
+fn just_before(time: Timestamp) -> Timestamp {
+    time.checked_sub(SignedDuration::from_nanos(1))
+        .unwrap_or(Timestamp::MIN)
 }

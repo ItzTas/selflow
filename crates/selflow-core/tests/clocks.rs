@@ -11,6 +11,96 @@ use support::{VALID, at, history_of, no_jitter};
 const LATER_BEDTIME: (&str, &str) = (r#"bedtime = "23:00""#, r#"bedtime = "01:00""#);
 const MORE_EXTENSIONS: (&str, &str) = ("extensions = 1", "extensions = 3");
 const NO_LOCK: (&str, &str) = ("lock = true\nshutdown_after = \"30m\"\n", "");
+const NO_THURSDAY: (&str, &str) = (r#""wed", "thu"]"#, r#""wed"]"#);
+const SLEEP_LABEL: (&str, &str) = (
+    "id = \"bedtime\"\n",
+    "id = \"bedtime\"\nlabel = \"Sleep\"\n",
+);
+
+#[test]
+fn a_rule_brought_back_takes_its_fields_from_the_save_that_returns_it() {
+    let base = no_jitter();
+    let no_thursday = base.replace(NO_THURSDAY.0, NO_THURSDAY.1);
+    let earlier = base.replace(r#"bedtime = "23:00""#, r#"bedtime = "21:00""#);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 9, 0), no_thursday.as_str()),
+        (at(20, 10, 0), earlier.as_str()),
+    ]);
+    let starts = |when: ZonedDateTime, day| {
+        config_at(&history, when.timestamp())
+            .rules_on(day)
+            .first()
+            .map(|rule| rule.start)
+    };
+    assert_eq!(starts(at(19, 12, 0), Weekday::Thursday), None);
+    for when in [at(20, 10, 0), at(21, 12, 0)] {
+        assert_eq!(
+            starts(when.clone(), Weekday::Thursday),
+            Some(time(21, 0, 0, 0))
+        );
+        assert_eq!(starts(when, Weekday::Monday), Some(time(21, 0, 0, 0)));
+    }
+}
+
+#[test]
+fn a_rule_put_back_while_its_removal_waits_keeps_the_fields_of_that_save() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter();
+    let no_thursday = base.replace(NO_THURSDAY.0, NO_THURSDAY.1);
+    let back_as_sleep = base.replace(SLEEP_LABEL.0, SLEEP_LABEL.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 9, 0), no_thursday.as_str()),
+        (at(18, 10, 0), back_as_sleep.as_str()),
+    ]);
+    assert_eq!(
+        rule(&config_at(&history, at(18, 10, 0).timestamp())).label,
+        "Sleep"
+    );
+    assert!(waiting(&history, at(18, 10, 0).timestamp()).is_empty());
+}
+
+#[test]
+fn a_rule_put_back_while_its_removal_waits_keeps_its_loosening_on_its_clock() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter();
+    let more = base.replace(MORE_EXTENSIONS.0, MORE_EXTENSIONS.1);
+    let more_without_thursday = more.replace(NO_THURSDAY.0, NO_THURSDAY.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 10, 0), more.as_str()),
+        (at(18, 11, 0), more_without_thursday.as_str()),
+        (at(18, 12, 0), more.as_str()),
+    ]);
+    let extensions = |when: ZonedDateTime| {
+        rule(&config_at(&history, when.timestamp()))
+            .challenges
+            .extensions
+    };
+    assert_eq!(extensions(at(18, 12, 0)), 1);
+    assert_eq!(extensions(at(19, 10, 0)), 3);
+    assert_eq!(extensions(at(19, 12, 0)), 3);
+}
+
+#[test]
+fn a_canceled_change_holds_no_clock() {
+    let base = no_jitter();
+    let later = base.replace(LATER_BEDTIME.0, LATER_BEDTIME.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 10, 0), later.as_str()),
+        (at(18, 12, 0), base.as_str()),
+    ]);
+    let changes = plan_save(&history, &parse(&later).unwrap(), at(18, 20, 0).timestamp());
+    assert!(!changes.is_empty());
+    assert!(
+        changes
+            .iter()
+            .all(|timed| timed.change.id == "change-rule-starts-later"
+                && timed.effective_at == at(19, 20, 0).timestamp())
+    );
+}
 
 #[test]
 fn a_tightening_and_a_loosening_in_one_save_keep_their_own_clocks() {

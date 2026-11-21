@@ -1,10 +1,10 @@
 use std::mem::discriminant;
 
-use jiff::{SignedDuration, Timestamp, civil::Weekday};
+use jiff::{Timestamp, civil::Weekday};
 
 use super::assemble::config_at;
-use super::diff;
 use super::types::{ChangeKind, History, Scope, StoredChange, TimedChange, UnitChange, rule_unit};
+use super::{diff, just_before};
 use crate::config::{Action, Config};
 
 pub fn plan_save(history: &History, proposed: &Config, saved_at: Timestamp) -> Vec<TimedChange> {
@@ -22,7 +22,7 @@ pub fn plan_save(history: &History, proposed: &Config, saved_at: Timestamp) -> V
     let delayed = saved_at
         .checked_add(now.loosening_delay)
         .unwrap_or(Timestamp::MAX);
-    changed_units(&latest.config, proposed)
+    changed_units(&latest.config, proposed, &judged)
         .into_iter()
         .flat_map(|(unit, first)| {
             let mut entries: Vec<UnitChange> = judged
@@ -90,9 +90,19 @@ pub fn rule_since(
         .find(|time| came_into_force(history, *time, day, rule_id))
 }
 
-fn changed_units(latest: &Config, proposed: &Config) -> Vec<(String, UnitChange)> {
+fn changed_units(
+    latest: &Config,
+    proposed: &Config,
+    judged: &[UnitChange],
+) -> Vec<(String, UnitChange)> {
+    let returning = judged.iter().filter(|entry| match &entry.scope {
+        Scope::Rule { day, rule } => {
+            entry.field != "presence" && !latest.rules_on(*day).iter().any(|kept| kept.id == *rule)
+        }
+        Scope::Setting | Scope::Exception(_) => false,
+    });
     let mut units: Vec<(String, UnitChange)> = Vec::new();
-    for entry in diff(latest, proposed) {
+    for entry in diff(latest, proposed).into_iter().chain(returning.cloned()) {
         let unit = entry.unit();
         if units.iter().any(|(seen, _)| *seen == unit) {
             continue;
@@ -140,7 +150,9 @@ fn earliest(
     history
         .changes
         .iter()
-        .filter(|stored| stored.unit == unit && stored.effective_at > saved_at)
+        .filter(|stored| {
+            stored.unit == unit && stored.effective_at > saved_at && !overridden(history, stored)
+        })
         .filter(|stored| {
             history
                 .saved
@@ -175,8 +187,5 @@ fn came_into_force(history: &History, time: Timestamp, day: Weekday, rule_id: &s
     let Some(after) = action_at(time).filter(|action| *action != Action::Nothing) else {
         return false;
     };
-    let before = time
-        .checked_sub(SignedDuration::from_nanos(1))
-        .unwrap_or(Timestamp::MIN);
-    action_at(before).is_none_or(|action| discriminant(&action) != discriminant(&after))
+    action_at(just_before(time)).is_none_or(|action| discriminant(&action) != discriminant(&after))
 }
