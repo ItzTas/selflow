@@ -2,6 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use selflow_i18n::language::Language;
 use selflow_platform::paths::{socket_path, store_path};
 use selflow_platform::transport::{ListenError, Listener, listen};
 use thiserror::Error;
@@ -72,6 +73,7 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
         wake,
         views,
         power,
+        env_language: Language::from_env(),
     });
     let mut server = tokio::spawn(serve(listener, shared));
     tracing::info!("selflowd is running");

@@ -275,6 +275,30 @@ fn a_value_between_the_one_in_force_and_a_waiting_one_keeps_the_waiting_clock() 
 }
 
 #[test]
+fn a_loosening_waits_the_delay_in_force_even_when_the_file_shortens_it() {
+    let base = no_jitter();
+    let proposed = base
+        .replace(LATER_BEDTIME.0, LATER_BEDTIME.1)
+        .replace(SHORT_DELAY.0, SHORT_DELAY.1);
+    let history = history_of(&[(at(18, 8, 0), base.as_str())]);
+    let changes = plan_save(
+        &history,
+        &parse(&proposed).unwrap(),
+        at(18, 10, 0).timestamp(),
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|timed| timed.change.id == "change-delay-shorter")
+    );
+    assert!(
+        changes
+            .iter()
+            .all(|timed| timed.effective_at == at(19, 10, 0).timestamp())
+    );
+}
+
+#[test]
 fn the_first_save_takes_effect_at_once() {
     let text = no_jitter()
         .replace(r#"loosening_delay = "24h""#, r#"loosening_delay = "1h""#)

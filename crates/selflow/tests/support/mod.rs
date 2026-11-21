@@ -7,7 +7,7 @@ use jiff::civil::date;
 use jiff::tz::{self, TimeZone};
 use jiff::{Timestamp, ZonedDateTime};
 use selflow::editor::Editor;
-use selflow_protocol::ipc::{ChangeKindView, Response};
+use selflow_protocol::ipc::Response;
 
 pub fn brt() -> TimeZone {
     TimeZone::fixed(tz::offset(-3))
@@ -53,8 +53,7 @@ pub fn invalid() -> Response {
 
 pub fn saved() -> Response {
     Response::Saved {
-        kind: ChangeKindView::Neutral,
-        effective_at: Timestamp::UNIX_EPOCH,
+        saved_at: Timestamp::UNIX_EPOCH,
         changes: Vec::new(),
     }
 }

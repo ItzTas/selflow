@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use selflow_core::enforce::{GrantedExtension, NightLog};
 use selflow_core::plan::LockWindow;
 use selflow_core::timing::Seed;
-use selflow_core::versions::{ChangeKind, StoredVersion};
+use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
 use selflow_platform::secure_fs::{private_dir, private_file};
 
 use migrations::MIGRATIONS;
@@ -33,6 +33,14 @@ fn change_kind_text(kind: ChangeKind) -> &'static str {
         .iter()
         .find(|(candidate, _)| *candidate == kind)
         .map_or("neutral", |(_, text)| text)
+}
+
+fn change_kind_from(text: &str) -> Result<ChangeKind, StoreError> {
+    CHANGE_KINDS
+        .iter()
+        .find(|(_, candidate)| *candidate == text)
+        .map(|(kind, _)| *kind)
+        .ok_or_else(|| StoreError::UnknownKind(text.to_owned()))
 }
 
 fn event_kind_text(kind: EventKind) -> &'static str {
@@ -98,31 +106,58 @@ impl Store {
         &self,
         text: &str,
         saved_at: Timestamp,
-        effective_at: Timestamp,
-        kind: ChangeKind,
+        changes: &[StoredChange],
     ) -> Result<i64, StoreError> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
-            "UPDATE config_versions SET superseded = 1 WHERE superseded = 0 AND effective_at > ?1",
-            params![timestamp_text(saved_at)],
-        )?;
-        tx.execute(
-            "INSERT INTO config_versions (saved_at, effective_at, kind, text) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                timestamp_text(saved_at),
-                timestamp_text(effective_at),
-                change_kind_text(kind),
-                text
-            ],
+            "INSERT INTO config_versions (saved_at, text) VALUES (?1, ?2)",
+            params![timestamp_text(saved_at), text],
         )?;
         let id = tx.last_insert_rowid();
+        for change in changes {
+            tx.execute(
+                "INSERT INTO config_changes (version_id, unit, kind, effective_at) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    id,
+                    change.unit,
+                    change_kind_text(change.kind),
+                    timestamp_text(change.effective_at)
+                ],
+            )?;
+        }
         tx.commit()?;
         Ok(id)
     }
 
-    pub fn versions(&self) -> Result<Vec<StoredVersion>, StoreError> {
+    pub fn history_rows(&self) -> Result<(Vec<StoredVersion>, Vec<StoredChange>), StoreError> {
+        Ok((self.versions()?, self.changes()?))
+    }
+
+    fn versions(&self) -> Result<Vec<StoredVersion>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, saved_at, text FROM config_versions ORDER BY id")?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, saved_at, text) = row?;
+            Ok(StoredVersion {
+                id,
+                saved_at: saved_at.parse()?,
+                text,
+            })
+        })
+        .collect()
+    }
+
+    fn changes(&self) -> Result<Vec<StoredChange>, StoreError> {
         let mut statement = self.conn.prepare(
-            "SELECT id, saved_at, effective_at, text FROM config_versions WHERE superseded = 0 ORDER BY id",
+            "SELECT version_id, unit, kind, effective_at FROM config_changes ORDER BY id",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -133,25 +168,29 @@ impl Store {
             ))
         })?;
         rows.map(|row| {
-            let (id, saved_at, effective_at, text) = row?;
-            Ok(StoredVersion {
-                id,
-                saved_at: saved_at.parse()?,
+            let (version_id, unit, kind, effective_at) = row?;
+            Ok(StoredChange {
+                version_id,
+                unit,
+                kind: change_kind_from(&kind)?,
                 effective_at: effective_at.parse()?,
-                text,
             })
         })
         .collect()
     }
 
     pub fn latest_text(&self) -> Result<Option<String>, StoreError> {
+        self.text_of("SELECT text FROM config_versions ORDER BY id DESC LIMIT 1")
+    }
+
+    pub fn m1_text(&self) -> Result<Option<String>, StoreError> {
+        self.text_of("SELECT text FROM config_versions_m1 ORDER BY id DESC LIMIT 1")
+    }
+
+    fn text_of(&self, query: &str) -> Result<Option<String>, StoreError> {
         Ok(self
             .conn
-            .query_row(
-                "SELECT text FROM config_versions WHERE superseded = 0 ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
+            .query_row(query, [], |row| row.get(0))
             .optional()?)
     }
 

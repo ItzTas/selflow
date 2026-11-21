@@ -1,5 +1,6 @@
 use selflow_protocol::ipc::{
-    MAX_LINE_BYTES, RefusalView, Request, Response, read_message, write_message,
+    ChangeView, MAX_LINE_BYTES, MessageView, RefusalView, Request, Response, read_message,
+    write_message,
 };
 
 #[tokio::test]
@@ -84,6 +85,35 @@ async fn round_trips_a_test_lock_request_and_its_answer() {
     let sent = Response::TestLockStarted {
         label: "Bedtime".into(),
         ends_at: jiff::Timestamp::from_second(1_000).unwrap(),
+    };
+    write_message(&mut writer, &sent).await.unwrap();
+    assert_eq!(
+        read_message::<Response>(&mut reader).await.unwrap(),
+        Some(sent)
+    );
+}
+
+#[tokio::test]
+async fn round_trips_a_save_answer_with_each_change_and_its_time() {
+    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
+    let mut reader = tokio::io::BufReader::new(other_end);
+    let saved_at = jiff::Timestamp::from_second(1_000).unwrap();
+    let change = |id: &str, effective_at| ChangeView {
+        message: MessageView {
+            id: id.into(),
+            args: vec![("rule".into(), "bedtime".into())],
+        },
+        effective_at,
+    };
+    let sent = Response::Saved {
+        saved_at,
+        changes: vec![
+            change("change-rule-starts-earlier", saved_at),
+            change(
+                "change-more-extensions",
+                jiff::Timestamp::from_second(87_400).unwrap(),
+            ),
+        ],
     };
     write_message(&mut writer, &sent).await.unwrap();
     assert_eq!(

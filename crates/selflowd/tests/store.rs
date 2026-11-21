@@ -8,9 +8,9 @@ use selflow_core::config::parse;
 use selflow_core::enforce::NightLog;
 use selflow_core::plan::windows_for;
 use selflow_core::timing::Seed;
-use selflow_core::versions::ChangeKind;
+use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
 use selflowd::store::{Event, EventKind, Store};
-use support::{at, brt, extension, no_jitter};
+use support::{M1_TEXT, at, brt, extension, m1_store, no_jitter};
 
 #[test]
 fn keeps_one_seed_for_the_life_of_the_database() {
@@ -19,28 +19,88 @@ fn keeps_one_seed_for_the_life_of_the_database() {
 }
 
 #[test]
-fn a_new_save_replaces_the_pending_version() {
+fn a_save_keeps_each_change_with_its_time() {
     let store = Store::open_in_memory().unwrap();
     let ts = |day, hour| at(day, hour, 0).timestamp();
+    let later = ts(19, 12) + jiff::SignedDuration::from_millis(500);
+    let change = |unit: &str, kind, effective_at| StoredChange {
+        version_id: 0,
+        unit: unit.to_owned(),
+        kind,
+        effective_at,
+    };
     let first = store
-        .save_version("one", ts(18, 10), ts(18, 10), ChangeKind::Tighten)
+        .save_version(
+            "one",
+            ts(18, 10),
+            &[change("language", ChangeKind::Neutral, ts(18, 10))],
+        )
         .unwrap();
-    store
-        .save_version("two", ts(18, 11), ts(19, 11), ChangeKind::Loosen)
+    let second = store
+        .save_version(
+            "two",
+            ts(18, 12),
+            &[
+                change("thu/bedtime/timing", ChangeKind::Tighten, ts(18, 12)),
+                change("thu/bedtime/extensions", ChangeKind::Loosen, later),
+            ],
+        )
         .unwrap();
-    let third = store
-        .save_version("three", ts(18, 12), ts(18, 12), ChangeKind::Tighten)
-        .unwrap();
+    let (versions, changes) = store.history_rows().unwrap();
     assert_eq!(
-        store
-            .versions()
-            .unwrap()
-            .iter()
-            .map(|v| v.id)
-            .collect::<Vec<_>>(),
-        vec![first, third]
+        versions,
+        vec![
+            StoredVersion {
+                id: first,
+                saved_at: ts(18, 10),
+                text: "one".to_owned(),
+            },
+            StoredVersion {
+                id: second,
+                saved_at: ts(18, 12),
+                text: "two".to_owned(),
+            },
+        ]
     );
-    assert_eq!(store.latest_text().unwrap().as_deref(), Some("three"));
+    assert_eq!(
+        changes,
+        vec![
+            StoredChange {
+                version_id: first,
+                ..change("language", ChangeKind::Neutral, ts(18, 10))
+            },
+            StoredChange {
+                version_id: second,
+                ..change("thu/bedtime/timing", ChangeKind::Tighten, ts(18, 12))
+            },
+            StoredChange {
+                version_id: second,
+                ..change("thu/bedtime/extensions", ChangeKind::Loosen, later)
+            },
+        ]
+    );
+    assert_eq!(store.latest_text().unwrap().as_deref(), Some("two"));
+}
+
+#[test]
+fn an_m1_store_opens_with_its_settings_kept_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selflow/selflow.db");
+    m1_store(&path);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.latest_text().unwrap(), None);
+    assert_eq!(store.m1_text().unwrap().as_deref(), Some(M1_TEXT));
+    let kinds: Vec<EventKind> = store
+        .events_for(date(2026, 11, 18))
+        .unwrap()
+        .iter()
+        .map(|event| event.kind)
+        .collect();
+    assert_eq!(kinds, [EventKind::ConfigSaved]);
+    assert_eq!(
+        store.night_log(&[date(2026, 11, 19)]).unwrap(),
+        NightLog::default()
+    );
 }
 
 #[test]
@@ -90,21 +150,6 @@ fn creates_files_only_the_user_can_read() {
     Store::open(&path).unwrap();
     let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!((mode(&path), mode(path.parent().unwrap())), (0o600, 0o700));
-}
-
-#[test]
-fn a_whole_second_version_survives_a_later_save_with_a_fraction() {
-    let store = Store::open_in_memory().unwrap();
-    let instant = at(18, 10, 0).timestamp();
-    let half = instant + jiff::SignedDuration::from_millis(500);
-    let first = store
-        .save_version("one", instant, instant, ChangeKind::Tighten)
-        .unwrap();
-    let second = store
-        .save_version("two", half, instant, ChangeKind::Tighten)
-        .unwrap();
-    let ids: Vec<_> = store.versions().unwrap().iter().map(|v| v.id).collect();
-    assert_eq!(ids, vec![first, second]);
 }
 
 #[test]

@@ -83,15 +83,8 @@ fn edit(client: &mut Client, localizer: &Localizer, tz: &TimeZone) -> Result<Exi
             Ok(ExitCode::from(1))
         }
         EditOutcome::Failed(error) => Err(CliError::Editor(error)),
-        EditOutcome::Saved(Response::Saved {
-            kind,
-            effective_at,
-            changes,
-        }) => {
-            println!(
-                "{}",
-                render_saved(localizer, kind, effective_at, &changes, tz)
-            );
+        EditOutcome::Saved(Response::Saved { saved_at, changes }) => {
+            println!("{}", render_saved(localizer, saved_at, &changes, tz));
             Ok(ExitCode::SUCCESS)
         }
         EditOutcome::Saved(Response::Error(message)) => {

@@ -39,9 +39,8 @@ pub enum Response {
         text: String,
     },
     Saved {
-        kind: ChangeKindView,
-        effective_at: Timestamp,
-        changes: Vec<MessageView>,
+        saved_at: Timestamp,
+        changes: Vec<ChangeView>,
     },
     Invalid {
         errors: Vec<PositionedMessage>,
@@ -98,30 +97,22 @@ pub enum RefusalView {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChangeKindView {
-    Tighten,
-    Loosen,
-    Neutral,
+pub struct ChangeView {
+    pub message: MessageView,
+    pub effective_at: Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigStatusView {
-    pub in_force_saved_at: Option<Timestamp>,
-    pub pending: Option<PendingView>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PendingView {
-    pub saved_at: Timestamp,
-    pub effective_at: Timestamp,
-    pub changes: Vec<MessageView>,
+    pub last_saved_at: Option<Timestamp>,
+    pub pending: Vec<ChangeView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReportView {
     pub logical_date: Date,
     pub entries: Vec<ReportEntry>,
+    pub pending: Vec<ChangeView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

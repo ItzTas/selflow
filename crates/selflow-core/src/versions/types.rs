@@ -13,10 +13,10 @@ pub enum ChangeKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Change {
-    pub id: &'static str,
-    pub args: Vec<(&'static str, String)>,
-    pub kind: ChangeKind,
+pub(super) struct Change {
+    pub(super) id: &'static str,
+    pub(super) args: Vec<(&'static str, String)>,
+    pub(super) kind: ChangeKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,16 +54,9 @@ pub(super) fn exception_unit(date: civil::Date) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Classification {
-    pub kind: ChangeKind,
-    pub changes: Vec<Change>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredVersion {
     pub id: i64,
     pub saved_at: Timestamp,
-    pub effective_at: Timestamp,
     pub text: String,
 }
 

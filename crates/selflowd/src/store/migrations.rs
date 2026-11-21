@@ -8,4 +8,9 @@ pub const MIGRATIONS: &[&str] = &[
        PRIMARY KEY (key, logical_date)) STRICT;
      CREATE TABLE events (id INTEGER PRIMARY KEY, at TEXT NOT NULL, logical_date TEXT NOT NULL, kind TEXT NOT NULL,
        key TEXT NOT NULL, detail TEXT, UNIQUE (kind, key)) STRICT;",
+    "ALTER TABLE config_versions RENAME TO config_versions_m1;
+     CREATE TABLE config_versions (id INTEGER PRIMARY KEY, saved_at TEXT NOT NULL, text TEXT NOT NULL) STRICT;
+     CREATE TABLE config_changes (id INTEGER PRIMARY KEY, version_id INTEGER NOT NULL REFERENCES config_versions (id),
+       unit TEXT NOT NULL, kind TEXT NOT NULL, effective_at TEXT NOT NULL) STRICT;
+     DELETE FROM started_windows;",
 ];

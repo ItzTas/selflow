@@ -1,17 +1,20 @@
 mod support;
 
-use jiff::SignedDuration;
 use jiff::civil::date;
+use jiff::{SignedDuration, Timestamp};
 use selflow_core::config::parse;
 use selflow_core::plan::{LockWindow, windows_for};
 use selflow_core::timing::Seed;
-use selflow_protocol::ipc::{
-    ChangeKindView, MessageView, RefusalView, ReportEntry, Request, Response,
-};
+use selflow_i18n::catalog::default_config;
+use selflow_i18n::language::Language;
+use selflow_protocol::ipc::{ChangeView, MessageView, RefusalView, ReportEntry, Request, Response};
 use selflowd::enforcer::PowerMode;
-use selflowd::store::{Event, EventKind};
+use selflowd::store::{Event, EventKind, Store};
 use serde_json::{Value, json};
-use support::{at, brt, no_jitter, sample_view, start, start_with, start_with_config, subscribe};
+use support::{
+    VALID, at, brt, m1_store, no_jitter, sample_view, start, start_over, start_with,
+    start_with_config, subscribe,
+};
 
 fn with_weekend() -> String {
     format!(
@@ -59,6 +62,13 @@ fn detail(event: &Event) -> Value {
     serde_json::from_str(event.detail.as_deref().unwrap()).unwrap()
 }
 
+fn timeline(changes: &[ChangeView]) -> Vec<(&str, Timestamp)> {
+    changes
+        .iter()
+        .map(|change| (change.message.id.as_str(), change.effective_at))
+        .collect()
+}
+
 #[tokio::test]
 async fn an_invalid_file_is_rejected_with_positions_and_not_saved() {
     let (client, shared) = start(at(18, 10, 0)).await;
@@ -74,38 +84,76 @@ async fn an_invalid_file_is_rejected_with_positions_and_not_saved() {
 }
 
 #[tokio::test]
-async fn a_loosening_save_says_when_it_takes_effect() {
-    let (client, _shared) = start(at(18, 10, 0)).await;
-    let first = client
-        .request(Request::SaveConfig { text: no_jitter() })
-        .await;
-    assert!(matches!(
-        first,
-        Response::Saved {
-            kind: ChangeKindView::Tighten,
-            ..
-        }
-    ));
-    let later = no_jitter().replace(r#"bedtime = "23:00""#, r#"bedtime = "01:00""#);
-    let Response::Saved {
-        kind,
-        effective_at,
-        changes,
-    } = client.request(Request::SaveConfig { text: later }).await
+async fn a_save_applies_its_tightening_now_and_dates_its_loosening() {
+    let (client, shared, _clock) = start_with(VALID, PowerMode::Real, None, at(18, 12, 0)).await;
+    let text = VALID
+        .replace(r#"bedtime = "23:00""#, r#"bedtime = "22:00""#)
+        .replace("extensions = 1", "extensions = 3");
+    let Response::Saved { saved_at, changes } = client.request(Request::SaveConfig { text }).await
     else {
         panic!("expected Saved")
     };
+    assert_eq!(saved_at, at(18, 12, 0).timestamp());
     assert_eq!(
-        (kind, effective_at),
-        (ChangeKindView::Loosen, at(19, 10, 0).timestamp())
+        timeline(&changes),
+        [
+            ("change-rule-starts-earlier", at(18, 12, 0).timestamp()),
+            ("change-more-extensions", at(19, 12, 0).timestamp()),
+        ]
     );
-    assert_eq!(changes[0].id, "change-rule-starts-later");
+    let events = shared
+        .store
+        .lock()
+        .unwrap()
+        .events_for(date(2026, 11, 18))
+        .unwrap();
+    let saved: Vec<Value> = events
+        .iter()
+        .filter(|event| event.kind == EventKind::ConfigSaved)
+        .map(detail)
+        .collect();
+    assert_eq!(saved, vec![json!({ "now": 5, "waiting": 5 })]);
+}
+
+#[tokio::test]
+async fn the_config_status_lists_each_waiting_change() {
+    let (client, _shared, clock) = start_with(VALID, PowerMode::Real, None, at(18, 12, 0)).await;
+    let more = VALID.replace("extensions = 1", "extensions = 3");
+    let shorter_wait = more.replace(r#"wait = "2m""#, r#"wait = "1m""#);
+    client.request(Request::SaveConfig { text: more }).await;
+    clock.set(at(18, 14, 0));
+    client
+        .request(Request::SaveConfig { text: shorter_wait })
+        .await;
     let Response::ConfigStatus(status) = client.request(Request::ConfigStatus).await else {
         panic!("expected ConfigStatus")
     };
+    assert_eq!(status.last_saved_at, Some(at(18, 14, 0).timestamp()));
     assert_eq!(
-        status.pending.map(|p| p.effective_at),
-        Some(at(19, 10, 0).timestamp())
+        timeline(&status.pending),
+        [
+            ("change-more-extensions", at(19, 12, 0).timestamp()),
+            ("change-wait-shorter", at(19, 14, 0).timestamp()),
+        ]
+    );
+    let Response::Report(report) = client
+        .request(Request::Report {
+            logical_date: Some(date(2026, 11, 18)),
+        })
+        .await
+    else {
+        panic!("expected Report")
+    };
+    assert_eq!(report.pending, status.pending);
+    assert_eq!(
+        report.entries[0].message,
+        MessageView {
+            id: "report-config-saved".to_owned(),
+            args: vec![
+                ("now".to_owned(), "0".to_owned()),
+                ("waiting".to_owned(), "5".to_owned()),
+            ],
+        }
     );
 }
 
@@ -113,28 +161,63 @@ async fn a_loosening_save_says_when_it_takes_effect() {
 async fn the_first_save_takes_effect_at_once_even_when_it_loosens() {
     let (client, _shared) = start(at(18, 10, 0)).await;
     let text = no_jitter().replace(r#"loosening_delay = "24h""#, r#"loosening_delay = "12h""#);
-    let Response::Saved {
-        kind, effective_at, ..
-    } = client.request(Request::SaveConfig { text }).await
+    let Response::Saved { saved_at, changes } = client.request(Request::SaveConfig { text }).await
     else {
         panic!("expected Saved")
     };
-    assert_eq!(
-        (kind, effective_at),
-        (ChangeKindView::Loosen, at(18, 10, 0).timestamp())
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.message.id == "change-delay-shorter")
     );
+    assert!(changes.iter().all(|change| change.effective_at == saved_at));
 }
 
 #[tokio::test]
-async fn with_nothing_saved_the_status_uses_the_default_files_language() {
-    let (client, _shared) = start(at(18, 10, 0)).await;
+async fn with_nothing_saved_the_status_uses_the_environment_language() {
+    let (client, _shared, _clock) = start_over(
+        Store::open_in_memory().unwrap(),
+        Language::PtBr,
+        at(18, 10, 0),
+    )
+    .await;
     let Response::Config { text } = client.request(Request::GetConfig).await else {
         panic!("expected Config")
     };
     let Response::Status(status) = client.request(Request::Status).await else {
         panic!("expected Status")
     };
-    assert_eq!(status.language, parse(&text).unwrap().language);
+    assert_eq!(status.language, "pt-BR");
+    assert_eq!(parse(&text).unwrap().language, "pt-BR");
+}
+
+#[tokio::test]
+async fn after_an_upgrade_the_first_edit_shows_the_old_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selflow/selflow.db");
+    m1_store(&path);
+    let (client, _shared, _clock) =
+        start_over(Store::open(&path).unwrap(), Language::En, at(19, 12, 0)).await;
+    let Response::Config { text } = client.request(Request::GetConfig).await else {
+        panic!("expected Config")
+    };
+    assert!(parse(&text).is_ok());
+    assert!(text.starts_with(default_config(Language::En)));
+    assert!(text.contains("\n# [[rule_set.lock]]\n"));
+    let Response::Report(report) = client
+        .request(Request::Report {
+            logical_date: Some(date(2026, 11, 18)),
+        })
+        .await
+    else {
+        panic!("expected Report")
+    };
+    let ids: Vec<&str> = report
+        .entries
+        .iter()
+        .map(|entry| entry.message.id.as_str())
+        .collect();
+    assert_eq!(ids, ["report-config-saved-tighten"]);
 }
 
 #[tokio::test]

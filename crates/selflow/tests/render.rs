@@ -1,13 +1,31 @@
 mod support;
 
+use jiff::Timestamp;
 use jiff::civil::date;
 use selflow::render::{render_errors, render_report, render_saved};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
-use selflow_protocol::ipc::{
-    ChangeKindView, MessageView, PositionedMessage, ReportEntry, ReportView,
-};
+use selflow_protocol::ipc::{ChangeView, MessageView, PositionedMessage, ReportEntry, ReportView};
 use support::{at, brt};
+
+fn change(id: &str, old: &str, new: &str, effective_at: Timestamp) -> ChangeView {
+    let args = [
+        ("rule", "bedtime"),
+        ("days", "thu"),
+        ("old", old),
+        ("new", new),
+    ];
+    ChangeView {
+        message: MessageView {
+            id: id.to_owned(),
+            args: args
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+        },
+        effective_at,
+    }
+}
 
 #[test]
 fn renders_errors_with_line_and_column_in_portuguese() {
@@ -25,53 +43,62 @@ fn renders_errors_with_line_and_column_in_portuguese() {
 }
 
 #[test]
-fn renders_when_a_loosening_takes_effect() {
-    let effective = at(20, 10, 0).timestamp();
-    let pt = render_saved(
-        &Localizer::new(Language::PtBr),
-        ChangeKindView::Loosen,
-        effective,
-        &[],
-        &brt(),
+fn a_save_lists_what_applies_now_and_what_waits() {
+    let saved_at = at(18, 12, 0).timestamp();
+    let changes = [
+        change("change-rule-starts-earlier", "23:00", "22:00", saved_at),
+        change(
+            "change-more-extensions",
+            "1",
+            "3",
+            at(19, 12, 0).timestamp(),
+        ),
+    ];
+    let en = render_saved(&Localizer::new(Language::En), saved_at, &changes, &brt());
+    assert_eq!(
+        en,
+        "Saved. Applies now:\n\
+         - The rule `bedtime` starts earlier on thu: 23:00 → 22:00.\n\
+         Waits until Thu 19 Nov, 12:00:\n\
+         - For the rule `bedtime`, each day allows more extensions on thu: 1 → 3."
     );
-    let en = render_saved(
-        &Localizer::new(Language::En),
-        ChangeKindView::Loosen,
-        effective,
-        &[],
-        &brt(),
-    );
-    assert!(pt.contains("sex 20 nov, 10:00"));
-    assert!(en.contains("Fri 20 Nov, 10:00"));
+    let pt = render_saved(&Localizer::new(Language::PtBr), saved_at, &changes, &brt());
+    assert!(pt.contains("qui 19 nov, 12:00"));
 }
 
 #[test]
-fn renders_events_at_their_time_and_a_waiting_change_on_its_date() {
-    let effective = at(20, 10, 0).timestamp();
+fn a_save_without_changes_says_so() {
+    let localizer = Localizer::new(Language::En);
+    assert_eq!(
+        render_saved(&localizer, at(18, 12, 0).timestamp(), &[], &brt()),
+        localizer.text("cli-saved-nothing", &[])
+    );
+}
+
+#[test]
+fn renders_events_at_their_time_and_the_waiting_changes_on_their_dates() {
     let report = ReportView {
         logical_date: date(2026, 11, 19),
-        entries: vec![
-            ReportEntry {
-                at: at(19, 23, 0).timestamp(),
-                message: MessageView {
-                    id: "report-lock-started".into(),
-                    args: vec![("label".into(), "bedtime".into())],
-                },
+        entries: vec![ReportEntry {
+            at: at(19, 23, 0).timestamp(),
+            message: MessageView {
+                id: "report-lock-started".into(),
+                args: vec![("label".into(), "bedtime".into())],
             },
-            ReportEntry {
-                at: effective,
-                message: MessageView {
-                    id: "report-pending".into(),
-                    args: vec![("when".into(), effective.to_string())],
-                },
-            },
-        ],
+        }],
+        pending: vec![change(
+            "change-more-extensions",
+            "1",
+            "3",
+            at(20, 10, 0).timestamp(),
+        )],
     };
     let out = render_report(&Localizer::new(Language::En), &report, &brt());
     assert_eq!(
         out,
         "Report for 2026-11-19\n\
          23:00  The bedtime lock started.\n\
-         A saved change takes effect on Fri 20 Nov, 10:00."
+         Changes still waiting:\n\
+         Fri 20 Nov, 10:00  For the rule `bedtime`, each day allows more extensions on thu: 1 → 3."
     );
 }

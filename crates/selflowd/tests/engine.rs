@@ -5,14 +5,14 @@ use std::os::unix::fs::PermissionsExt;
 
 use jiff::SignedDuration;
 use jiff::civil::date;
-use selflow_core::versions::ChangeKind;
 use selflow_protocol::ipc::{Request, Response};
 use selflowd::enforcer::PowerMode;
 use selflowd::ipc::handle;
 use selflowd::store::{EventKind, Store};
 use serde_json::{Value, json};
 use support::{
-    Call, at, brt, engine_on, extension, no_jitter, setup, setup_on, setup_over, shared_over,
+    Call, Calls, at, brt, engine_on, extension, no_jitter, save_at, setup, setup_on, setup_over,
+    shared_over,
 };
 
 #[test]
@@ -136,10 +136,7 @@ fn a_restart_keeps_the_spent_budget_and_one_start_event() {
 #[test]
 fn a_rule_that_just_came_into_force_waits_its_full_shutdown_time() {
     let store = Store::open_in_memory().unwrap();
-    let saved_at = at(19, 23, 40).timestamp();
-    store
-        .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
-        .unwrap();
+    save_at(&store, &no_jitter(), at(19, 23, 40));
     let (mut engine, calls, clock, store) = setup_over(store, at(19, 23, 40));
     engine.tick().unwrap();
     clock.set(at(19, 23, 42));
@@ -191,12 +188,7 @@ fn a_neutral_save_during_a_lock_does_not_postpone_its_shutdown() {
         "id = \"bedtime\"\n",
         "id = \"bedtime\"\nlabel = \"sleep\"\n",
     );
-    let saved_at = at(19, 23, 20).timestamp();
-    store
-        .lock()
-        .unwrap()
-        .save_version(&relabeled, saved_at, saved_at, ChangeKind::Neutral)
-        .unwrap();
+    save_at(&store.lock().unwrap(), &relabeled, at(19, 23, 20));
     engine.tick().unwrap();
     clock.set(at(19, 23, 31));
     engine.tick().unwrap();
@@ -211,12 +203,30 @@ fn a_neutral_save_during_a_lock_does_not_postpone_its_shutdown() {
 }
 
 #[test]
+fn a_loosening_waits_while_a_tightening_from_the_same_save_applies() {
+    let shown = |calls: &Calls| -> Vec<Call> {
+        calls
+            .take()
+            .into_iter()
+            .filter(|call| !matches!(call, Call::Warn(_)))
+            .collect()
+    };
+    let (mut engine, calls, clock, store) = setup(at(18, 22, 0));
+    let text = no_jitter()
+        .replace(r#"bedtime = "23:00""#, r#"bedtime = "22:00""#)
+        .replace("extensions = 1", "extensions = 3");
+    save_at(&store.lock().unwrap(), &text, at(18, 12, 0));
+    engine.tick().unwrap();
+    assert_eq!(shown(&calls), [Call::Show("bedtime".into(), 1)]);
+    clock.set(at(19, 22, 0));
+    engine.tick().unwrap();
+    assert_eq!(shown(&calls), [Call::Show("bedtime".into(), 3)]);
+}
+
+#[test]
 fn a_shutdown_that_would_come_after_the_lock_ends_is_dropped() {
     let store = Store::open_in_memory().unwrap();
-    let saved_at = at(20, 6, 40).timestamp();
-    store
-        .save_version(&no_jitter(), saved_at, saved_at, ChangeKind::Tighten)
-        .unwrap();
+    save_at(&store, &no_jitter(), at(20, 6, 40));
     let (mut engine, calls, clock, _store) = setup_over(store, at(20, 6, 40));
     engine.tick().unwrap();
     assert_eq!(calls.last_view().map(|view| view.shutdown_at), Some(None));

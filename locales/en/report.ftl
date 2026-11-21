@@ -8,4 +8,4 @@ report-extension-test = You asked for { $minutes } more min during the test lock
 report-config-saved-tighten = You saved a change that makes the rules firmer. It applied right away.
 report-config-saved-loosen = You saved a change that loosens the rules. It waits a while before it applies.
 report-config-saved-neutral = You saved your settings.
-report-pending = A saved change takes effect on { $when }.
+report-config-saved = You saved your settings (changes applied right away: { $now }, changes waiting: { $waiting }).

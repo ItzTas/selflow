@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use selflow_i18n::language::Language;
 use selflow_protocol::ipc::LockView;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
@@ -15,6 +16,7 @@ pub struct Shared {
     pub wake: mpsc::Sender<()>,
     pub views: watch::Receiver<Option<LockView>>,
     pub power: PowerMode,
+    pub env_language: Language,
 }
 
 #[derive(Debug, Error)]

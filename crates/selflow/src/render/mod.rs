@@ -2,7 +2,7 @@ use jiff::tz::TimeZone;
 use jiff::{Timestamp, ZonedDateTime};
 use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::{
-    ChangeKindView, ConfigStatusView, MessageView, PositionedMessage, ReportEntry, ReportView,
+    ChangeView, ConfigStatusView, MessageView, PositionedMessage, ReportEntry, ReportView,
 };
 
 const WEEKDAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -35,18 +35,23 @@ pub fn render_errors(localizer: &Localizer, errors: &[PositionedMessage]) -> Str
 
 pub fn render_saved(
     localizer: &Localizer,
-    kind: ChangeKindView,
-    effective_at: Timestamp,
-    changes: &[MessageView],
+    saved_at: Timestamp,
+    changes: &[ChangeView],
     tz: &TimeZone,
 ) -> String {
-    let when = format_moment(localizer, effective_at, tz);
-    let headline = match kind {
-        ChangeKindView::Tighten => localizer.text("cli-saved-tighten", &[]),
-        ChangeKindView::Loosen => localizer.text("cli-saved-loosen", &[("when", Arg::Text(when))]),
-        ChangeKindView::Neutral => localizer.text("cli-saved-neutral", &[]),
-    };
-    with_bullets(localizer, headline, changes)
+    if changes.is_empty() {
+        return localizer.text("cli-saved-nothing", &[]);
+    }
+    let (now, later): (Vec<&ChangeView>, Vec<&ChangeView>) = changes
+        .iter()
+        .partition(|change| change.effective_at <= saved_at);
+    let applied = (!now.is_empty())
+        .then(|| with_bullets(localizer, localizer.text("cli-saved-now", &[]), &now));
+    applied
+        .into_iter()
+        .chain(by_time(localizer, "cli-saved-later", &later, tz))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn render_config_status(
@@ -54,55 +59,57 @@ pub fn render_config_status(
     status: &ConfigStatusView,
     tz: &TimeZone,
 ) -> String {
-    let in_force = match status.in_force_saved_at {
+    let saved = match status.last_saved_at {
         Some(at) => localizer.text(
-            "cli-status-in-force",
+            "cli-status-last-saved",
             &[("when", Arg::Text(format_moment(localizer, at, tz)))],
         ),
         None => localizer.text("cli-status-default", &[]),
     };
-    let Some(pending) = &status.pending else {
-        return format!(
-            "{in_force}\n{}",
-            localizer.text("cli-status-no-pending", &[])
-        );
-    };
-    let headline = localizer.text(
-        "cli-status-pending",
-        &[(
-            "when",
-            Arg::Text(format_moment(localizer, pending.effective_at, tz)),
-        )],
-    );
-    format!(
-        "{in_force}\n{}",
-        with_bullets(localizer, headline, &pending.changes)
-    )
-}
-
-pub fn render_report(localizer: &Localizer, report: &ReportView, tz: &TimeZone) -> String {
-    let heading = localizer.text(
-        "cli-report-heading",
-        &[("date", Arg::Text(report.logical_date.to_string()))],
-    );
-    if report.entries.is_empty() {
-        return format!("{heading}\n{}", localizer.text("cli-report-empty", &[]));
+    if status.pending.is_empty() {
+        return format!("{saved}\n{}", localizer.text("cli-status-no-pending", &[]));
     }
-    let lines = report
-        .entries
-        .iter()
-        .map(|entry| report_line(localizer, entry, tz));
-    std::iter::once(heading)
-        .chain(lines)
+    let pending: Vec<&ChangeView> = status.pending.iter().collect();
+    std::iter::once(saved)
+        .chain(by_time(localizer, "cli-status-pending", &pending, tz))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn report_line(localizer: &Localizer, entry: &ReportEntry, tz: &TimeZone) -> String {
-    if entry.message.id == "report-pending" {
-        let when = format_moment(localizer, entry.at, tz);
-        return localizer.text("report-pending", &[("when", Arg::Text(when))]);
+pub fn render_report(localizer: &Localizer, report: &ReportView, tz: &TimeZone) -> String {
+    let mut lines = vec![localizer.text(
+        "cli-report-heading",
+        &[("date", Arg::Text(report.logical_date.to_string()))],
+    )];
+    if report.entries.is_empty() {
+        lines.push(localizer.text("cli-report-empty", &[]));
     }
+    lines.extend(
+        report
+            .entries
+            .iter()
+            .map(|entry| report_line(localizer, entry, tz)),
+    );
+    if report.pending.is_empty() {
+        return lines.join("\n");
+    }
+    lines.push(localizer.text("cli-report-waiting", &[]));
+    lines.extend(report.pending.iter().map(|change| {
+        localizer.text(
+            "cli-report-waiting-line",
+            &[
+                (
+                    "when",
+                    Arg::Text(format_moment(localizer, change.effective_at, tz)),
+                ),
+                ("text", Arg::Text(message_text(localizer, &change.message))),
+            ],
+        )
+    }));
+    lines.join("\n")
+}
+
+fn report_line(localizer: &Localizer, entry: &ReportEntry, tz: &TimeZone) -> String {
     let at = entry.at.to_zoned_datetime(tz.clone());
     format!(
         "{:02}:{:02}  {}",
@@ -112,10 +119,37 @@ fn report_line(localizer: &Localizer, entry: &ReportEntry, tz: &TimeZone) -> Str
     )
 }
 
-fn with_bullets(localizer: &Localizer, headline: String, changes: &[MessageView]) -> String {
+fn by_time(
+    localizer: &Localizer,
+    heading: &str,
+    changes: &[&ChangeView],
+    tz: &TimeZone,
+) -> Vec<String> {
+    let mut times: Vec<Timestamp> = changes.iter().map(|change| change.effective_at).collect();
+    times.sort();
+    times.dedup();
+    times
+        .into_iter()
+        .map(|time| {
+            let when = Arg::Text(format_moment(localizer, time, tz));
+            let group: Vec<&ChangeView> = changes
+                .iter()
+                .copied()
+                .filter(|change| change.effective_at == time)
+                .collect();
+            with_bullets(
+                localizer,
+                localizer.text(heading, &[("when", when)]),
+                &group,
+            )
+        })
+        .collect()
+}
+
+fn with_bullets(localizer: &Localizer, headline: String, changes: &[&ChangeView]) -> String {
     changes
         .iter()
-        .map(|change| format!("- {}", message_text(localizer, change)))
+        .map(|change| format!("- {}", message_text(localizer, &change.message)))
         .fold(headline, |text, line| format!("{text}\n{line}"))
 }
 

@@ -22,3 +22,4 @@ config-empty-message = The message of the rule `{ $id }` has an empty text.
 config-bad-date = The value `{ $value }` isn't a date like 2026-12-25.
 config-duplicate-exception = There's already an exception for { $date }.
 config-exception-unknown-rule = The exception for { $date } names `{ $rule }`, but the rule set for that day has no rule with that id.
+config-before-update = Your settings from before this Selflow update, kept here for reference. Selflow no longer reads them, so copy what you want to keep into the file above.

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
@@ -6,34 +7,32 @@ use selflow_core::config::{Action, Config, ConfigError, Rule, RuleSet, parse};
 use selflow_core::enforce::{Enforcement, GrantedExtension, evaluate};
 use selflow_core::plan::{LockWindow, windows_around};
 use selflow_core::timing::logical_date;
-use selflow_core::versions::{
-    Change, ChangeKind, Classification, StoredVersion, classify, effective_at, in_force, pending,
-};
+use selflow_core::versions::{TimedChange, config_at, plan_save, shown, stored_changes, waiting};
 use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
+use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
-    ChangeKindView, ConfigStatusView, LockView, MessageView, PendingView, PositionedMessage,
-    RefusalView, ReportEntry, ReportView, Request, Response, StatusView,
+    ChangeView, ConfigStatusView, LockView, MessageView, PositionedMessage, RefusalView,
+    ReportEntry, ReportView, Request, Response, StatusView,
 };
 use serde_json::{Value, json};
-use tokio::sync::watch;
 
 use super::constants::{TEST_LOCK_MAX, TEST_LOCK_MIN};
 use super::types::{IpcError, Shared};
 use crate::enforcer::PowerMode;
-use crate::engine::{EngineError, config_in_force, event_detail};
+use crate::engine::{config_in_force, event_detail, stored_history};
 use crate::store::{Event, EventKind, Store};
 
 pub fn handle(request: Request, shared: &Shared) -> Response {
     let now = shared.clock.now();
     let store = locked(&shared.store);
     let answer = match request {
-        Request::Status => status(&store, &now, &shared.views),
+        Request::Status => status(&store, &now, shared),
         Request::SubscribeLock => Ok(lock_state(&shared.views.borrow())),
         Request::RequestExtension { reason, phrase } => {
             extend(&store, &now, &ExtensionAnswer { reason, phrase })
         }
-        Request::GetConfig => config_text(&store),
+        Request::GetConfig => config_text(&store, shared.env_language),
         Request::SaveConfig { text } => save(&store, &now, text),
         Request::ConfigStatus => config_status(&store, now.timestamp()),
         Request::Report { logical_date } => report(&store, &now, logical_date),
@@ -64,36 +63,48 @@ pub(super) fn lock_state(view: &Option<LockView>) -> Response {
     }
 }
 
-fn status(
-    store: &Store,
-    now: &ZonedDateTime,
-    views: &watch::Receiver<Option<LockView>>,
-) -> Result<Response, IpcError> {
+fn status(store: &Store, now: &ZonedDateTime, shared: &Shared) -> Result<Response, IpcError> {
     let instant = now.timestamp();
-    let versions = store.versions()?;
-    let current = in_force(&versions, instant);
-    let config = config_of(current)?;
+    let history = stored_history(store)?;
+    let config = config_at(&history, instant);
     let next_lock_at = windows_around(&config, store.seed()?, now)
         .iter()
         .map(|window| window.starts_at.timestamp())
         .filter(|starts_at| *starts_at > instant)
         .min();
-    let language = match current {
-        Some(_) => config.language,
-        None => Language::from_env().tag().to_owned(),
+    let language = if history.saved.is_empty() {
+        shared.env_language.tag().to_owned()
+    } else {
+        config.language
     };
     Ok(Response::Status(StatusView {
         language,
-        locked: views.borrow().clone(),
+        locked: shared.views.borrow().clone(),
         next_lock_at,
     }))
 }
 
-fn config_text(store: &Store) -> Result<Response, IpcError> {
-    let text = store
-        .latest_text()?
-        .unwrap_or_else(|| default_config(Language::from_env()).to_owned());
-    Ok(Response::Config { text })
+fn config_text(store: &Store, language: Language) -> Result<Response, IpcError> {
+    if let Some(text) = store.latest_text()? {
+        return Ok(Response::Config { text });
+    }
+    let default = default_config(language);
+    let Some(old) = store.m1_text()? else {
+        return Ok(Response::Config {
+            text: default.to_owned(),
+        });
+    };
+    let note = Localizer::new(language).text("config-before-update", &[]);
+    let commented: Vec<String> = old
+        .lines()
+        .map(|line| match line {
+            "" => "#".to_owned(),
+            _ => format!("# {line}"),
+        })
+        .collect();
+    Ok(Response::Config {
+        text: format!("{default}\n# {note}\n{}\n", commented.join("\n")),
+    })
 }
 
 fn save(store: &Store, now: &ZonedDateTime, text: String) -> Result<Response, IpcError> {
@@ -106,52 +117,35 @@ fn save(store: &Store, now: &ZonedDateTime, text: String) -> Result<Response, Ip
         }
     };
     let saved_at = now.timestamp();
-    let versions = store.versions()?;
-    let current_version = in_force(&versions, saved_at);
-    let current = config_of(current_version)?;
-    let Classification { kind, changes } = classify(&current, &proposed);
-    let takes_effect = current_version.map_or(saved_at, |_| effective_at(kind, saved_at, &current));
-    let id = store.save_version(&text, saved_at, takes_effect, kind)?;
-    let kind = kind_view(kind);
+    let history = stored_history(store)?;
+    let planned = plan_save(&history, &proposed, saved_at);
+    let changes = stored_changes(&planned);
+    let id = store.save_version(&text, saved_at, &changes)?;
+    let (applied, later): (Vec<_>, Vec<_>) = changes
+        .iter()
+        .partition(|change| change.effective_at <= saved_at);
     record(
         store,
         &Event {
             at: saved_at,
-            logical_date: logical_date(now, current.day_starts_at),
+            logical_date: logical_date(now, config_at(&history, saved_at).day_starts_at),
             kind: EventKind::ConfigSaved,
             key: id.to_string(),
-            detail: Some(json!({ "kind": &kind }).to_string()),
+            detail: Some(json!({ "now": applied.len(), "waiting": later.len() }).to_string()),
         },
     );
     Ok(Response::Saved {
-        kind,
-        effective_at: takes_effect,
-        changes: changes.iter().map(change_message).collect(),
+        saved_at,
+        changes: change_views(&planned),
     })
 }
 
 fn config_status(store: &Store, now: Timestamp) -> Result<Response, IpcError> {
-    let versions = store.versions()?;
-    let current = in_force(&versions, now);
-    let waiting = pending(&versions, now)
-        .map(|version| pending_view(current, version))
-        .transpose()?;
+    let history = stored_history(store)?;
     Ok(Response::ConfigStatus(ConfigStatusView {
-        in_force_saved_at: current.map(|version| version.saved_at),
-        pending: waiting,
+        last_saved_at: history.saved.last().map(|version| version.saved_at),
+        pending: change_views(&waiting(&history, now)),
     }))
-}
-
-fn pending_view(
-    current: Option<&StoredVersion>,
-    version: &StoredVersion,
-) -> Result<PendingView, IpcError> {
-    let changes = classify(&config_of(current)?, &config_of(Some(version))?).changes;
-    Ok(PendingView {
-        saved_at: version.saved_at,
-        effective_at: version.effective_at,
-        changes: changes.iter().map(change_message).collect(),
-    })
 }
 
 fn extend(
@@ -254,7 +248,12 @@ fn chosen_rule<'a>(
     if let Some(found) = rules.iter().find(|rule| slug_of(rule) == slug) {
         return Ok(*found);
     }
-    let valid: Vec<String> = rules.iter().map(slug_of).collect();
+    let mut seen = HashSet::new();
+    let valid: Vec<String> = rules
+        .iter()
+        .map(slug_of)
+        .filter(|slug| seen.insert(slug.clone()))
+        .collect();
     Err(message(
         "ipc-test-lock-unknown-rule",
         &[("rule", slug.to_owned()), ("rules", valid.join(", "))],
@@ -272,27 +271,18 @@ fn report(
     now: &ZonedDateTime,
     requested: Option<civil::Date>,
 ) -> Result<Response, IpcError> {
+    let history = stored_history(store)?;
     let day = match requested {
         Some(day) => day,
         None => {
-            let today = logical_date(now, config_in_force(store, now.timestamp())?.day_starts_at);
+            let today = logical_date(now, config_at(&history, now.timestamp()).day_starts_at);
             today.yesterday().unwrap_or(today)
         }
     };
-    let mut entries: Vec<ReportEntry> = store.events_for(day)?.iter().map(report_entry).collect();
-    let versions = store.versions()?;
-    entries.extend(
-        pending(&versions, now.timestamp()).map(|version| ReportEntry {
-            at: version.effective_at,
-            message: message(
-                "report-pending",
-                &[("when", version.effective_at.to_string())],
-            ),
-        }),
-    );
     Ok(Response::Report(ReportView {
         logical_date: day,
-        entries,
+        entries: store.events_for(day)?.iter().map(report_entry).collect(),
+        pending: change_views(&waiting(&history, now.timestamp())),
     }))
 }
 
@@ -311,7 +301,10 @@ fn report_entry(event: &Event) -> ReportEntry {
             &["label", "minutes", "reason"],
         ),
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
-        EventKind::ConfigSaved => (format!("report-config-saved-{}", field("kind")), &[]),
+        EventKind::ConfigSaved => match &detail["kind"] {
+            Value::String(kind) => (format!("report-config-saved-{kind}"), &[]),
+            _ => ("report-config-saved".to_owned(), &["now", "waiting"]),
+        },
     };
     if detail["test"] == true && event.kind != EventKind::Shutdown {
         id.push_str("-test");
@@ -364,26 +357,6 @@ fn record(store: &Store, event: &Event) {
     }
 }
 
-fn config_of(version: Option<&StoredVersion>) -> Result<Config, IpcError> {
-    let Some(version) = version else {
-        return Ok(Config::empty());
-    };
-    parse(&version.text).map_err(|errors| {
-        IpcError::from(EngineError::StoredConfig {
-            id: version.id,
-            errors,
-        })
-    })
-}
-
-fn kind_view(kind: ChangeKind) -> ChangeKindView {
-    match kind {
-        ChangeKind::Tighten => ChangeKindView::Tighten,
-        ChangeKind::Loosen => ChangeKindView::Loosen,
-        ChangeKind::Neutral => ChangeKindView::Neutral,
-    }
-}
-
 fn refusal_view(refusal: Refusal) -> RefusalView {
     match refusal {
         Refusal::TooEarly { available_at } => RefusalView::TooEarly { available_at },
@@ -401,8 +374,14 @@ fn positioned(error: &ConfigError) -> PositionedMessage {
     }
 }
 
-fn change_message(change: &Change) -> MessageView {
-    message(change.id, &change.args)
+fn change_views(changes: &[TimedChange]) -> Vec<ChangeView> {
+    shown(changes)
+        .into_iter()
+        .map(|change| ChangeView {
+            message: message(change.id, &change.args),
+            effective_at: change.effective_at,
+        })
+        .collect()
 }
 
 fn message(id: &str, args: &[(&str, String)]) -> MessageView {

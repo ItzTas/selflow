@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -8,13 +9,18 @@ use jiff::{
     civil::date,
     tz::{self, TimeZone},
 };
+use rusqlite::{Connection, params};
+use selflow_core::config::parse;
 use selflow_core::enforce::GrantedExtension;
-use selflow_core::versions::ChangeKind;
+use selflow_core::plan::windows_for;
+use selflow_core::timing::Seed;
+use selflow_core::versions::{plan_save, stored_changes};
+use selflow_i18n::language::Language;
 use selflow_platform::transport::{Stream, connect, listen};
 use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
 use selflowd::clock::Clock;
 use selflowd::enforcer::PowerMode;
-use selflowd::engine::{Enforcer, Engine};
+use selflowd::engine::{Enforcer, Engine, stored_history};
 use selflowd::ipc::{Shared, serve};
 use selflowd::store::Store;
 use tempfile::TempDir;
@@ -124,9 +130,18 @@ pub fn save_no_jitter(store: &Store) {
 }
 
 pub fn save_text(store: &Store, text: &str) {
-    let saved_at = at(18, 10, 0).timestamp();
+    save_at(store, text, at(18, 10, 0));
+}
+
+pub fn save_at(store: &Store, text: &str, when: ZonedDateTime) {
+    let saved_at = when.timestamp();
+    let planned = plan_save(
+        &stored_history(store).unwrap(),
+        &parse(text).unwrap(),
+        saved_at,
+    );
     store
-        .save_version(text, saved_at, saved_at, ChangeKind::Tighten)
+        .save_version(text, saved_at, &stored_changes(&planned))
         .unwrap();
 }
 
@@ -172,6 +187,77 @@ shutdown_after = "30m"
 
 pub fn no_jitter() -> String {
     VALID.replace("start_jitter = \"15m\"\n", "")
+}
+
+pub const M1_TEXT: &str = r#"
+language = "pt-BR"
+day_starts_at = "05:00"
+loosening_delay = "24h"
+
+[anchors]
+bedtime = "23:00"
+wake = "07:00"
+
+[[rule_set]]
+name = "weeknight"
+days = ["sun", "mon", "tue", "wed", "thu"]
+
+[rule_set.challenges]
+wait = "2m"
+reason = true
+extensions = 1
+extension_length = "20m"
+
+[[rule_set.lock]]
+id = "bedtime"
+start = "bedtime"
+start_jitter = "15m"
+end = "wake"
+warnings = ["5m", "15m", "1m"]
+shutdown_after = "30m"
+"#;
+
+const M1_SCHEMA: &str = "
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+CREATE TABLE config_versions (id INTEGER PRIMARY KEY, saved_at TEXT NOT NULL, effective_at TEXT NOT NULL,
+  kind TEXT NOT NULL, text TEXT NOT NULL, superseded INTEGER NOT NULL DEFAULT 0) STRICT;
+CREATE TABLE extensions (id INTEGER PRIMARY KEY, rule_set TEXT NOT NULL, rule_id TEXT NOT NULL,
+  logical_date TEXT NOT NULL, granted_at TEXT NOT NULL, until TEXT NOT NULL, reason TEXT NOT NULL) STRICT;
+CREATE TABLE started_windows (key TEXT NOT NULL, logical_date TEXT NOT NULL, window TEXT NOT NULL,
+  PRIMARY KEY (key, logical_date)) STRICT;
+CREATE TABLE events (id INTEGER PRIMARY KEY, at TEXT NOT NULL, logical_date TEXT NOT NULL, kind TEXT NOT NULL,
+  key TEXT NOT NULL, detail TEXT, UNIQUE (kind, key)) STRICT;
+PRAGMA user_version = 1;
+";
+
+pub fn m1_store(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conn = Connection::open(path).unwrap();
+    conn.execute_batch(M1_SCHEMA).unwrap();
+    let saved_at = "2026-11-18T13:00:00.000000000Z";
+    conn.execute(
+        "INSERT INTO config_versions (saved_at, effective_at, kind, text) VALUES (?1, ?1, 'tighten', ?2)",
+        params![saved_at, M1_TEXT],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO events (at, logical_date, kind, key, detail)
+         VALUES (?1, '2026-11-18', 'config_saved', '1', '{\"kind\":\"tighten\"}')",
+        params![saved_at],
+    )
+    .unwrap();
+    let window = windows_for(
+        &parse(&no_jitter()).unwrap(),
+        Seed(7),
+        date(2026, 11, 19),
+        &brt(),
+    )
+    .remove(0);
+    conn.execute(
+        "INSERT INTO started_windows (key, logical_date, window) VALUES (?1, '2026-11-19', ?2)",
+        params![window.key(), serde_json::to_string(&window).unwrap()],
+    )
+    .unwrap();
 }
 
 pub fn extension(from: (i8, i8), until: (i8, i8)) -> GrantedExtension {
@@ -243,14 +329,15 @@ impl Subscriber {
 }
 
 pub async fn start(now: ZonedDateTime) -> (TestClient, Arc<Shared>) {
-    let (client, shared, _clock) = start_on(Store::open_in_memory().unwrap(), now).await;
+    let (client, shared, _clock) =
+        start_over(Store::open_in_memory().unwrap(), Language::En, now).await;
     (client, shared)
 }
 
 pub async fn start_with_config(now: ZonedDateTime) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
     let store = Store::open_in_memory().unwrap();
     save_no_jitter(&store);
-    start_on(store, now).await
+    start_over(store, Language::En, now).await
 }
 
 pub async fn start_with(
@@ -263,7 +350,7 @@ pub async fn start_with(
     save_text(&store, text);
     let clock = Arc::new(TestClock::new(now));
     let (_, views) = watch::channel(view);
-    let (dir, stream, shared) = launch(store, clock.clone(), views, power).await;
+    let (dir, stream, shared) = launch(store, clock.clone(), views, power, Language::En).await;
     let client = TestClient {
         stream: tokio::sync::Mutex::new(BufReader::new(stream)),
         _dir: dir,
@@ -280,6 +367,7 @@ pub fn shared_over(store: Arc<Mutex<Store>>, clock: Arc<TestClock>, power: Power
         wake,
         views,
         power,
+        env_language: Language::En,
     }
 }
 
@@ -291,6 +379,7 @@ pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
         clock,
         views,
         PowerMode::Real,
+        Language::En,
     )
     .await;
     let mut stream = BufReader::new(stream);
@@ -300,10 +389,15 @@ pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
     (Subscriber { stream, _dir: dir }, sender)
 }
 
-async fn start_on(store: Store, now: ZonedDateTime) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
+pub async fn start_over(
+    store: Store,
+    env_language: Language,
+    now: ZonedDateTime,
+) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
     let clock = Arc::new(TestClock::new(now));
     let (_, views) = watch::channel(None);
-    let (dir, stream, shared) = launch(store, clock.clone(), views, PowerMode::Real).await;
+    let (dir, stream, shared) =
+        launch(store, clock.clone(), views, PowerMode::Real, env_language).await;
     let client = TestClient {
         stream: tokio::sync::Mutex::new(BufReader::new(stream)),
         _dir: dir,
@@ -316,6 +410,7 @@ async fn launch(
     clock: Arc<dyn Clock>,
     views: watch::Receiver<Option<LockView>>,
     power: PowerMode,
+    env_language: Language,
 ) -> (TempDir, Stream, Arc<Shared>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("selflow/daemon.sock");
@@ -327,6 +422,7 @@ async fn launch(
         wake,
         views,
         power,
+        env_language,
     });
     tokio::spawn(serve(listener, Arc::clone(&shared)));
     let stream = connect(&path).await.unwrap();

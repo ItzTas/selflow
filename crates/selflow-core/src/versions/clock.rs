@@ -37,7 +37,7 @@ pub fn plan_save(history: &History, proposed: &Config, saved_at: Timestamp) -> V
             if entries.is_empty() {
                 entries.push(canceled(scope, field));
             }
-            let effective_at = match loosest(&entries) {
+            let effective_at = match loosest(entries.iter().map(|entry| entry.kind)) {
                 ChangeKind::Loosen => earliest(history, &unit, proposed, saved_at, delayed),
                 ChangeKind::Tighten | ChangeKind::Neutral => saved_at,
             };
@@ -68,6 +68,23 @@ pub fn waiting(history: &History, at: Timestamp) -> Vec<TimedChange> {
                 })
         })
         .collect()
+}
+
+pub fn stored_changes(planned: &[TimedChange]) -> Vec<StoredChange> {
+    let mut stored: Vec<StoredChange> = Vec::new();
+    for timed in planned {
+        let unit = timed.change.unit();
+        match stored.iter_mut().find(|seen| seen.unit == unit) {
+            Some(seen) => seen.kind = loosest([seen.kind, timed.change.kind].into_iter()),
+            None => stored.push(StoredChange {
+                version_id: 0,
+                unit,
+                kind: timed.change.kind,
+                effective_at: timed.effective_at,
+            }),
+        }
+    }
+    stored
 }
 
 pub fn rule_since(
@@ -152,10 +169,10 @@ fn canceled(scope: Scope, field: &'static str) -> UnitChange {
     }
 }
 
-fn loosest(entries: &[UnitChange]) -> ChangeKind {
+fn loosest(kinds: impl Iterator<Item = ChangeKind> + Clone) -> ChangeKind {
     [ChangeKind::Loosen, ChangeKind::Neutral]
         .into_iter()
-        .find(|kind| entries.iter().any(|entry| entry.kind == *kind))
+        .find(|kind| kinds.clone().any(|seen| seen == *kind))
         .unwrap_or(ChangeKind::Tighten)
 }
 

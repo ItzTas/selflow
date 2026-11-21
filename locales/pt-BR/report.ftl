@@ -8,4 +8,4 @@ report-extension-test = Você pediu mais { $minutes } min durante o bloqueio de 
 report-config-saved-tighten = Você salvou uma mudança que deixa as regras mais firmes. Ela passou a valer na hora.
 report-config-saved-loosen = Você salvou uma mudança que afrouxa as regras. Ela espera um tempo antes de valer.
 report-config-saved-neutral = Você salvou suas configurações.
-report-pending = Uma mudança salva passa a valer em { $when }.
+report-config-saved = Você salvou suas configurações (mudanças que valeram na hora: { $now }, mudanças aguardando: { $waiting }).
