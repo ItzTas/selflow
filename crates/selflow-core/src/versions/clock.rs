@@ -3,9 +3,10 @@ use std::mem::discriminant;
 use jiff::{Timestamp, civil::Weekday};
 
 use super::assemble::config_at;
+use super::constants::RULE_FIELDS;
 use super::types::{ChangeKind, History, Scope, StoredChange, TimedChange, UnitChange, rule_unit};
 use super::{diff, just_before};
-use crate::config::{Action, Config};
+use crate::config::{Action, Config, DAYS};
 
 pub fn plan_save(history: &History, proposed: &Config, saved_at: Timestamp) -> Vec<TimedChange> {
     let Some(latest) = history.saved.last() else {
@@ -22,16 +23,19 @@ pub fn plan_save(history: &History, proposed: &Config, saved_at: Timestamp) -> V
     let delayed = saved_at
         .checked_add(now.loosening_delay)
         .unwrap_or(Timestamp::MAX);
-    changed_units(&latest.config, proposed, &judged)
+    let waiting_units: Vec<&str> = still_waiting(history, saved_at)
+        .map(|stored| stored.unit.as_str())
+        .collect();
+    changed_units(&latest.config, proposed, &judged, &waiting_units)
         .into_iter()
-        .flat_map(|(unit, first)| {
+        .flat_map(|(unit, scope, field)| {
             let mut entries: Vec<UnitChange> = judged
                 .iter()
                 .filter(|entry| entry.unit() == unit)
                 .cloned()
                 .collect();
             if entries.is_empty() {
-                entries.push(canceled(&first));
+                entries.push(canceled(scope, field));
             }
             let effective_at = match loosest(&entries) {
                 ChangeKind::Loosen => earliest(history, &unit, proposed, saved_at, delayed),
@@ -47,10 +51,7 @@ pub fn plan_save(history: &History, proposed: &Config, saved_at: Timestamp) -> V
 
 pub fn waiting(history: &History, at: Timestamp) -> Vec<TimedChange> {
     let now = config_at(history, at);
-    history
-        .changes
-        .iter()
-        .filter(|stored| stored.effective_at > at && !overridden(history, stored))
+    still_waiting(history, at)
         .flat_map(|stored| {
             let entries = history
                 .saved
@@ -94,29 +95,47 @@ fn changed_units(
     latest: &Config,
     proposed: &Config,
     judged: &[UnitChange],
-) -> Vec<(String, UnitChange)> {
-    let returning = judged.iter().filter(|entry| match &entry.scope {
-        Scope::Rule { day, rule } => {
-            entry.field != "presence" && !latest.rules_on(*day).iter().any(|kept| kept.id == *rule)
-        }
-        Scope::Setting | Scope::Exception(_) => false,
-    });
-    let mut units: Vec<(String, UnitChange)> = Vec::new();
-    for entry in diff(latest, proposed).into_iter().chain(returning.cloned()) {
-        let unit = entry.unit();
-        if units.iter().any(|(seen, _)| *seen == unit) {
+    waiting: &[&str],
+) -> Vec<(String, Scope, &'static str)> {
+    let returning = DAYS
+        .iter()
+        .flat_map(|(_, day)| {
+            proposed
+                .rules_on(*day)
+                .iter()
+                .filter(|rule| !latest.rules_on(*day).iter().any(|kept| kept.id == rule.id))
+                .flat_map(move |rule| {
+                    RULE_FIELDS.iter().map(move |(field, _)| {
+                        let scope = Scope::Rule {
+                            day: *day,
+                            rule: rule.id.clone(),
+                        };
+                        (rule_unit(*day, &rule.id, field), scope, *field)
+                    })
+                })
+        })
+        .filter(|(unit, _, _)| {
+            waiting.contains(&unit.as_str()) || judged.iter().any(|entry| entry.unit() == *unit)
+        });
+    let mut units: Vec<(String, Scope, &'static str)> = Vec::new();
+    for (unit, scope, field) in diff(latest, proposed)
+        .into_iter()
+        .map(|entry| (entry.unit(), entry.scope, entry.field))
+        .chain(returning)
+    {
+        if units.iter().any(|(seen, _, _)| *seen == unit) {
             continue;
         }
-        units.push((unit, entry));
+        units.push((unit, scope, field));
     }
     units
 }
 
-fn canceled(first: &UnitChange) -> UnitChange {
-    let (id, args) = match &first.scope {
+fn canceled(scope: Scope, field: &'static str) -> UnitChange {
+    let (id, args) = match &scope {
         Scope::Setting => (
             "change-setting-canceled",
-            vec![("setting", first.field.to_owned())],
+            vec![("setting", field.to_owned())],
         ),
         Scope::Rule { .. } => ("change-canceled", Vec::new()),
         Scope::Exception(date) => (
@@ -125,8 +144,8 @@ fn canceled(first: &UnitChange) -> UnitChange {
         ),
     };
     UnitChange {
-        scope: first.scope.clone(),
-        field: first.field,
+        scope,
+        field,
         id,
         args,
         kind: ChangeKind::Neutral,
@@ -147,12 +166,8 @@ fn earliest(
     saved_at: Timestamp,
     delayed: Timestamp,
 ) -> Timestamp {
-    history
-        .changes
-        .iter()
-        .filter(|stored| {
-            stored.unit == unit && stored.effective_at > saved_at && !overridden(history, stored)
-        })
+    still_waiting(history, saved_at)
+        .filter(|stored| stored.unit == unit)
         .filter(|stored| {
             history
                 .saved
@@ -166,6 +181,13 @@ fn earliest(
         })
         .map(|stored| stored.effective_at)
         .fold(delayed, Timestamp::min)
+}
+
+fn still_waiting(history: &History, at: Timestamp) -> impl Iterator<Item = &StoredChange> {
+    history
+        .changes
+        .iter()
+        .filter(move |stored| stored.effective_at > at && !overridden(history, stored))
 }
 
 fn overridden(history: &History, stored: &StoredChange) -> bool {

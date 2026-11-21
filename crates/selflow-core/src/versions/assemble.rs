@@ -5,11 +5,10 @@ use jiff::{
     civil::{Date, Weekday},
 };
 
+use super::constants::RULE_FIELDS;
 use super::just_before;
 use super::types::{History, SavedConfig, exception_unit, rule_unit};
 use crate::config::{Config, DAYS, Exception, Rule, RuleSet};
-
-type CopyField = fn(&mut Rule, &Rule);
 
 struct InForce<'h> {
     at: Timestamp,
@@ -170,38 +169,8 @@ impl<'h> InForce<'h> {
             id,
         )?;
         let arrival = self.arrival(day, id);
-        let fields: [(&str, CopyField); 10] = [
-            ("timing", |rule, from| {
-                rule.start = from.start;
-                rule.start_jitter = from.start_jitter;
-                rule.end = from.end;
-            }),
-            ("action", |rule, from| rule.action = from.action),
-            ("notices", |rule, from| {
-                rule.notices.clone_from(&from.notices)
-            }),
-            ("message", |rule, from| {
-                rule.message.clone_from(&from.message)
-            }),
-            ("label", |rule, from| rule.label.clone_from(&from.label)),
-            ("wait", |rule, from| {
-                rule.challenges.wait = from.challenges.wait
-            }),
-            ("reason", |rule, from| {
-                rule.challenges.reason = from.challenges.reason;
-            }),
-            ("phrase", |rule, from| {
-                rule.challenges.phrase.clone_from(&from.challenges.phrase);
-            }),
-            ("extensions", |rule, from| {
-                rule.challenges.extensions = from.challenges.extensions;
-            }),
-            ("extension_length", |rule, from| {
-                rule.challenges.extension_length = from.challenges.extension_length;
-            }),
-        ];
         let mut rule = base.clone();
-        for (field, copy) in fields {
+        for (field, copy) in RULE_FIELDS {
             let source = self.source(&rule_unit(day, id, field));
             let source = arrival
                 .filter(|arrived| arrived.id > source.id)

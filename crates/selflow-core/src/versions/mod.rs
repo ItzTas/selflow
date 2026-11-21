@@ -1,6 +1,7 @@
 mod assemble;
 mod clock;
 mod compare;
+mod constants;
 mod types;
 
 use jiff::{SignedDuration, Timestamp};
@@ -71,6 +72,7 @@ pub fn shown(changes: &[TimedChange]) -> Vec<ShownChange> {
             .iter_mut()
             .find(|(seen_rule, seen, _)| *seen_rule == Some(rule.as_str()) && *seen == entry)
         {
+            Some((_, _, days)) if days.contains(&day_tag(*day)) => {}
             Some((_, _, days)) => days.push(day_tag(*day)),
             None => merged.push((Some(rule), entry, vec![day_tag(*day)])),
         }

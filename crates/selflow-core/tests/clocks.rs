@@ -16,6 +16,82 @@ const SLEEP_LABEL: (&str, &str) = (
     "id = \"bedtime\"\n",
     "id = \"bedtime\"\nlabel = \"Sleep\"\n",
 );
+const SHORT_DELAY: (&str, &str) = (r#"loosening_delay = "24h""#, r#"loosening_delay = "1h""#);
+
+#[test]
+fn putting_back_a_dropped_day_cancels_its_waiting_changes() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter();
+    let more = base.replace(MORE_EXTENSIONS.0, MORE_EXTENSIONS.1);
+    let more_without_thursday = more.replace(NO_THURSDAY.0, NO_THURSDAY.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 10, 0), more.as_str()),
+        (at(18, 11, 0), more_without_thursday.as_str()),
+        (at(18, 12, 0), base.as_str()),
+    ]);
+    for when in [at(19, 12, 0), at(25, 12, 0)] {
+        let config = config_at(&history, when.timestamp());
+        assert_eq!(rule(&config).challenges.extensions, 1);
+        assert_eq!(config.rules_on(Weekday::Monday)[0].challenges.extensions, 1);
+    }
+    assert!(waiting(&history, at(18, 12, 0).timestamp()).is_empty());
+}
+
+#[test]
+fn a_rule_brought_back_cancels_what_still_waited_from_before_its_removal() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter();
+    let short = base.replace(SHORT_DELAY.0, SHORT_DELAY.1);
+    let short_more = short.replace(MORE_EXTENSIONS.0, MORE_EXTENSIONS.1);
+    let short_more_without_thursday = short_more.replace(NO_THURSDAY.0, NO_THURSDAY.1);
+    let history = history_of(&[
+        (at(17, 8, 0), base.as_str()),
+        (at(17, 9, 0), short.as_str()),
+        (at(18, 8, 0), short_more.as_str()),
+        (at(18, 10, 0), short_more_without_thursday.as_str()),
+        (at(18, 12, 0), short.as_str()),
+    ]);
+    assert_eq!(
+        config_at(&history, at(18, 11, 30).timestamp()).rules_on(Weekday::Thursday),
+        []
+    );
+    for when in [at(18, 12, 0), at(19, 12, 0)] {
+        assert_eq!(
+            rule(&config_at(&history, when.timestamp()))
+                .challenges
+                .extensions,
+            1
+        );
+    }
+    assert!(waiting(&history, at(18, 12, 0).timestamp()).is_empty());
+}
+
+#[test]
+fn shown_names_each_day_once() {
+    let base = no_jitter();
+    let both = base
+        .replace(LATER_BEDTIME.0, LATER_BEDTIME.1)
+        .replace(MORE_EXTENSIONS.0, MORE_EXTENSIONS.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 10, 0), both.as_str()),
+    ]);
+    let entries = shown(&plan_save(
+        &history,
+        &parse(&base).unwrap(),
+        at(18, 12, 0).timestamp(),
+    ));
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "change-canceled");
+    assert_eq!(
+        entries[0].args,
+        [
+            ("rule", "bedtime".to_owned()),
+            ("days", "mon, tue, wed, thu, sun".to_owned()),
+        ]
+    );
+}
 
 #[test]
 fn a_rule_brought_back_takes_its_fields_from_the_save_that_returns_it() {
