@@ -1,0 +1,265 @@
+mod support;
+
+use jiff::{
+    SignedDuration, ZonedDateTime,
+    civil::{Weekday, time},
+};
+use selflow_core::config::{Action, Config, parse};
+use selflow_core::versions::{History, Scope, config_at, plan_save, rule_since, shown, waiting};
+use support::{VALID, at, history_of, no_jitter};
+
+const LATER_BEDTIME: (&str, &str) = (r#"bedtime = "23:00""#, r#"bedtime = "01:00""#);
+const MORE_EXTENSIONS: (&str, &str) = ("extensions = 1", "extensions = 3");
+const NO_LOCK: (&str, &str) = ("lock = true\nshutdown_after = \"30m\"\n", "");
+
+#[test]
+fn a_tightening_and_a_loosening_in_one_save_keep_their_own_clocks() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter();
+    let both = base
+        .replace(r#"bedtime = "23:00""#, r#"bedtime = "22:00""#)
+        .replace("extensions = 1", "extensions = 3");
+    let history = history_of(&[(at(18, 10, 0), &base), (at(18, 12, 0), &both)]);
+    let now = config_at(&history, at(18, 12, 0).timestamp());
+    assert_eq!(rule(&now).start, time(22, 0, 0, 0));
+    assert_eq!(rule(&now).challenges.extensions, 1);
+    assert_eq!(
+        rule(&config_at(&history, at(19, 12, 0).timestamp()))
+            .challenges
+            .extensions,
+        3
+    );
+}
+
+#[test]
+fn a_later_save_does_not_restart_a_waiting_change() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter();
+    let more = base.replace("extensions = 1", "extensions = 3");
+    let renamed = more.replace(
+        "id = \"bedtime\"\n",
+        "id = \"bedtime\"\nlabel = \"Sleep\"\n",
+    );
+    let history = history_of(&[
+        (at(18, 10, 0), &base),
+        (at(18, 12, 0), &more),
+        (at(18, 20, 0), &renamed),
+    ]);
+    assert_eq!(
+        rule(&config_at(&history, at(18, 20, 0).timestamp())).label,
+        "Sleep"
+    );
+    assert_eq!(
+        rule(&config_at(&history, at(19, 12, 0).timestamp()))
+            .challenges
+            .extensions,
+        3
+    );
+}
+
+#[test]
+fn putting_back_the_value_in_force_cancels_the_waiting_change() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter();
+    let later = base.replace(LATER_BEDTIME.0, LATER_BEDTIME.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 10, 0), later.as_str()),
+    ]);
+    let changes = plan_save(&history, &parse(&base).unwrap(), at(18, 12, 0).timestamp());
+    assert!(!changes.is_empty());
+    assert!(
+        changes
+            .iter()
+            .all(|timed| timed.change.id == "change-canceled"
+                && timed.effective_at == at(18, 12, 0).timestamp())
+    );
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 10, 0), later.as_str()),
+        (at(18, 12, 0), base.as_str()),
+    ]);
+    assert_eq!(
+        rule(&config_at(&history, at(19, 11, 0).timestamp())).start,
+        time(23, 0, 0, 0)
+    );
+}
+
+#[test]
+fn a_value_between_the_one_in_force_and_a_waiting_one_keeps_the_waiting_clock() {
+    let base = no_jitter();
+    let later = base.replace(LATER_BEDTIME.0, LATER_BEDTIME.1);
+    let between = base.replace(LATER_BEDTIME.0, r#"bedtime = "00:00""#);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 10, 0), later.as_str()),
+    ]);
+    let changes = plan_save(
+        &history,
+        &parse(&between).unwrap(),
+        at(18, 20, 0).timestamp(),
+    );
+    assert!(!changes.is_empty());
+    assert!(
+        changes
+            .iter()
+            .all(|timed| timed.change.id == "change-rule-starts-later"
+                && timed.effective_at == at(19, 10, 0).timestamp())
+    );
+}
+
+#[test]
+fn the_first_save_takes_effect_at_once() {
+    let text = no_jitter()
+        .replace(r#"loosening_delay = "24h""#, r#"loosening_delay = "1h""#)
+        .replace(r#"day_starts_at = "05:00""#, r#"day_starts_at = "04:00""#);
+    let saved_at = at(18, 8, 0).timestamp();
+    let changes = plan_save(&History::default(), &parse(&text).unwrap(), saved_at);
+    let ids: Vec<&str> = changes.iter().map(|timed| timed.change.id).collect();
+    assert!(ids.contains(&"change-delay-shorter"));
+    assert!(ids.contains(&"change-day-start"));
+    assert!(ids.contains(&"change-rule-added"));
+    assert!(changes.iter().all(|timed| timed.effective_at == saved_at));
+}
+
+#[test]
+fn a_lock_swapped_for_a_shutdown_waits_as_one_unit() {
+    let base = no_jitter();
+    let shutdown = base.replace(NO_LOCK.0, "shutdown = \"repeat\"\n");
+    let history = history_of(&[(at(18, 8, 0), base.as_str())]);
+    let changes = plan_save(
+        &history,
+        &parse(&shutdown).unwrap(),
+        at(18, 12, 0).timestamp(),
+    );
+    let ids: Vec<&str> = changes.iter().map(|timed| timed.change.id).collect();
+    assert!(ids.contains(&"change-lock-removed"));
+    assert!(ids.contains(&"change-shutdown-at-start-added"));
+    assert!(
+        changes.iter().all(|timed| timed.change.field == "action"
+            && timed.effective_at == at(19, 12, 0).timestamp())
+    );
+}
+
+#[test]
+fn rule_since_is_when_the_rule_last_came_into_force() {
+    let relabeled = VALID.replace(
+        "id = \"bedtime\"\n",
+        "id = \"bedtime\"\nlabel = \"Sleep\"\n",
+    );
+    let sooner = relabeled.replace(r#"shutdown_after = "30m""#, r#"shutdown_after = "5m""#);
+    let history = history_of(&[
+        (at(18, 10, 0), "language = \"pt-BR\"\n"),
+        (at(19, 23, 40), VALID),
+        (at(19, 23, 50), relabeled.as_str()),
+        (at(19, 23, 55), sooner.as_str()),
+    ]);
+    let since =
+        |when: ZonedDateTime| rule_since(&history, when.timestamp(), Weekday::Thursday, "bedtime");
+    assert_eq!(since(at(19, 23, 39)), None);
+    assert_eq!(since(at(19, 23, 52)), Some(at(19, 23, 40).timestamp()));
+    assert_eq!(since(at(20, 0, 0)), Some(at(19, 23, 40).timestamp()));
+}
+
+#[test]
+fn waiting_lists_what_is_still_to_come() {
+    let base = no_jitter();
+    let more = base.replace(MORE_EXTENSIONS.0, MORE_EXTENSIONS.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 12, 0), more.as_str()),
+    ]);
+    let pending = waiting(&history, at(18, 13, 0).timestamp());
+    assert!(
+        pending
+            .iter()
+            .all(|timed| timed.change.id == "change-more-extensions"
+                && timed.effective_at == at(19, 12, 0).timestamp())
+    );
+    let days: Vec<Weekday> = pending
+        .iter()
+        .filter_map(|timed| match timed.change.scope {
+            Scope::Rule { day, .. } => Some(day),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        days,
+        [
+            Weekday::Monday,
+            Weekday::Tuesday,
+            Weekday::Wednesday,
+            Weekday::Thursday,
+            Weekday::Sunday,
+        ]
+    );
+    assert_eq!(pending.len(), days.len());
+    assert!(waiting(&history, at(19, 12, 0).timestamp()).is_empty());
+}
+
+#[test]
+fn shown_merges_the_days_of_one_change() {
+    let base = no_jitter();
+    let more = base.replace(MORE_EXTENSIONS.0, MORE_EXTENSIONS.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 12, 0), more.as_str()),
+    ]);
+    let entries = shown(&waiting(&history, at(18, 13, 0).timestamp()));
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "change-more-extensions");
+    assert_eq!(
+        entries[0].args[..2],
+        [
+            ("rule", "bedtime".to_owned()),
+            ("days", "mon, tue, wed, thu, sun".to_owned()),
+        ]
+    );
+    assert_eq!(entries[0].effective_at, at(19, 12, 0).timestamp());
+}
+
+#[test]
+fn shown_lists_changes_by_the_time_they_take_effect() {
+    let base = no_jitter();
+    let quiet_and_renamed = base.replace(NO_LOCK.0, "").replace(
+        "id = \"bedtime\"\n",
+        "id = \"bedtime\"\nlabel = \"Sleep\"\n",
+    );
+    let history = history_of(&[(at(18, 8, 0), base.as_str())]);
+    let changes = plan_save(
+        &history,
+        &parse(&quiet_and_renamed).unwrap(),
+        at(18, 12, 0).timestamp(),
+    );
+    let entries: Vec<_> = shown(&changes)
+        .iter()
+        .map(|entry| (entry.id, entry.effective_at))
+        .collect();
+    assert_eq!(
+        entries,
+        [
+            ("change-label", at(18, 12, 0).timestamp()),
+            ("change-lock-removed", at(19, 12, 0).timestamp()),
+        ]
+    );
+}
+
+#[test]
+fn defaulted_notices_follow_the_action_in_force() {
+    let rule = |c: &Config| c.rules_on(Weekday::Thursday)[0].clone();
+    let base = no_jitter().replace("notices = [\"5m\", \"15m\", \"1m\"]\n", "");
+    let quiet = base.replace(NO_LOCK.0, NO_LOCK.1);
+    let history = history_of(&[
+        (at(18, 8, 0), base.as_str()),
+        (at(18, 12, 0), quiet.as_str()),
+    ]);
+    let now = rule(&config_at(&history, at(18, 12, 0).timestamp()));
+    assert!(matches!(now.action, Action::Lock { .. }));
+    assert_eq!(
+        now.notice_offsets(),
+        [15, 5, 1].map(SignedDuration::from_mins)
+    );
+    let later = rule(&config_at(&history, at(19, 12, 0).timestamp()));
+    assert_eq!(later.action, Action::Nothing);
+    assert_eq!(later.notice_offsets(), [SignedDuration::ZERO]);
+}

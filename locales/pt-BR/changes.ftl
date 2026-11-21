@@ -5,6 +5,7 @@ change-rule-starts-later = A regra `{ $rule }` começa mais tarde em { $days }: 
 change-rule-ends-later = A regra `{ $rule }` termina mais tarde em { $days }: { $old } → { $new }.
 change-rule-ends-earlier = A regra `{ $rule }` termina mais cedo em { $days }: { $old } → { $new }.
 change-rule-timing = Os horários da regra `{ $rule }` estão escritos de outro jeito em { $days }.
+change-canceled = Uma mudança que aguardava na regra `{ $rule }` em { $days } não vai acontecer.
 change-lock-added = Em { $days }, a regra `{ $rule }` passa a bloquear a tela.
 change-lock-removed = Em { $days }, a regra `{ $rule }` deixa de bloquear a tela.
 change-shutdown-added = Em { $days }, o computador desliga quando o bloqueio de `{ $rule }` chega a { $new }.
@@ -32,6 +33,7 @@ change-longer-extensions = Na regra `{ $rule }`, cada extensão fica mais longa 
 change-day-start = O dia começa em outro horário: { $old } → { $new }.
 change-delay-longer = Mudanças que afrouxam as regras esperam mais antes de valer: { $old } → { $new }.
 change-delay-shorter = Mudanças que afrouxam as regras esperam menos antes de valer: { $old } → { $new }.
+change-setting-canceled = Uma mudança que aguardava em `{ $setting }` não vai acontecer.
 change-language = O idioma muda: { $old } → { $new }.
 change-exception-added =
     { $rules ->
@@ -50,3 +52,4 @@ change-exception-wider =
     }
 change-exception-narrower = A exceção para { $date } agora vale para menos regras: { $rules }.
 change-exception-changed = A exceção para { $date } agora vale para outras regras: { $rules }.
+change-exception-canceled = Uma mudança que aguardava na exceção para { $date } não vai acontecer.

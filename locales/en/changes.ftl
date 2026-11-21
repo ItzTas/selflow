@@ -5,6 +5,7 @@ change-rule-starts-later = The rule `{ $rule }` starts later on { $days }: { $ol
 change-rule-ends-later = The rule `{ $rule }` ends later on { $days }: { $old } → { $new }.
 change-rule-ends-earlier = The rule `{ $rule }` ends earlier on { $days }: { $old } → { $new }.
 change-rule-timing = The times of the rule `{ $rule }` are written differently on { $days }.
+change-canceled = A change that was waiting for `{ $rule }` on { $days } won't happen.
 change-lock-added = On { $days }, the rule `{ $rule }` now locks the screen.
 change-lock-removed = On { $days }, the rule `{ $rule }` no longer locks the screen.
 change-shutdown-added = On { $days }, the computer shuts down when the lock of `{ $rule }` has lasted { $new }.
@@ -32,6 +33,7 @@ change-longer-extensions = For the rule `{ $rule }`, each extension gets longer 
 change-day-start = The day starts at a different time: { $old } → { $new }.
 change-delay-longer = Changes that loosen the rules wait longer before they take effect: { $old } → { $new }.
 change-delay-shorter = Changes that loosen the rules wait less before they take effect: { $old } → { $new }.
+change-setting-canceled = A change that was waiting for `{ $setting }` won't happen.
 change-language = The language changes: { $old } → { $new }.
 change-exception-added =
     { $rules ->
@@ -50,3 +52,4 @@ change-exception-wider =
     }
 change-exception-narrower = The exception for { $date } now covers fewer rules: { $rules }.
 change-exception-changed = The exception for { $date } now covers other rules: { $rules }.
+change-exception-canceled = A change that was waiting for the exception on { $date } won't happen.
