@@ -57,22 +57,48 @@ fn a_save_lists_what_applies_now_and_what_waits() {
     let en = render_saved(&Localizer::new(Language::En), saved_at, &changes, &brt());
     assert_eq!(
         en,
-        "Saved. Applies now:\n\
+        "Saved.\n\
+         Applies now:\n\
          - The rule `bedtime` starts earlier on thu: 23:00 → 22:00.\n\
          Waits until Thu 19 Nov, 12:00:\n\
          - For the rule `bedtime`, each day allows more extensions on thu: 1 → 3."
     );
     let pt = render_saved(&Localizer::new(Language::PtBr), saved_at, &changes, &brt());
+    assert!(pt.starts_with("Salvo.\n"));
     assert!(pt.contains("qui 19 nov, 12:00"));
 }
 
 #[test]
-fn a_save_without_changes_says_so() {
-    let localizer = Localizer::new(Language::En);
-    assert_eq!(
-        render_saved(&localizer, at(18, 12, 0).timestamp(), &[], &brt()),
-        localizer.text("cli-saved-nothing", &[])
+fn a_save_that_only_waits_confirms_it_then_lists_the_wait() {
+    let changes = [change(
+        "change-rule-starts-later",
+        "23:00",
+        "01:00",
+        at(19, 12, 0).timestamp(),
+    )];
+    let en = render_saved(
+        &Localizer::new(Language::En),
+        at(18, 12, 0).timestamp(),
+        &changes,
+        &brt(),
     );
+    assert_eq!(
+        en,
+        "Saved.\n\
+         Waits until Thu 19 Nov, 12:00:\n\
+         - The rule `bedtime` starts later on thu: 23:00 → 01:00."
+    );
+}
+
+#[test]
+fn a_save_without_changes_says_so() {
+    let en = render_saved(
+        &Localizer::new(Language::En),
+        at(18, 12, 0).timestamp(),
+        &[],
+        &brt(),
+    );
+    assert_eq!(en, "Saved.\nNothing changes in how your rules work.");
 }
 
 #[test]

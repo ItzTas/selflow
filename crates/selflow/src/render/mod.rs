@@ -39,16 +39,17 @@ pub fn render_saved(
     changes: &[ChangeView],
     tz: &TimeZone,
 ) -> String {
+    let saved = localizer.text("cli-saved", &[]);
     if changes.is_empty() {
-        return localizer.text("cli-saved-nothing", &[]);
+        return format!("{saved}\n{}", localizer.text("cli-saved-nothing", &[]));
     }
     let (now, later): (Vec<&ChangeView>, Vec<&ChangeView>) = changes
         .iter()
         .partition(|change| change.effective_at <= saved_at);
     let applied = (!now.is_empty())
         .then(|| with_bullets(localizer, localizer.text("cli-saved-now", &[]), &now));
-    applied
-        .into_iter()
+    std::iter::once(saved)
+        .chain(applied)
         .chain(by_time(localizer, "cli-saved-later", &later, tz))
         .collect::<Vec<_>>()
         .join("\n")
