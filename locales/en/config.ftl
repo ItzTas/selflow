@@ -10,6 +10,7 @@ config-duplicate-set = There's already a rule set named `{ $name }`.
 config-duplicate-rule = The rule set `{ $set }` already has a rule with the id `{ $id }`.
 config-empty-window = The rule `{ $id }` starts and ends at the same time.
 config-jitter-too-long = The start_jitter of the rule `{ $id }` needs to be shorter than the rule itself.
+config-too-long = The rule `{ $id }` needs to last less than a day, counting its length and any start_jitter.
 config-locks-overlap = In the rule set `{ $set }`, the locks of the rules `{ $first }` and `{ $second }` overlap.
 config-negative-offset = The notice time `{ $value }` can't be negative. Use 0m for a notice right at the start.
 config-end-and-length = The rule `{ $id }` has both end and length. Keep the one you mean.

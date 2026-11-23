@@ -10,6 +10,7 @@ config-duplicate-set = Já existe um conjunto de regras chamado `{ $name }`.
 config-duplicate-rule = O conjunto de regras `{ $set }` já tem uma regra com o id `{ $id }`.
 config-empty-window = A regra `{ $id }` começa e termina no mesmo horário.
 config-jitter-too-long = O start_jitter da regra `{ $id }` precisa ser menor que a própria regra.
+config-too-long = A regra `{ $id }` precisa durar menos de um dia, contando o length e o start_jitter, se houver.
 config-locks-overlap = No conjunto de regras `{ $set }`, os bloqueios das regras `{ $first }` e `{ $second }` se sobrepõem.
 config-negative-offset = O horário de aviso `{ $value }` não pode ser negativo. Use 0m para um aviso bem no início.
 config-end-and-length = A regra `{ $id }` tem end e length ao mesmo tempo. Fique com o que você quer dizer.

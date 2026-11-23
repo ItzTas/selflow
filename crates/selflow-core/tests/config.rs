@@ -6,7 +6,7 @@ use jiff::{
 };
 use selflow_core::config::{Action, Challenges, Config, Exception, Rule, RuleEnd, parse};
 use selflow_i18n::{catalog::default_config, language::Language};
-use support::VALID;
+use support::{VALID, no_jitter};
 
 fn mins(minutes: i64) -> SignedDuration {
     SignedDuration::from_mins(minutes)
@@ -157,6 +157,8 @@ fn a_message_is_one_text_or_a_list() {
 fn a_rule_can_last_a_length_instead_of_ending_at_a_time() {
     let rule = first_rule(&edited(&[(r#"end = "wake""#, r#"length = "8h""#)]));
     assert_eq!(rule.end, RuleEnd::After(SignedDuration::from_hours(8)));
+    let longest = first_rule(&no_jitter().replace(r#"end = "wake""#, r#"length = "23h""#));
+    assert_eq!(longest.end, RuleEnd::After(SignedDuration::from_hours(23)));
 }
 
 #[test]
@@ -278,6 +280,18 @@ fn reports_each_error_with_its_line() {
             "start = \"04:50\"\nstart_jitter = \"15m\"",
             "config-jitter-too-long",
             23,
+        ),
+        (
+            r#"end = "wake""#,
+            r#"length = "80h""#,
+            "config-too-long",
+            24,
+        ),
+        (
+            r#"end = "wake""#,
+            r#"length = "23h50m""#,
+            "config-too-long",
+            24,
         ),
     ];
     for &(from, to, id, line) in cases {

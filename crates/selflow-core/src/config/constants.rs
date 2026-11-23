@@ -10,6 +10,7 @@ pub const SUPPORTED_LANGUAGES: [&str; 2] = ["en", "pt-BR"];
 pub const DEFAULT_LANGUAGE: &str = "en";
 pub const DEFAULT_DAY_STARTS_AT: Time = time(5, 0, 0, 0);
 pub const DEFAULT_LOOSENING_DELAY: SignedDuration = SignedDuration::from_hours(24);
+pub const LONGEST_RULE: SignedDuration = SignedDuration::from_hours(24);
 pub const DEFAULT_CHALLENGES: Challenges = Challenges {
     wait: SignedDuration::from_mins(2),
     reason: true,

@@ -9,7 +9,7 @@ use toml::Spanned;
 
 use super::constants::{
     DAYS, DEFAULT_CHALLENGES, DEFAULT_DAY_STARTS_AT, DEFAULT_LANGUAGE, DEFAULT_LOOSENING_DELAY,
-    SHUTDOWN_REPEATS, SUPPORTED_LANGUAGES,
+    LONGEST_RULE, SHUTDOWN_REPEATS, SUPPORTED_LANGUAGES,
 };
 use super::day_tag;
 use super::error::ConfigError;
@@ -211,8 +211,8 @@ impl Check<'_> {
         inherited: &Challenges,
     ) -> (Option<Rule>, Option<Window<'r>>) {
         let start = self.moment(&raw.start, context);
-        let end = self.end(raw, context);
         let jitter = self.jitter(raw.start_jitter.as_ref());
+        let end = self.end(raw, context, jitter);
         let window = start
             .zip(end)
             .and_then(|(start, end)| self.window(raw, start, end, jitter, context.day_starts_at));
@@ -245,9 +245,17 @@ impl Check<'_> {
         })
     }
 
-    fn end(&mut self, raw: &RawRule, context: &Context) -> Option<RuleEnd> {
+    fn end(
+        &mut self,
+        raw: &RawRule,
+        context: &Context,
+        jitter: Option<SignedDuration>,
+    ) -> Option<RuleEnd> {
         let end = raw.end.as_ref().map(|end| self.moment(end, context));
-        let length = raw.length.as_ref().map(|length| self.duration(length));
+        let length = raw
+            .length
+            .as_ref()
+            .map(|length| self.length(raw, length, jitter));
         if let (Some(_), Some(value)) = (&raw.end, &raw.length) {
             self.report(value, "config-end-and-length", id_arg(raw));
             return None;
@@ -257,6 +265,20 @@ impl Check<'_> {
             (_, Some(length)) => length.map(RuleEnd::After),
             (None, None) => Some(RuleEnd::DayEnd),
         }
+    }
+
+    fn length(
+        &mut self,
+        raw: &RawRule,
+        value: &Spanned<String>,
+        jitter: Option<SignedDuration>,
+    ) -> Option<SignedDuration> {
+        let length = self.duration(value)?;
+        if length.saturating_add(jitter.unwrap_or_default()) < LONGEST_RULE {
+            return Some(length);
+        }
+        self.report(value, "config-too-long", id_arg(raw));
+        None
     }
 
     fn window<'r>(
