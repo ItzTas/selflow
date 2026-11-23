@@ -18,8 +18,9 @@ use selflowd::ipc::handle;
 use selflowd::store::{Event, EventKind, Store};
 use serde_json::{Value, json};
 use support::{
-    Call, LIGHTS_OUT, TestClock, VALID, at, brt, engine_on, m1_store, no_jitter, sample_view,
-    save_text, setup, shared_over, start, start_over, start_with, start_with_config, subscribe,
+    Call, LIGHTS_OUT, REMINDER, TestClock, VALID, at, brt, engine_on, m1_store, no_jitter,
+    sample_view, save_text, setup, shared_over, start, start_engine_with, start_over, start_with,
+    start_with_config, subscribe,
 };
 
 fn with_weekend() -> String {
@@ -764,6 +765,45 @@ fn an_exception_is_granted_after_the_wait_and_shows_in_the_report() {
     clock.set(at(19, 23, 0));
     engine.tick().unwrap();
     assert_eq!(calls.take(), vec![Call::Hide]);
+}
+
+#[test]
+fn a_notice_only_rule_is_skipped_at_once_and_reported_plainly() {
+    let text = REMINDER.replace(
+        "[[rule_set.rule]]",
+        "[rule_set.challenges]\nextensions = 0\n\n[[rule_set.rule]]",
+    );
+    let (mut engine, calls, clock, store) = start_engine_with(&text, at(19, 14, 0));
+    let shared = shared_over(store, clock.clone(), PowerMode::LogOnly);
+    assert_eq!(
+        handle(start_exception("stretch"), &shared),
+        Response::ExceptionGranted {
+            label: "stretch".to_owned()
+        }
+    );
+    assert_eq!(
+        handle(start_exception("stretch"), &shared),
+        error("ipc-exception-done", &[("label", "stretch")])
+    );
+    clock.set(at(19, 15, 0));
+    engine.tick().unwrap();
+    assert_eq!(calls.take(), vec![Call::Hide]);
+    let request = Request::Report {
+        logical_date: Some(date(2026, 11, 19)),
+    };
+    let Response::Report(report) = handle(request, &shared) else {
+        panic!("expected Report")
+    };
+    assert_eq!(
+        report.entries,
+        vec![ReportEntry {
+            at: at(19, 14, 0).timestamp(),
+            message: MessageView {
+                id: "report-exception-plain".to_owned(),
+                args: vec![("label".to_owned(), "stretch".to_owned())],
+            },
+        }]
+    );
 }
 
 #[tokio::test]

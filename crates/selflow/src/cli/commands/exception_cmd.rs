@@ -40,6 +40,7 @@ pub fn exception_with(
     };
     let view = match client.request(start)? {
         Response::ExceptionChallenge(view) => view,
+        Response::ExceptionGranted { label } => return Ok(granted(&localizer, prompt, label)),
         other => return Err(unexpected(other)),
     };
     let answer = answer_challenges(
@@ -57,11 +58,7 @@ pub fn exception_with(
         },
     )?;
     match answer {
-        Response::ExceptionGranted { label } => {
-            let label = ("label", Arg::Text(label));
-            prompt.say(&localizer.text("cli-exception-granted", &[label]));
-            Ok(ExitCode::SUCCESS)
-        }
+        Response::ExceptionGranted { label } => Ok(granted(&localizer, prompt, label)),
         Response::ExceptionRefused(RefusalView::NoBudget) => {
             let label = ("label", Arg::Text(view.label));
             prompt.say(&localizer.text("cli-exception-no-budget", &[label]));
@@ -73,4 +70,9 @@ pub fn exception_with(
         }
         other => Err(unexpected(other)),
     }
+}
+
+fn granted(localizer: &Localizer, prompt: &mut dyn Prompt, label: String) -> ExitCode {
+    prompt.say(&localizer.text("cli-exception-granted", &[("label", Arg::Text(label))]));
+    ExitCode::SUCCESS
 }

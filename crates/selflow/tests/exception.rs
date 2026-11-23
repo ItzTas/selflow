@@ -60,3 +60,34 @@ fn exception_waits_asks_and_reports() {
         ]
     );
 }
+
+#[test]
+fn a_rule_skipped_at_once_asks_nothing() {
+    let daemon = FakeDaemon::new([
+        Response::Status(StatusView {
+            language: "en".to_owned(),
+            locked: None,
+            next_lock_at: None,
+        }),
+        Response::ExceptionGranted {
+            label: "stretch".to_owned(),
+        },
+    ]);
+    let mut prompt = ScriptedPrompt::new([]);
+    let code = exception_with(&mut daemon.client(), "stretch", &mut prompt, &brt()).unwrap();
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert_eq!(
+        daemon.requests(),
+        [
+            Request::Status,
+            Request::StartException {
+                rule: "stretch".to_owned()
+            },
+        ]
+    );
+    assert_eq!(prompt.waits(), []);
+    assert_eq!(
+        prompt.said(),
+        ["The stretch rule is off for the rest of the day."]
+    );
+}

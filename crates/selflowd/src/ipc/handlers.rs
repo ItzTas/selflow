@@ -205,6 +205,13 @@ fn start_exception(
         Err(refusal) => return Ok(Response::Error(refusal)),
     };
     let requested_at = store.start_exception(&rule.id, day.today, now.timestamp())?;
+    if !rule.enforces() {
+        let unasked = ExtensionAnswer {
+            reason: String::new(),
+            phrase: String::new(),
+        };
+        return answer_exception(store, now, &day, rule, requested_at, &unasked);
+    }
     Ok(Response::ExceptionChallenge(challenge_view(
         rule,
         requested_at,
@@ -226,7 +233,18 @@ fn confirm_exception(
     let Some(requested_at) = store.exception_requested_at(&rule.id, day.today)? else {
         return Ok(Response::Error(message("ipc-exception-not-started", &[])));
     };
-    let left = extensions_left(rule, &day);
+    answer_exception(store, now, &day, rule, requested_at, answer)
+}
+
+fn answer_exception(
+    store: &Store,
+    now: &ZonedDateTime,
+    day: &ExceptionDay,
+    rule: &Rule,
+    requested_at: Timestamp,
+    answer: &ExtensionAnswer,
+) -> Result<Response, IpcError> {
+    let left = extensions_left(rule, day);
     let exception =
         match request_exception(now.timestamp(), requested_at, rule, day.today, left, answer) {
             Ok(exception) => exception,
@@ -307,19 +325,9 @@ fn extensions_left(rule: &Rule, day: &ExceptionDay) -> u32 {
 }
 
 fn challenge_view(rule: &Rule, requested_at: Timestamp, extensions_left: u32) -> ChallengeView {
-    let label = rule.label.clone();
-    if !rule.enforces() {
-        return ChallengeView {
-            label,
-            available_at: requested_at,
-            reason_required: false,
-            phrase: None,
-            extensions_left,
-        };
-    }
     let challenges = &rule.challenges;
     ChallengeView {
-        label,
+        label: rule.label.clone(),
         available_at: requested_at
             .checked_add(challenges.wait)
             .unwrap_or(Timestamp::MAX),
@@ -458,7 +466,7 @@ fn report_entry(event: &Event) -> ReportEntry {
         ),
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
         EventKind::RuleShutdown => ("report-rule-shutdown".to_owned(), &["label"]),
-        EventKind::ExceptionGranted => ("report-exception".to_owned(), &["label", "reason"]),
+        EventKind::ExceptionGranted => exception_report(&detail),
         EventKind::ConfigSaved => match &detail["kind"] {
             Value::String(kind) => (format!("report-config-saved-{kind}"), &[]),
             _ => ("report-config-saved".to_owned(), &["now", "waiting"]),
@@ -477,6 +485,13 @@ fn report_entry(event: &Event) -> ReportEntry {
                 .collect(),
         },
     }
+}
+
+fn exception_report(detail: &Value) -> (String, &'static [&'static str]) {
+    if detail["reason"].as_str().is_none_or(str::is_empty) {
+        return ("report-exception-plain".to_owned(), &["label"]);
+    }
+    ("report-exception".to_owned(), &["label", "reason"])
 }
 
 fn extension_id(detail: &Value) -> &'static str {
