@@ -8,17 +8,16 @@ use selflow_platform::paths::socket_path;
 use selflow_protocol::ipc::{MessageView, Request, Response};
 
 use crate::cli::{CliError, ConfigAction, ConfigArgs};
-use crate::editor::{EditOutcome, TempfileEditor, edit_loop};
+use crate::editor::{EditOutcome, Editor, FirstSave, TempfileEditor, edit_loop};
 use crate::render::{message_text, render_config_status, render_errors, render_saved};
 
 pub fn config_cmd(args: ConfigArgs) -> Result<ExitCode, CliError> {
     let path = socket_path().ok_or(CliError::NoRuntimeDir)?;
     let mut client = Client::connect(&path)?;
-    let localizer = Localizer::new(daemon_language(&mut client)?);
     let tz = TimeZone::system();
     match args.action {
-        ConfigAction::Status => status(&mut client, &localizer, &tz),
-        ConfigAction::Edit => edit(&mut client, &localizer, &tz),
+        ConfigAction::Status => status(&mut client, &tz),
+        ConfigAction::Edit => config_edit_with(&mut client, &mut TempfileEditor::new(), &tz),
     }
 }
 
@@ -38,24 +37,36 @@ pub(super) fn unexpected(response: Response) -> CliError {
     }
 }
 
-fn status(client: &mut Client, localizer: &Localizer, tz: &TimeZone) -> Result<ExitCode, CliError> {
+fn status(client: &mut Client, tz: &TimeZone) -> Result<ExitCode, CliError> {
+    let localizer = Localizer::new(daemon_language(client)?);
     match client.request(Request::ConfigStatus)? {
         Response::ConfigStatus(view) => {
-            println!("{}", render_config_status(localizer, &view, tz));
+            println!("{}", render_config_status(&localizer, &view, tz));
             Ok(ExitCode::SUCCESS)
         }
         other => Err(unexpected(other)),
     }
 }
 
-fn edit(client: &mut Client, localizer: &Localizer, tz: &TimeZone) -> Result<ExitCode, CliError> {
+pub fn config_edit_with(
+    client: &mut Client,
+    editor: &mut dyn Editor,
+    tz: &TimeZone,
+) -> Result<ExitCode, CliError> {
+    let localizer = Localizer::new(daemon_language(client)?);
+    let first_save = match client.request(Request::ConfigStatus)? {
+        Response::ConfigStatus(view) if view.last_saved_at.is_none() => FirstSave::Pending,
+        Response::ConfigStatus(_) => FirstSave::Done,
+        other => return Err(unexpected(other)),
+    };
     let initial = match client.request(Request::GetConfig)? {
         Response::Config { text } => text,
         other => return Err(unexpected(other)),
     };
     let outcome = edit_loop(
         &initial,
-        &mut TempfileEditor::new(),
+        first_save,
+        editor,
         &mut |text| {
             client
                 .request(Request::SaveConfig {
@@ -69,8 +80,8 @@ fn edit(client: &mut Client, localizer: &Localizer, tz: &TimeZone) -> Result<Exi
                 })
         },
         &mut |errors| {
-            println!("{}", render_errors(localizer, errors));
-            ask_to_edit_again(localizer)
+            println!("{}", render_errors(&localizer, errors));
+            ask_to_edit_again(&localizer)
         },
     );
     match outcome {
@@ -84,11 +95,11 @@ fn edit(client: &mut Client, localizer: &Localizer, tz: &TimeZone) -> Result<Exi
         }
         EditOutcome::Failed(error) => Err(CliError::Editor(error)),
         EditOutcome::Saved(Response::Saved { saved_at, changes }) => {
-            println!("{}", render_saved(localizer, saved_at, &changes, tz));
+            println!("{}", render_saved(&localizer, saved_at, &changes, tz));
             Ok(ExitCode::SUCCESS)
         }
         EditOutcome::Saved(Response::Error(message)) => {
-            eprintln!("{}", message_text(localizer, &message));
+            eprintln!("{}", message_text(&localizer, &message));
             Ok(ExitCode::from(1))
         }
         EditOutcome::Saved(other) => Err(unexpected(other)),

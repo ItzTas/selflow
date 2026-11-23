@@ -62,22 +62,31 @@ pub enum EditOutcome {
     Failed(io::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstSave {
+    Pending,
+    Done,
+}
+
 pub fn edit_loop(
     initial: &str,
+    first_save: FirstSave,
     editor: &mut dyn Editor,
     save: &mut dyn FnMut(&str) -> Response,
     ask_again: &mut dyn FnMut(&[PositionedMessage]) -> bool,
 ) -> EditOutcome {
     let mut current = initial.to_owned();
+    let mut rejected = false;
     loop {
         let edited = match editor.edit(&current) {
             Ok(edited) => edited,
             Err(error) => return EditOutcome::Failed(error),
         };
-        if edited == current {
-            return match current == initial {
-                true => EditOutcome::Unchanged,
-                false => EditOutcome::Abandoned,
+        let pending = first_save == FirstSave::Pending && !rejected;
+        if edited == current && !pending {
+            return match rejected {
+                true => EditOutcome::Abandoned,
+                false => EditOutcome::Unchanged,
             };
         }
         let response = save(&edited);
@@ -85,6 +94,7 @@ pub fn edit_loop(
             return EditOutcome::Saved(response);
         };
         current = edited;
+        rejected = true;
         if !ask_again(&errors) {
             return EditOutcome::Abandoned;
         }

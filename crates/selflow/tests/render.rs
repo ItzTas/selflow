@@ -2,10 +2,12 @@ mod support;
 
 use jiff::Timestamp;
 use jiff::civil::date;
-use selflow::render::{render_errors, render_report, render_saved};
+use selflow::render::{render_config_status, render_errors, render_report, render_saved};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
-use selflow_protocol::ipc::{ChangeView, MessageView, PositionedMessage, ReportEntry, ReportView};
+use selflow_protocol::ipc::{
+    ChangeView, ConfigStatusView, MessageView, PositionedMessage, ReportEntry, ReportView,
+};
 use support::{at, brt};
 
 fn change(id: &str, old: &str, new: &str, effective_at: Timestamp) -> ChangeView {
@@ -99,6 +101,20 @@ fn a_save_without_changes_says_so() {
         &brt(),
     );
     assert_eq!(en, "Saved.\nNothing changes in how your rules work.");
+}
+
+#[test]
+fn the_status_before_the_first_save_says_no_rule_runs_yet() {
+    let status = ConfigStatusView {
+        last_saved_at: None,
+        pending: Vec::new(),
+    };
+    let out = render_config_status(&Localizer::new(Language::En), &status, &brt());
+    assert_eq!(
+        out,
+        "No rule runs until you save your settings for the first time. To save them, run selflow config edit.\n\
+         No changes are waiting."
+    );
 }
 
 #[test]
