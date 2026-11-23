@@ -4,7 +4,7 @@ use std::cmp;
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 
-use crate::config::{Action, Challenges, Config};
+use crate::config::{Action, Config};
 use crate::plan::{RuleWindow, windows_around};
 use crate::timing::{Seed, fnv1a64};
 
@@ -88,7 +88,6 @@ fn excepted(window: &RuleWindow, log: &DayLog) -> bool {
 }
 
 fn merged(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> RuleWindow {
-    let (kept, current) = (&started.challenges, &computed.challenges);
     RuleWindow {
         label: computed.label.clone(),
         starts_at: merged_start(started, computed, now),
@@ -96,13 +95,7 @@ fn merged(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> RuleWi
         notices: computed.notices.clone(),
         message: computed.message.clone(),
         action: stricter_action(started.action, computed.action),
-        challenges: Challenges {
-            wait: kept.wait.max(current.wait),
-            reason: kept.reason || current.reason,
-            phrase: kept.phrase.clone().or_else(|| current.phrase.clone()),
-            extensions: kept.extensions.min(current.extensions),
-            extension_length: kept.extension_length.min(current.extension_length),
-        },
+        challenges: started.challenges.stricter(&computed.challenges),
         ..started.clone()
     }
 }

@@ -19,8 +19,8 @@ use selflowd::store::{Event, EventKind, Store};
 use serde_json::{Value, json};
 use support::{
     Call, LIGHTS_OUT, REMINDER, TestClock, VALID, at, brt, engine_on, m1_store, no_jitter,
-    sample_view, save_text, setup, shared_over, start, start_engine_with, start_over, start_with,
-    start_with_config, subscribe,
+    sample_view, save_at, save_text, setup, shared_over, start, start_engine_with, start_over,
+    start_with, start_with_config, subscribe,
 };
 
 fn with_weekend() -> String {
@@ -687,8 +687,9 @@ async fn an_exception_is_refused_while_its_lock_is_on_screen() {
 }
 
 #[tokio::test]
-async fn an_exception_needs_an_extension_left_for_its_rule() {
-    let (client, _shared, clock) = start_with_config(at(19, 23, 3)).await;
+async fn an_exception_is_refused_during_its_own_extension() {
+    let text = no_jitter().replace("extensions = 1", "extensions = 2");
+    let (client, shared, clock) = start_with(&text, PowerMode::Real, None, at(19, 23, 3)).await;
     client
         .request(Request::RequestExtension {
             reason: "talking to my sister".into(),
@@ -696,16 +697,82 @@ async fn an_exception_needs_an_extension_left_for_its_rule() {
             source: ExtensionSource::Terminal,
         })
         .await;
+    shared
+        .store
+        .lock()
+        .unwrap()
+        .start_exception("bedtime", date(2026, 11, 19), at(19, 23, 4).timestamp())
+        .unwrap();
     clock.set(at(19, 23, 10));
-    let Response::ExceptionChallenge(challenge) = client.request(start_exception("bedtime")).await
+    let locked = error("ipc-exception-locked", &[("label", "bedtime")]);
+    assert_eq!(client.request(start_exception("bedtime")).await, locked);
+    assert_eq!(
+        client
+            .request(confirm_exception("bedtime", "on call tonight"))
+            .await,
+        locked
+    );
+    let log = shared
+        .store
+        .lock()
+        .unwrap()
+        .night_log(&[date(2026, 11, 19)])
+        .unwrap();
+    assert_eq!(log.exceptions, vec![]);
+}
+
+#[test]
+fn an_exception_takes_the_stricter_challenges_of_its_started_window() {
+    let strict = no_jitter().replace(
+        r#"wait = "2m""#,
+        "wait = \"5m\"\nphrase = \"Rest is enough\"",
+    );
+    let (mut engine, _calls, clock, store) = start_engine_with(&strict, at(19, 22, 45));
+    save_at(&store.lock().unwrap(), &no_jitter(), at(18, 22, 50));
+    engine.tick().unwrap();
+    clock.set(at(19, 22, 51));
+    let shared = shared_over(store, clock.clone(), PowerMode::LogOnly);
+    assert_eq!(
+        handle(start_exception("bedtime"), &shared),
+        Response::ExceptionChallenge(ChallengeView {
+            label: "bedtime".to_owned(),
+            available_at: at(19, 22, 56).timestamp(),
+            reason_required: true,
+            phrase: Some("Rest is enough".to_owned()),
+            extensions_left: 1,
+        })
+    );
+    clock.set(at(19, 22, 56));
+    assert_eq!(
+        handle(confirm_exception("bedtime", "on call tonight"), &shared),
+        Response::ExceptionRefused(RefusalView::PhraseMismatch)
+    );
+}
+
+#[tokio::test]
+async fn an_exception_needs_an_extension_left_for_its_rule() {
+    let text = format!(
+        "{}\n[[rule_set.rule]]\nid = \"nap\"\nstart = \"14:00\"\nend = \"14:30\"\nlock = true\n",
+        no_jitter()
+    );
+    let (client, _shared, clock) = start_with(&text, PowerMode::Real, None, at(19, 14, 3)).await;
+    client
+        .request(Request::RequestExtension {
+            reason: "talking to my sister".into(),
+            phrase: String::new(),
+            source: ExtensionSource::Terminal,
+        })
+        .await;
+    clock.set(at(19, 14, 40));
+    let Response::ExceptionChallenge(challenge) = client.request(start_exception("nap")).await
     else {
         panic!("expected ExceptionChallenge")
     };
     assert_eq!(challenge.extensions_left, 0);
-    clock.set(at(19, 23, 12));
+    clock.set(at(19, 14, 42));
     assert_eq!(
         client
-            .request(confirm_exception("bedtime", "on call tonight"))
+            .request(confirm_exception("nap", "on call tonight"))
             .await,
         Response::ExceptionRefused(RefusalView::NoBudget)
     );

@@ -63,6 +63,18 @@ pub struct Challenges {
     pub extension_length: SignedDuration,
 }
 
+impl Challenges {
+    pub fn stricter(&self, other: &Challenges) -> Challenges {
+        Challenges {
+            wait: self.wait.max(other.wait),
+            reason: self.reason || other.reason,
+            phrase: self.phrase.clone().or_else(|| other.phrase.clone()),
+            extensions: self.extensions.min(other.extensions),
+            extension_length: self.extension_length.min(other.extension_length),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     pub id: String,

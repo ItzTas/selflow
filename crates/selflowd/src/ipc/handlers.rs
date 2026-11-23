@@ -204,18 +204,18 @@ fn start_exception(
         Ok(rule) => rule,
         Err(refusal) => return Ok(Response::Error(refusal)),
     };
-    let requested_at = open_start(store, rule, day.today, now.timestamp())?;
+    let requested_at = open_start(store, &rule, day.today, now.timestamp())?;
     if !rule.enforces() {
         let unasked = ExtensionAnswer {
             reason: String::new(),
             phrase: String::new(),
         };
-        return answer_exception(store, now, &day, rule, requested_at, &unasked);
+        return answer_exception(store, now, &day, &rule, requested_at, &unasked);
     }
     Ok(Response::ExceptionChallenge(challenge_view(
-        rule,
+        &rule,
         requested_at,
-        extensions_left(rule, &day),
+        extensions_left(&rule, &day),
     )))
 }
 
@@ -233,11 +233,11 @@ fn confirm_exception(
     let instant = now.timestamp();
     let Some(requested_at) = store
         .exception_requested_at(&rule.id, day.today)?
-        .filter(|requested_at| instant <= start_open_until(rule, *requested_at))
+        .filter(|requested_at| instant <= start_open_until(&rule, *requested_at))
     else {
         return Ok(Response::Error(message("ipc-exception-not-started", &[])));
     };
-    answer_exception(store, now, &day, rule, requested_at, answer)
+    answer_exception(store, now, &day, &rule, requested_at, answer)
 }
 
 fn open_start(
@@ -293,11 +293,7 @@ fn exception_day(store: &Store, now: &ZonedDateTime) -> Result<ExceptionDay, Ipc
     })
 }
 
-fn skippable<'a>(
-    day: &'a ExceptionDay,
-    now: &ZonedDateTime,
-    rule_id: &str,
-) -> Result<&'a Rule, MessageView> {
+fn skippable(day: &ExceptionDay, now: &ZonedDateTime, rule_id: &str) -> Result<Rule, MessageView> {
     let rules = day.config.rules_on(day.today.weekday());
     let Some(rule) = rules.iter().find(|rule| rule.id == rule_id) else {
         let ids: Vec<&str> = rules.iter().map(|rule| rule.id.as_str()).collect();
@@ -313,14 +309,38 @@ fn skippable<'a>(
     if skipped(day, rule_id) {
         return Err(message("ipc-exception-done", &label));
     }
-    Ok(rule)
+    Ok(with_started_challenges(rule, day))
+}
+
+fn with_started_challenges(rule: &Rule, day: &ExceptionDay) -> Rule {
+    let challenges = day
+        .log
+        .started
+        .iter()
+        .find(|window| window.rule_id == rule.id && window.logical_date == day.today)
+        .map_or_else(
+            || rule.challenges.clone(),
+            |started| started.challenges.stricter(&rule.challenges),
+        );
+    Rule {
+        challenges,
+        ..rule.clone()
+    }
 }
 
 fn locked_by(day: &ExceptionDay, now: &ZonedDateTime, rule_id: &str) -> bool {
-    matches!(
-        evaluate(now, &day.config, day.seed, &day.log).enforcement,
-        Enforcement::Locked(lock) if lock.window.rule_id == rule_id
-    )
+    let instant = now.timestamp();
+    let extended = day.log.extensions.iter().any(|extension| {
+        extension.rule_id == rule_id
+            && extension.logical_date == day.today
+            && extension.granted_at <= instant
+            && instant < extension.until
+    });
+    extended
+        || matches!(
+            evaluate(now, &day.config, day.seed, &day.log).enforcement,
+            Enforcement::Locked(lock) if lock.window.rule_id == rule_id
+        )
 }
 
 fn skipped(day: &ExceptionDay, rule_id: &str) -> bool {
