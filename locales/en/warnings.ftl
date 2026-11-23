@@ -1,5 +1,6 @@
 notice-title = { $label }, at { $time }
 notice-shutdown-title = { $label }: the computer shuts down at { $time }
+notice-shutdown-now = The computer shuts down in a minute, at { $time }. A good moment to save what's open.
 warning-body-1 = { $minutes ->
     [0] The screen locks now, at { $time }.
     [one] The screen locks in a minute, at { $time }.

@@ -1,5 +1,6 @@
 notice-title = { $label }, às { $time }
 notice-shutdown-title = { $label }: o computador desliga às { $time }
+notice-shutdown-now = O computador desliga em um minuto ({ $time }). Um bom momento para salvar o que está aberto.
 warning-body-1 = { $minutes ->
     [0] A tela bloqueia agora ({ $time }).
     [one] A tela bloqueia em um minuto ({ $time }).

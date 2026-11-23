@@ -3,18 +3,20 @@ mod support;
 use std::fs::{Permissions, set_permissions};
 use std::os::unix::fs::PermissionsExt;
 
-use jiff::SignedDuration;
+use std::sync::{Arc, Mutex};
+
 use jiff::civil::date;
+use jiff::{SignedDuration, ZonedDateTime};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::{Arg, Localizer};
-use selflow_protocol::ipc::{Request, Response};
+use selflow_protocol::ipc::{MessageView, ReportEntry, Request, Response};
 use selflowd::enforcer::PowerMode;
 use selflowd::ipc::handle;
 use selflowd::store::{EventKind, Store};
 use serde_json::{Value, json};
 use support::{
-    Call, Calls, REMINDER, at, brt, engine_on, extension, no_jitter, save_at, save_text, setup,
-    setup_on, setup_over, shared_over,
+    Call, Calls, LIGHTS_OUT, REMINDER, TestClock, at, brt, engine_on, extension, no_jitter,
+    save_at, save_text, setup, setup_on, setup_over, shared_over, start_engine_with,
 };
 
 #[test]
@@ -401,4 +403,231 @@ fn a_tightening_after_the_first_notice_keeps_the_earlier_start_through_the_lock(
         .filter(|event| event.kind == EventKind::LockStarted)
         .count();
     assert_eq!(lock_starts, 1);
+}
+
+fn steps(calls: &Calls) -> Vec<&'static str> {
+    calls
+        .take()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Warn(_) => Some("warn"),
+            Call::ShutDown => Some("shut down"),
+            _ => None,
+        })
+        .collect()
+}
+
+fn second(day: i8, hour: i8, minute: i8, second: i64) -> ZonedDateTime {
+    at(day, hour, minute)
+        .checked_add(SignedDuration::from_secs(second))
+        .unwrap()
+}
+
+fn rule_shutdowns(store: &Mutex<Store>) -> Vec<(String, Value)> {
+    store
+        .lock()
+        .unwrap()
+        .events_for(date(2026, 11, 19))
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::RuleShutdown)
+        .map(|event| {
+            let detail = serde_json::from_str(event.detail.as_deref().unwrap()).unwrap();
+            (event.key, detail)
+        })
+        .collect()
+}
+
+fn after_the_first_shutdown(text: &str) -> (Arc<Mutex<Store>>, Arc<TestClock>) {
+    let (mut engine, calls, clock, store) = start_engine_with(text, at(20, 2, 0));
+    engine.tick().unwrap();
+    clock.set(at(20, 2, 1));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["warn", "shut down"]);
+    (store, clock)
+}
+
+#[test]
+fn a_shutdown_without_a_lock_gives_a_minute_of_notice() {
+    let (mut engine, calls, clock, _store) = start_engine_with(LIGHTS_OUT, at(20, 2, 0));
+    assert_eq!(engine.tick().unwrap(), at(20, 2, 1).timestamp());
+    let en = Localizer::new(Language::En);
+    let time = || ("time", Arg::Text("02:01".to_owned()));
+    assert_eq!(
+        calls.take(),
+        [
+            Call::Hide,
+            Call::Warn(en.text("notice-shutdown-now", &[time()]))
+        ]
+    );
+    assert_eq!(
+        calls.last_title(),
+        Some(en.text(
+            "notice-shutdown-title",
+            &[("label", Arg::Text("lights-out".to_owned())), time()]
+        ))
+    );
+    clock.set(second(20, 2, 0, 59));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    clock.set(at(20, 2, 1));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
+fn once_stays_up_after_a_restart() {
+    let (store, clock) = after_the_first_shutdown(LIGHTS_OUT);
+    clock.set(at(20, 2, 30));
+    let (mut engine, calls) = engine_on(store.clone(), clock.clone());
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    assert_eq!(
+        rule_shutdowns(&store),
+        [(
+            "lights-out/2026-11-19".to_owned(),
+            json!({ "label": "lights-out", "rule": "lights-out", "repeat": false })
+        )]
+    );
+    let shared = shared_over(store, clock, PowerMode::LogOnly);
+    let request = Request::Report {
+        logical_date: Some(date(2026, 11, 19)),
+    };
+    let Response::Report(report) = handle(request, &shared) else {
+        panic!("expected Report")
+    };
+    assert_eq!(
+        report.entries,
+        [ReportEntry {
+            at: at(20, 2, 1).timestamp(),
+            message: MessageView {
+                id: "report-rule-shutdown".to_owned(),
+                args: vec![("label".to_owned(), "lights-out".to_owned())],
+            },
+        }]
+    );
+}
+
+#[test]
+fn repeat_shuts_down_again_after_a_restart_until_the_rule_ends() {
+    let repeat = LIGHTS_OUT.replace(r#"shutdown = "once""#, r#"shutdown = "repeat""#);
+    let (store, clock) = after_the_first_shutdown(&repeat);
+    clock.set(at(20, 2, 30));
+    let (mut second_run, calls) = engine_on(store.clone(), clock.clone());
+    assert_eq!(second_run.tick().unwrap(), at(20, 2, 31).timestamp());
+    assert_eq!(steps(&calls), ["warn"]);
+    clock.set(at(20, 2, 31));
+    second_run.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+    clock.set(at(20, 4, 0));
+    let (mut third_run, calls) = engine_on(store.clone(), clock);
+    third_run.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    let keys: Vec<String> = rule_shutdowns(&store)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(
+        keys,
+        [(2, 1), (2, 31)].map(|(hour, minute)| format!(
+            "lights-out/2026-11-19/{}",
+            at(20, hour, minute).timestamp()
+        ))
+    );
+}
+
+#[test]
+fn configured_notices_count_as_the_minute() {
+    let ten = LIGHTS_OUT.replace("notices = []", r#"notices = ["10m"]"#);
+    let (mut engine, calls, clock, _store) = start_engine_with(&ten, at(20, 1, 50));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["warn"]);
+    clock.set(at(20, 2, 0));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
+fn a_resume_after_the_start_still_gets_its_one_shutdown() {
+    let (mut engine, calls, clock, _store) = start_engine_with(LIGHTS_OUT, at(20, 1, 0));
+    engine.tick().unwrap();
+    clock.set(at(20, 2, 20));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["warn"]);
+    for (minute, expected) in [(21, vec!["shut down"]), (30, vec![])] {
+        clock.set(at(20, 2, minute));
+        engine.tick().unwrap();
+        assert_eq!(steps(&calls), expected);
+    }
+}
+
+#[test]
+fn the_minute_counts_from_when_the_notice_went_out() {
+    let one = LIGHTS_OUT.replace("notices = []", r#"notices = ["1m"]"#);
+    let (mut engine, calls, clock, _store) = start_engine_with(&one, second(20, 2, 0, 30));
+    assert_eq!(engine.tick().unwrap(), second(20, 2, 1, 30).timestamp());
+    assert_eq!(steps(&calls), ["warn"]);
+    clock.set(second(20, 2, 1, 29));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    clock.set(second(20, 2, 1, 30));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
+fn a_shutdown_rule_during_a_lock_shows_on_the_lock_screen() {
+    let rule = &LIGHTS_OUT[LIGHTS_OUT.find("[[rule_set.rule]]").unwrap()..];
+    let text = format!(
+        "{}\n{rule}",
+        no_jitter().replace("shutdown_after = \"30m\"\n", "")
+    );
+    let (mut engine, calls, clock, store) = start_engine_with(&text, at(19, 23, 0));
+    engine.tick().unwrap();
+    assert_eq!(calls.last_view().map(|view| view.shutdown_at), Some(None));
+    clock.set(at(20, 2, 0));
+    assert_eq!(engine.tick().unwrap(), at(20, 2, 1).timestamp());
+    assert_eq!(
+        calls.last_view().and_then(|view| view.shutdown_at),
+        Some(at(20, 2, 1).timestamp())
+    );
+    clock.set(second(20, 2, 0, 59));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    clock.set(at(20, 2, 1));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+    let kinds: Vec<EventKind> = store
+        .lock()
+        .unwrap()
+        .events_for(date(2026, 11, 19))
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect();
+    assert_eq!(kinds, [EventKind::LockStarted, EventKind::RuleShutdown]);
+}
+
+#[test]
+fn a_save_during_a_lock_that_brings_the_shutdown_forward_still_gives_a_minute() {
+    let (mut engine, calls, clock, store) = setup(at(19, 23, 0));
+    engine.tick().unwrap();
+    assert_eq!(
+        calls.last_view().and_then(|view| view.shutdown_at),
+        Some(at(19, 23, 30).timestamp())
+    );
+    let sooner = no_jitter().replace(r#"shutdown_after = "30m""#, r#"shutdown_after = "5m""#);
+    save_at(&store.lock().unwrap(), &sooner, at(19, 23, 10));
+    clock.set(at(19, 23, 10));
+    assert_eq!(engine.tick().unwrap(), at(19, 23, 11).timestamp());
+    assert_eq!(
+        calls.last_view().and_then(|view| view.shutdown_at),
+        Some(at(19, 23, 11).timestamp())
+    );
+    clock.set(second(19, 23, 10, 59));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    clock.set(at(19, 23, 11));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
 }

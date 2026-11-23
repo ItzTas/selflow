@@ -10,7 +10,7 @@ use crate::timing::{Seed, fnv1a64};
 
 pub use types::{
     ActiveLock, DayLog, Enforcement, Evaluation, GrantedException, GrantedExtension, Notice,
-    NoticeKind,
+    NoticeKind, ShutdownDone,
 };
 
 pub fn evaluate(now: &ZonedDateTime, config: &Config, seed: Seed, log: &DayLog) -> Evaluation {
@@ -35,7 +35,22 @@ pub fn evaluate(now: &ZonedDateTime, config: &Config, seed: Seed, log: &DayLog) 
         enforcement: active.map_or(Enforcement::Free, Enforcement::Locked),
         notices,
         next_change_at,
+        shutdown: windows
+            .iter()
+            .find(|window| due_shutdown(window, log, instant))
+            .cloned(),
     }
+}
+
+fn due_shutdown(window: &RuleWindow, log: &DayLog, now: Timestamp) -> bool {
+    let Action::ShutDown { repeat } = window.action else {
+        return false;
+    };
+    let done = log
+        .shutdowns
+        .iter()
+        .any(|done| is_window(window, &done.rule_id, done.logical_date));
+    window.starts_at.timestamp() <= now && now < window.ends_at.timestamp() && (repeat || !done)
 }
 
 fn candidates(now: &ZonedDateTime, config: &Config, seed: Seed, log: &DayLog) -> Vec<RuleWindow> {

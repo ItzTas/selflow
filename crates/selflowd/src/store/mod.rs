@@ -5,13 +5,14 @@ use std::path::Path;
 
 use jiff::{Timestamp, civil};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use selflow_core::enforce::{DayLog, GrantedExtension};
+use selflow_core::enforce::{DayLog, GrantedExtension, ShutdownDone};
 use selflow_core::plan::RuleWindow;
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
 use selflow_platform::secure_fs::{private_dir, private_file};
 
 use migrations::MIGRATIONS;
+use types::ShutdownDetail;
 pub use types::{Event, EventKind, StoreError};
 
 const CHANGE_KINDS: [(ChangeKind, &str); 3] = [
@@ -20,12 +21,13 @@ const CHANGE_KINDS: [(ChangeKind, &str); 3] = [
     (ChangeKind::Neutral, "neutral"),
 ];
 
-const EVENT_KINDS: [(EventKind, &str); 5] = [
+const EVENT_KINDS: [(EventKind, &str); 6] = [
     (EventKind::LockStarted, "lock_started"),
     (EventKind::LockEnded, "lock_ended"),
     (EventKind::ExtensionGranted, "extension_granted"),
     (EventKind::Shutdown, "shutdown"),
     (EventKind::ConfigSaved, "config_saved"),
+    (EventKind::RuleShutdown, "rule_shutdown"),
 ];
 
 fn change_kind_text(kind: ChangeKind) -> &'static str {
@@ -248,6 +250,7 @@ impl Store {
         for date in dates {
             log.extensions.extend(self.extensions_on(*date)?);
             log.started.extend(self.started_on(*date)?);
+            log.shutdowns.extend(self.shutdowns_on(*date)?);
         }
         Ok(log)
     }
@@ -286,6 +289,27 @@ impl Store {
             .prepare("SELECT window FROM started_windows WHERE logical_date = ?1 ORDER BY rowid")?;
         let rows = statement.query_map(params![date.to_string()], |row| row.get::<_, String>(0))?;
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    fn shutdowns_on(&self, date: civil::Date) -> Result<Vec<ShutdownDone>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT at, detail FROM events WHERE logical_date = ?1 AND kind = ?2 ORDER BY at, id",
+        )?;
+        let kind = event_kind_text(EventKind::RuleShutdown);
+        let rows = statement.query_map(params![date.to_string(), kind], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (at, detail) = row?;
+            let detail: ShutdownDetail =
+                serde_json::from_str(detail.as_deref().unwrap_or_default())?;
+            Ok(ShutdownDone {
+                rule_id: detail.rule,
+                logical_date: date,
+                at: at.parse()?,
+            })
+        })
+        .collect()
     }
 
     pub fn record_event(&self, event: &Event) -> Result<bool, StoreError> {

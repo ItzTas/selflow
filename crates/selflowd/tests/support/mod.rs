@@ -125,6 +125,15 @@ pub fn setup_over(
     (engine, calls, clock, store)
 }
 
+pub fn start_engine_with(
+    text: &str,
+    now: ZonedDateTime,
+) -> (TestEngine, Calls, Arc<TestClock>, Arc<Mutex<Store>>) {
+    let store = Store::open_in_memory().unwrap();
+    save_text(&store, text);
+    setup_over(store, now)
+}
+
 pub fn engine_on(store: Arc<Mutex<Store>>, clock: Arc<TestClock>) -> (TestEngine, Calls) {
     let calls = Calls::default();
     let engine = Engine::new(clock, FakeEnforcer(calls.clone()), store).unwrap();
@@ -207,6 +216,19 @@ days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 id = "stretch"
 start = "15:00"
 message = ["Stand up for a minute.", "Time to stretch."]
+"#;
+
+pub const LIGHTS_OUT: &str = r#"
+[[rule_set]]
+name = "always"
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+[[rule_set.rule]]
+id = "lights-out"
+start = "02:00"
+end = "04:00"
+notices = []
+shutdown = "once"
 "#;
 
 pub const M1_TEXT: &str = r#"

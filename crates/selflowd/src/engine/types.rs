@@ -24,7 +24,7 @@ pub enum EngineError {
 pub(super) struct ShownLock {
     pub(super) label: String,
     pub(super) logical_date: civil::Date,
-    pub(super) first_shown: Timestamp,
+    pub(super) shutdown_on_screen: Option<Timestamp>,
     pub(super) ended: bool,
     pub(super) shut_down: bool,
     pub(super) test: bool,

@@ -66,6 +66,19 @@ start = "15:00"
 message = ["Stand up for a minute.", "Time to stretch."]
 "#;
 
+pub const LIGHTS_OUT: &str = r#"
+[[rule_set]]
+name = "always"
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+[[rule_set.rule]]
+id = "lights-out"
+start = "02:00"
+end = "04:00"
+notices = []
+shutdown = "once"
+"#;
+
 pub fn two_locks() -> String {
     format!(
         "{}\n[[rule_set.rule]]\nid = \"nap\"\nstart = \"14:00\"\nend = \"14:30\"\nlock = true\n",

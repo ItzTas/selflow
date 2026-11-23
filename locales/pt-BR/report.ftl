@@ -2,6 +2,7 @@ report-lock-started = O bloqueio { $label } começou.
 report-lock-ended = O bloqueio { $label } terminou.
 report-extension = Você pediu mais { $minutes } min durante o bloqueio { $label }. Seu motivo: { $reason }
 report-shutdown = O computador desligou durante o bloqueio { $label }.
+report-rule-shutdown = O computador desligou pela regra { $label }.
 report-lock-started-test = O bloqueio de teste "{ $label }" começou.
 report-lock-ended-test = O bloqueio de teste "{ $label }" terminou.
 report-extension-test = Você pediu mais { $minutes } min durante o bloqueio de teste "{ $label }". Seu motivo: { $reason }

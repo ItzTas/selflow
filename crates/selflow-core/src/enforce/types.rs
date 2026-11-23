@@ -20,11 +20,19 @@ pub struct GrantedException {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShutdownDone {
+    pub rule_id: String,
+    pub logical_date: civil::Date,
+    pub at: Timestamp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DayLog {
     pub extensions: Vec<GrantedExtension>,
     pub started: Vec<RuleWindow>,
     pub exceptions: Vec<GrantedException>,
+    pub shutdowns: Vec<ShutdownDone>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,4 +74,5 @@ pub struct Evaluation {
     pub enforcement: Enforcement,
     pub notices: Vec<Notice>,
     pub next_change_at: Option<Timestamp>,
+    pub shutdown: Option<RuleWindow>,
 }

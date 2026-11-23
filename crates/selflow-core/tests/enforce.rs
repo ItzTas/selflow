@@ -3,11 +3,11 @@ mod support;
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil::date};
 use selflow_core::config::{Action, Challenges, Config, parse};
 use selflow_core::enforce::{
-    DayLog, Enforcement, GrantedException, GrantedExtension, NoticeKind, evaluate,
+    DayLog, Enforcement, GrantedException, GrantedExtension, NoticeKind, ShutdownDone, evaluate,
 };
 use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
-use support::{REMINDER, at, brt, no_jitter, one_extension, two_locks};
+use support::{LIGHTS_OUT, REMINDER, at, brt, no_jitter, one_extension, two_locks};
 
 fn started_on_the_19th() -> DayLog {
     DayLog {
@@ -112,6 +112,54 @@ fn a_rule_without_a_lock_notifies_at_its_start_and_never_locks() {
         evaluate(&at(19, 15, 0), &c, Seed(7), &DayLog::default()).enforcement,
         Enforcement::Free
     ));
+}
+
+#[test]
+fn a_shutdown_rule_is_due_from_its_start_until_its_end() {
+    let c = parse(LIGHTS_OUT).unwrap();
+    let due = |now: ZonedDateTime| {
+        let evaluation = evaluate(&now, &c, Seed(7), &DayLog::default());
+        assert!(matches!(evaluation.enforcement, Enforcement::Free));
+        evaluation.shutdown.map(|window| {
+            (
+                window.rule_id,
+                window.logical_date,
+                window.starts_at,
+                window.ends_at,
+            )
+        })
+    };
+    let lights_out = Some((
+        "lights-out".to_owned(),
+        date(2026, 11, 19),
+        at(20, 2, 0),
+        at(20, 4, 0),
+    ));
+    assert_eq!(due(at(20, 1, 59)), None);
+    assert_eq!(due(at(20, 2, 0)), lights_out.clone());
+    assert_eq!(due(at(20, 3, 59)), lights_out);
+    assert_eq!(due(at(20, 4, 0)), None);
+}
+
+#[test]
+fn once_is_not_due_after_it_happened() {
+    let log = DayLog {
+        shutdowns: vec![ShutdownDone {
+            rule_id: "lights-out".to_owned(),
+            logical_date: date(2026, 11, 19),
+            at: at(20, 2, 1).timestamp(),
+        }],
+        ..DayLog::default()
+    };
+    let due_on = |text: &str, now: ZonedDateTime| {
+        evaluate(&now, &parse(text).unwrap(), Seed(7), &log)
+            .shutdown
+            .map(|window| window.logical_date)
+    };
+    assert_eq!(due_on(LIGHTS_OUT, at(20, 2, 30)), None);
+    assert_eq!(due_on(LIGHTS_OUT, at(21, 2, 30)), Some(date(2026, 11, 20)));
+    let repeat = LIGHTS_OUT.replace(r#"shutdown = "once""#, r#"shutdown = "repeat""#);
+    assert_eq!(due_on(&repeat, at(20, 2, 30)), Some(date(2026, 11, 19)));
 }
 
 #[test]

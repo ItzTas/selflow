@@ -303,6 +303,7 @@ fn report_entry(event: &Event) -> ReportEntry {
             &["label", "minutes", "reason"],
         ),
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
+        EventKind::RuleShutdown => ("report-rule-shutdown".to_owned(), &["label"]),
         EventKind::ConfigSaved => match &detail["kind"] {
             Value::String(kind) => (format!("report-config-saved-{kind}"), &[]),
             _ => ("report-config-saved".to_owned(), &["now", "waiting"]),

@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil, tz::TimeZone};
 use selflow_core::config::{Action, Config, parse};
-use selflow_core::enforce::{ActiveLock, DayLog, Enforcement, Notice, NoticeKind, evaluate};
+use selflow_core::enforce::{
+    ActiveLock, DayLog, Enforcement, Evaluation, Notice, NoticeKind, evaluate,
+};
 use selflow_core::plan::{RuleWindow, windows_around};
 use selflow_core::timing::{Seed, logical_date};
 use selflow_core::versions::{History, SavedConfig, StoredVersion, config_at, rule_since};
@@ -32,6 +34,8 @@ pub struct Engine<C: Clock, E: Enforcer> {
     config: Config,
     localizers: HashMap<Language, Localizer>,
     sent: HashSet<(String, Timestamp)>,
+    announced: HashMap<(String, Timestamp), Timestamp>,
+    shut_down: HashSet<String>,
     shown: HashMap<String, ShownLock>,
 }
 
@@ -47,6 +51,8 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             config: Config::empty(),
             localizers: HashMap::new(),
             sent: HashSet::new(),
+            announced: HashMap::new(),
+            shut_down: HashSet::new(),
             shown: HashMap::new(),
         })
     }
@@ -57,12 +63,18 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         let (log, history) = self.load(&now)?;
         let evaluation = evaluate(&now, &self.config, self.seed, &log);
         let language = Language::from_tag(&self.config.language).unwrap_or(Language::En);
-        let mut records = self.send_notices(&now, &evaluation.notices, &log, language);
+        let mut records = self.send_notices(&now, &evaluation, &log, language);
+        let rule = evaluation
+            .shutdown
+            .as_ref()
+            .filter(|window| !self.shut_down.contains(&shutdown_key(window)));
         let outcome = match &evaluation.enforcement {
-            Enforcement::Free => self.release(instant),
+            Enforcement::Free => self.free(&log, rule, &now, language),
             Enforcement::Locked(lock) => {
-                let earliest = earliest_shutdown(&history, &lock.window, instant);
-                self.enforce(&log, lock, earliest, instant, language)
+                let own = lock
+                    .shutdown_at
+                    .map(|at| at.max(earliest_shutdown(&history, &lock.window, instant)));
+                self.enforce(&log, lock, own, rule, instant, language)
             }
         };
         records.extend(outcome.records);
@@ -123,13 +135,14 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
     fn send_notices(
         &mut self,
         now: &ZonedDateTime,
-        notices: &[Notice],
+        evaluation: &Evaluation,
         log: &DayLog,
         language: Language,
     ) -> Vec<Record> {
         let instant = now.timestamp();
         let since = earlier_by(instant, WARNING_GRACE);
-        let due: Vec<&Notice> = notices
+        let due: Vec<&Notice> = evaluation
+            .notices
             .iter()
             .filter(|notice| since < notice.at && notice.at <= instant)
             .filter(|notice| self.sent.insert((notice.key.clone(), notice.at)))
@@ -137,13 +150,19 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         if due.is_empty() {
             return Vec::new();
         }
-        let localizer = self
-            .localizers
-            .entry(language)
-            .or_insert_with(|| Localizer::new(language));
+        let localizer = localizer_for(&mut self.localizers, language);
         for notice in &due {
             let (title, body) = rendered(localizer, notice, now.time_zone());
             self.enforcer.warn(title, body);
+        }
+        let visible = matches!(evaluation.enforcement, Enforcement::Free);
+        for notice in due
+            .iter()
+            .filter(|notice| visible && notice.kind == NoticeKind::ShutDown)
+        {
+            self.announced
+                .entry((notice.key.clone(), notice.moment))
+                .or_insert(instant);
         }
         let windows = windows_around(&self.config, self.seed, now);
         due.iter()
@@ -161,7 +180,8 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         &mut self,
         log: &DayLog,
         lock: &ActiveLock,
-        earliest_shutdown: Timestamp,
+        own_shutdown: Option<Timestamp>,
+        rule: Option<&RuleWindow>,
         now: Timestamp,
         language: Language,
     ) -> Outcome {
@@ -178,20 +198,25 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             .or_insert_with(|| ShownLock {
                 label: window.label.clone(),
                 logical_date: window.logical_date,
-                first_shown: now,
+                shutdown_on_screen: None,
                 ended: false,
                 shut_down: false,
                 test: window.test,
             });
-        let notice = later_by(shown.first_shown, SHUTDOWN_NOTICE);
-        let shutdown_at = lock
-            .shutdown_at
-            .map(|at| at.max(earliest_shutdown).max(notice))
-            .filter(|at| *at < window.ends_at.timestamp());
+        let wanted = own_shutdown
+            .into_iter()
+            .chain(rule.map(|rule| rule.starts_at.timestamp()))
+            .min();
+        let shutdown_at = shown_shutdown(shown, wanted, now, window.ends_at.timestamp());
         self.enforcer.show_lock(LockView {
             shutdown_at,
             ..lock_view(lock, language.tag())
         });
+        if let Some(rule) = rule.filter(|_| shutdown_at.is_some()) {
+            self.announced
+                .entry((rule.key(), rule.starts_at.timestamp()))
+                .or_insert(now);
+        }
         let event = |kind| {
             Record::Event(lock_event(
                 now,
@@ -202,10 +227,10 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 shown.test,
             ))
         };
-        let mut records = Vec::new();
-        if starts_earlier_than_recorded(log, window) {
-            records.push(Record::Started(window.clone()));
-        }
+        let mut records: Vec<Record> = started_record(log, window)
+            .into_iter()
+            .chain(rule.and_then(|rule| started_record(log, rule)))
+            .collect();
         records.push(event(EventKind::LockStarted));
         let due = shutdown_at.is_some_and(|at| at <= now);
         if !due || shown.shut_down {
@@ -215,7 +240,13 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 shut_down: false,
             };
         }
-        records.push(event(EventKind::Shutdown));
+        if own_shutdown.is_some_and(|at| at <= now) {
+            records.push(event(EventKind::Shutdown));
+        }
+        if let Some(rule) = rule {
+            self.shut_down.insert(shutdown_key(rule));
+            records.push(rule_shutdown(rule, now));
+        }
         shown.shut_down = true;
         Outcome {
             records,
@@ -224,7 +255,64 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         }
     }
 
-    fn release(&mut self, now: Timestamp) -> Outcome {
+    fn free(
+        &mut self,
+        log: &DayLog,
+        rule: Option<&RuleWindow>,
+        now: &ZonedDateTime,
+        language: Language,
+    ) -> Outcome {
+        let instant = now.timestamp();
+        let mut records = self.release(instant);
+        let Some(rule) = rule else {
+            return Outcome {
+                records,
+                pending_shutdown: None,
+                shut_down: false,
+            };
+        };
+        records.extend(started_record(log, rule));
+        let announced_at = self.announced_at(rule, now, language);
+        let shutdown_at = rule
+            .starts_at
+            .timestamp()
+            .max(later_by(announced_at, SHUTDOWN_NOTICE));
+        if instant < shutdown_at {
+            return Outcome {
+                records,
+                pending_shutdown: Some(shutdown_at),
+                shut_down: false,
+            };
+        }
+        self.shut_down.insert(shutdown_key(rule));
+        records.push(rule_shutdown(rule, instant));
+        Outcome {
+            records,
+            pending_shutdown: None,
+            shut_down: true,
+        }
+    }
+
+    fn announced_at(
+        &mut self,
+        rule: &RuleWindow,
+        now: &ZonedDateTime,
+        language: Language,
+    ) -> Timestamp {
+        let instant = now.timestamp();
+        let identity = (rule.key(), rule.starts_at.timestamp());
+        if let Some(at) = self.announced.get(&identity) {
+            return *at;
+        }
+        let localizer = localizer_for(&mut self.localizers, language);
+        let shutdown_at = later_by(instant, SHUTDOWN_NOTICE);
+        let (title, body) = shutdown_now(localizer, &rule.label, shutdown_at, now.time_zone());
+        self.enforcer.warn(title, body);
+        self.announced.insert(identity, instant);
+        instant
+    }
+
+    fn release(&mut self, now: Timestamp) -> Vec<Record> {
         self.enforcer.hide_lock();
         let mut records = Vec::new();
         for (identity, shown) in self.shown.iter_mut().filter(|(_, shown)| !shown.ended) {
@@ -238,12 +326,43 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 shown.test,
             )));
         }
-        Outcome {
-            records,
-            pending_shutdown: None,
-            shut_down: false,
-        }
+        records
     }
+}
+
+fn shown_shutdown(
+    shown: &mut ShownLock,
+    wanted: Option<Timestamp>,
+    now: Timestamp,
+    ends_at: Timestamp,
+) -> Option<Timestamp> {
+    let floor =
+        later_by(now, SHUTDOWN_NOTICE).min(shown.shutdown_on_screen.unwrap_or(Timestamp::MAX));
+    shown.shutdown_on_screen = wanted.map(|at| at.max(floor)).filter(|at| *at < ends_at);
+    shown.shutdown_on_screen
+}
+
+fn started_record(log: &DayLog, window: &RuleWindow) -> Option<Record> {
+    starts_earlier_than_recorded(log, window).then(|| Record::Started(window.clone()))
+}
+
+fn shutdown_key(window: &RuleWindow) -> String {
+    format!("{}/{}", window.key(), window.logical_date)
+}
+
+fn rule_shutdown(window: &RuleWindow, at: Timestamp) -> Record {
+    let repeat = matches!(window.action, Action::ShutDown { repeat: true });
+    let once = shutdown_key(window);
+    let key = if repeat { format!("{once}/{at}") } else { once };
+    Record::Event(Event {
+        at,
+        logical_date: window.logical_date,
+        kind: EventKind::RuleShutdown,
+        key,
+        detail: Some(
+            json!({ "label": window.label, "rule": window.rule_id, "repeat": repeat }).to_string(),
+        ),
+    })
 }
 
 fn write(store: &Store, record: &Record) -> Result<(), StoreError> {
@@ -350,18 +469,40 @@ fn rendered(localizer: &Localizer, notice: &Notice, tz: &TimeZone) -> (String, S
 }
 
 fn notice_args(notice: &Notice, tz: &TimeZone) -> [(&'static str, Arg); 3] {
-    let time = notice
-        .moment
-        .to_zoned_datetime(tz.clone())
-        .strftime("%H:%M");
     [
         ("label", Arg::Text(notice.label.clone())),
-        ("time", Arg::Text(time.to_string())),
+        ("time", Arg::Text(clock_time(notice.moment, tz))),
         (
             "minutes",
             Arg::Number(notice.at.duration_until(notice.moment).as_mins()),
         ),
     ]
+}
+
+fn shutdown_now(
+    localizer: &Localizer,
+    label: &str,
+    at: Timestamp,
+    tz: &TimeZone,
+) -> (String, String) {
+    let time = ("time", Arg::Text(clock_time(at, tz)));
+    let title = localizer.text(
+        "notice-shutdown-title",
+        &[("label", Arg::Text(label.to_owned())), time.clone()],
+    );
+    (title, localizer.text("notice-shutdown-now", &[time]))
+}
+
+fn clock_time(at: Timestamp, tz: &TimeZone) -> String {
+    at.to_zoned_datetime(tz.clone())
+        .strftime("%H:%M")
+        .to_string()
+}
+
+fn localizer_for(localizers: &mut HashMap<Language, Localizer>, language: Language) -> &Localizer {
+    localizers
+        .entry(language)
+        .or_insert_with(|| Localizer::new(language))
 }
 
 fn lock_event(

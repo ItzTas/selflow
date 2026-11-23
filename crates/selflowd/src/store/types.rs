@@ -1,4 +1,5 @@
 use jiff::{Timestamp, civil};
+use serde::Deserialize;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,6 +23,7 @@ pub enum EventKind {
     ExtensionGranted,
     Shutdown,
     ConfigSaved,
+    RuleShutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,4 +33,9 @@ pub struct Event {
     pub kind: EventKind,
     pub key: String,
     pub detail: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ShutdownDetail {
+    pub(super) rule: String,
 }
