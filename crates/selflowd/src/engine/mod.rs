@@ -272,11 +272,13 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             };
         };
         records.extend(started_record(log, rule));
-        let announced_at = self.announced_at(rule, now, language);
-        let shutdown_at = rule
-            .starts_at
-            .timestamp()
-            .max(later_by(announced_at, SHUTDOWN_NOTICE));
+        let Some(shutdown_at) = self.announced_shutdown(rule, now, language) else {
+            return Outcome {
+                records,
+                pending_shutdown: None,
+                shut_down: false,
+            };
+        };
         if instant < shutdown_at {
             return Outcome {
                 records,
@@ -293,23 +295,33 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         }
     }
 
-    fn announced_at(
+    fn announced_shutdown(
         &mut self,
         rule: &RuleWindow,
         now: &ZonedDateTime,
         language: Language,
-    ) -> Timestamp {
+    ) -> Option<Timestamp> {
         let instant = now.timestamp();
-        let identity = (rule.key(), rule.starts_at.timestamp());
-        if let Some(at) = self.announced.get(&identity) {
-            return *at;
+        let starts_at = rule.starts_at.timestamp();
+        let ends_at = rule.ends_at.timestamp();
+        let identity = (rule.key(), starts_at);
+        let announced = self
+            .announced
+            .get(&identity)
+            .map(|at| starts_at.max(later_by(*at, SHUTDOWN_NOTICE)))
+            .filter(|at| still_on_time(*at, instant));
+        if let Some(shutdown_at) = announced {
+            return (shutdown_at < ends_at).then_some(shutdown_at);
+        }
+        let shutdown_at = later_by(instant, SHUTDOWN_NOTICE);
+        if shutdown_at >= ends_at {
+            return None;
         }
         let localizer = localizer_for(&mut self.localizers, language);
-        let shutdown_at = later_by(instant, SHUTDOWN_NOTICE);
         let (title, body) = shutdown_now(localizer, &rule.label, shutdown_at, now.time_zone());
         self.enforcer.warn(title, body);
         self.announced.insert(identity, instant);
-        instant
+        Some(shutdown_at)
     }
 
     fn release(&mut self, now: Timestamp) -> Vec<Record> {
@@ -336,10 +348,17 @@ fn shown_shutdown(
     now: Timestamp,
     ends_at: Timestamp,
 ) -> Option<Timestamp> {
-    let floor =
-        later_by(now, SHUTDOWN_NOTICE).min(shown.shutdown_on_screen.unwrap_or(Timestamp::MAX));
+    let on_screen = shown
+        .shutdown_on_screen
+        .filter(|at| still_on_time(*at, now))
+        .unwrap_or(Timestamp::MAX);
+    let floor = later_by(now, SHUTDOWN_NOTICE).min(on_screen);
     shown.shutdown_on_screen = wanted.map(|at| at.max(floor)).filter(|at| *at < ends_at);
     shown.shutdown_on_screen
+}
+
+fn still_on_time(shutdown_at: Timestamp, now: Timestamp) -> bool {
+    now <= later_by(shutdown_at, SHUTDOWN_NOTICE)
 }
 
 fn started_record(log: &DayLog, window: &RuleWindow) -> Option<Record> {
