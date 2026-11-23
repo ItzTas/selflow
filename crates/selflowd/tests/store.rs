@@ -6,7 +6,7 @@ use std::path::Path;
 use jiff::civil::date;
 use selflow_core::config::parse;
 use selflow_core::enforce::DayLog;
-use selflow_core::plan::windows_for;
+use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
 use selflowd::store::{Event, EventKind, Store};
@@ -116,6 +116,33 @@ fn records_an_event_only_once() {
     assert!(store.record_event(&event).unwrap());
     assert!(!store.record_event(&event).unwrap());
     assert_eq!(store.events_for(date(2026, 11, 19)).unwrap().len(), 1);
+}
+
+#[test]
+fn a_started_window_only_ever_moves_its_start_earlier() {
+    let store = Store::open_in_memory().unwrap();
+    let window = windows_for(
+        &parse(&no_jitter()).unwrap(),
+        Seed(7),
+        date(2026, 11, 19),
+        &brt(),
+    )
+    .remove(0);
+    store.record_started(&window).unwrap();
+    let moved = |hour, minute| RuleWindow {
+        label: "sleep".to_owned(),
+        starts_at: at(19, hour, minute),
+        ..window.clone()
+    };
+    store.record_started(&moved(22, 50)).unwrap();
+    store.record_started(&moved(23, 10)).unwrap();
+    assert_eq!(
+        store.night_log(&[date(2026, 11, 19)]).unwrap().started,
+        vec![RuleWindow {
+            starts_at: at(19, 22, 50),
+            ..window
+        }]
+    );
 }
 
 #[test]

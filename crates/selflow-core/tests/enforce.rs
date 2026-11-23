@@ -65,14 +65,36 @@ fn notifies_fifteen_five_and_one_minute_before_a_lock() {
 }
 
 #[test]
-fn a_lock_notice_at_the_start_is_due_with_the_lock() {
-    let c = parse(&no_jitter().replace(r#"notices = ["5m", "15m", "1m"]"#, r#"notices = ["0m"]"#))
-        .unwrap();
-    let evaluation = evaluate(&at(19, 23, 0), &c, Seed(7), &DayLog::default());
-    assert!(matches!(evaluation.enforcement, Enforcement::Locked(_)));
+fn a_lock_notice_at_its_start_stays_due_while_the_lock_runs() {
+    let at_start =
+        parse(&no_jitter().replace(r#"notices = ["5m", "15m", "1m"]"#, r#"notices = ["0m"]"#))
+            .unwrap();
+    let just_after = |hour, minute| {
+        at(19, hour, minute)
+            .checked_add(SignedDuration::from_millis(3))
+            .unwrap()
+    };
+    let due = |now: ZonedDateTime, config: &Config, log: &DayLog| {
+        let evaluation = evaluate(&now, config, Seed(7), log);
+        assert!(matches!(evaluation.enforcement, Enforcement::Locked(_)));
+        evaluation
+            .notices
+            .iter()
+            .map(|notice| notice.at)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        evaluation.notices.iter().map(|n| n.at).collect::<Vec<_>>(),
+        due(just_after(23, 0), &at_start, &DayLog::default()),
         vec![at(19, 23, 0).timestamp()]
+    );
+    assert_eq!(
+        due(just_after(23, 25), &at_start, &one_extension()),
+        vec![at(19, 23, 25).timestamp()]
+    );
+    let before_start = parse(&no_jitter()).unwrap();
+    assert_eq!(
+        due(just_after(23, 0), &before_start, &DayLog::default()),
+        vec![]
     );
 }
 

@@ -370,3 +370,35 @@ message = "Time to stop."
     );
     assert_eq!(calls.last_title(), Some(title));
 }
+
+#[test]
+fn a_tightening_after_the_first_notice_keeps_the_earlier_start_through_the_lock() {
+    let (mut engine, calls, clock, store) = setup(at(19, 22, 45));
+    engine.tick().unwrap();
+    let earlier = no_jitter().replace(r#"bedtime = "23:00""#, r#"bedtime = "22:50""#);
+    save_at(&store.lock().unwrap(), &earlier, at(19, 22, 46));
+    for minute in [(22, 50), (23, 1)] {
+        clock.set(at(19, minute.0, minute.1));
+        engine.tick().unwrap();
+    }
+    assert_eq!(
+        calls.last_view().and_then(|view| view.shutdown_at),
+        Some(at(19, 23, 20).timestamp())
+    );
+    let store = store.lock().unwrap();
+    let started = store.night_log(&[date(2026, 11, 19)]).unwrap().started;
+    assert_eq!(
+        started
+            .iter()
+            .map(|window| window.starts_at.clone())
+            .collect::<Vec<_>>(),
+        vec![at(19, 22, 50)]
+    );
+    let lock_starts = store
+        .events_for(date(2026, 11, 19))
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == EventKind::LockStarted)
+        .count();
+    assert_eq!(lock_starts, 1);
+}

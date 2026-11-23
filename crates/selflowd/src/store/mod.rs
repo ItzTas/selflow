@@ -211,13 +211,34 @@ impl Store {
     }
 
     pub fn record_started(&self, window: &RuleWindow) -> Result<(), StoreError> {
+        let key = window.key();
+        let logical_date = window.logical_date.to_string();
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT window FROM started_windows WHERE key = ?1 AND logical_date = ?2",
+                params![key, logical_date],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(stored) = stored else {
+            self.conn.execute(
+                "INSERT INTO started_windows (key, logical_date, window) VALUES (?1, ?2, ?3)",
+                params![key, logical_date, serde_json::to_string(window)?],
+            )?;
+            return Ok(());
+        };
+        let kept: RuleWindow = serde_json::from_str(&stored)?;
+        if kept.starts_at.timestamp() <= window.starts_at.timestamp() {
+            return Ok(());
+        }
+        let moved = RuleWindow {
+            starts_at: window.starts_at.clone(),
+            ..kept
+        };
         self.conn.execute(
-            "INSERT OR IGNORE INTO started_windows (key, logical_date, window) VALUES (?1, ?2, ?3)",
-            params![
-                window.key(),
-                window.logical_date.to_string(),
-                serde_json::to_string(window)?
-            ],
+            "UPDATE started_windows SET window = ?3 WHERE key = ?1 AND logical_date = ?2",
+            params![key, logical_date, serde_json::to_string(&moved)?],
         )?;
         Ok(())
     }

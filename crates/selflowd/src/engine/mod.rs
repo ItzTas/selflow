@@ -203,7 +203,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             ))
         };
         let mut records = Vec::new();
-        if !recorded(log, window) {
+        if starts_earlier_than_recorded(log, window) {
             records.push(Record::Started(window.clone()));
         }
         records.push(event(EventKind::LockStarted));
@@ -291,10 +291,21 @@ fn config_of(
     Ok(config)
 }
 
+fn starts_earlier_than_recorded(log: &DayLog, window: &RuleWindow) -> bool {
+    log.started
+        .iter()
+        .find(|started| same_window(started, window))
+        .is_none_or(|started| window.starts_at.timestamp() < started.starts_at.timestamp())
+}
+
+fn same_window(started: &RuleWindow, window: &RuleWindow) -> bool {
+    started.key() == window.key() && started.logical_date == window.logical_date
+}
+
 fn recorded(log: &DayLog, window: &RuleWindow) -> bool {
     log.started
         .iter()
-        .any(|started| started.key() == window.key() && started.logical_date == window.logical_date)
+        .any(|started| same_window(started, window))
 }
 
 fn earliest_shutdown(history: &History, window: &RuleWindow, now: Timestamp) -> Timestamp {

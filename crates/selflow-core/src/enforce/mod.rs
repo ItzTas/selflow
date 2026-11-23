@@ -155,10 +155,7 @@ fn active_lock(window: &RuleWindow, log: &DayLog, now: Timestamp) -> Option<Acti
     if now < starts_at || now >= ends_at || running_extension(window, log, now).is_some() {
         return None;
     }
-    let locked_since = extensions_of(window, log)
-        .map(|extension| extension.until)
-        .filter(|until| *until <= now)
-        .fold(starts_at, Ord::max);
+    let locked_since = locked_since(window, log, now);
     let granted = extensions_of(window, log).count();
     Some(ActiveLock {
         window: window.clone(),
@@ -172,6 +169,13 @@ fn active_lock(window: &RuleWindow, log: &DayLog, now: Timestamp) -> Option<Acti
             .map(|after| later_by(locked_since, after))
             .filter(|shutdown_at| *shutdown_at < ends_at),
     })
+}
+
+fn locked_since(window: &RuleWindow, log: &DayLog, now: Timestamp) -> Timestamp {
+    extensions_of(window, log)
+        .map(|extension| extension.until)
+        .filter(|until| *until <= now)
+        .fold(window.starts_at.timestamp(), Ord::max)
 }
 
 fn lock_moments(lock: &ActiveLock) -> impl Iterator<Item = Timestamp> {
@@ -192,13 +196,13 @@ fn notices_for(window: &RuleWindow, log: &DayLog, seed: Seed, now: Timestamp) ->
     let variant = draw_variant(seed, &key, moment);
     let kind = notice_kind(window.action);
     let message = chosen_message(window, seed);
-    let at_the_moment = window.action.locks() && moment == now;
+    let locked = window.action.locks() && moment <= now;
     window
         .notices
         .iter()
         .filter(|offset| **offset < longest)
         .map(|offset| earlier_by(moment, *offset))
-        .filter(|at| !at_the_moment || *at == moment)
+        .filter(|at| !locked || *at == moment)
         .map(|at| Notice {
             key: key.clone(),
             label: window.label.clone(),
@@ -221,12 +225,14 @@ fn next_moment(
     if !window.action.locks() {
         return (now < ends_at).then_some((starts_at, SignedDuration::MAX));
     }
-    let returning = extensions_of(window, log)
-        .find(|extension| extension.granted_at <= now && now <= extension.until);
-    let Some(extension) = returning else {
-        return (now <= starts_at).then_some((starts_at, SignedDuration::MAX));
-    };
-    (extension.until < ends_at).then(|| (extension.until, extension.until - extension.granted_at))
+    if let Some(extension) = running_extension(window, log, now) {
+        return (extension.until < ends_at)
+            .then(|| (extension.until, extension.until - extension.granted_at));
+    }
+    if now < starts_at {
+        return Some((starts_at, SignedDuration::MAX));
+    }
+    (now < ends_at).then(|| (locked_since(window, log, now), SignedDuration::MAX))
 }
 
 fn notice_kind(action: Action) -> NoticeKind {
