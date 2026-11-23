@@ -53,8 +53,8 @@ async fn backs_off_when_the_client_keeps_exiting_at_once() {
     );
     supervisor.show(sample_view());
     tokio::time::sleep(Duration::from_millis(4500)).await;
-    supervisor.hide();
     let count = std::fs::read_to_string(&starts).unwrap().lines().count();
+    supervisor.hide();
     assert!((2..=3).contains(&count), "started {count} times");
 }
 
@@ -139,6 +139,29 @@ async fn quick_exits_reset_after_a_steady_client_is_stopped() {
     supervisor.show(sample_view());
     assert!(wait_for(Duration::from_millis(2500), || started(&starts) == 6).await);
     supervisor.hide();
+}
+
+#[tokio::test]
+async fn hiding_during_the_backoff_starts_one_release_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let starts = dir.path().join("starts");
+    let mut supervisor = counting(
+        &starts,
+        "echo started >> \"$0\"; case $(wc -l < \"$0\") in 1 | 2) exit ;; esac; exec sleep 30",
+    );
+    supervisor.show(sample_view());
+    assert!(
+        wait_for(Duration::from_secs(3), || started(&starts) == 2
+            && supervisor.pid().is_none())
+        .await
+    );
+    supervisor.hide();
+    assert!(supervisor.pid().is_some());
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert_eq!(started(&starts), 3);
+    assert_eq!(supervisor.pid(), None);
+    supervisor.hide();
+    assert_eq!(supervisor.pid(), None);
 }
 
 #[tokio::test]

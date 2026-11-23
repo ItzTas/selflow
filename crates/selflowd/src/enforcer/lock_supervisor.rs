@@ -64,17 +64,18 @@ impl LockSupervisor {
     }
 
     pub fn hide(&mut self) {
-        self.shared
+        let mut running = self.shared.running();
+        let ended = self
+            .shared
             .views
             .send_if_modified(|current| current.take().is_some());
-        let generation = {
-            let running = self.shared.running();
-            if running.pid.is_none() {
-                return;
-            }
-            running.generation
-        };
-        stop_after_grace(&self.shared, generation);
+        if running.pid.is_some() {
+            stop_after_grace(&self.shared, running.generation);
+            return;
+        }
+        if ended {
+            start_release(&self.shared, &mut running);
+        }
     }
 
     pub fn views(&self) -> watch::Receiver<Option<LockView>> {
