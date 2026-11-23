@@ -6,7 +6,7 @@ use jiff::{
     tz::{self, TimeZone},
 };
 use selflow_core::config::parse;
-use selflow_core::enforce::{GrantedExtension, NightLog};
+use selflow_core::enforce::{DayLog, GrantedExtension};
 use selflow_core::versions::{History, SavedConfig, StoredChange, plan_save, stored_changes};
 
 pub fn brt() -> TimeZone {
@@ -53,6 +53,26 @@ pub fn no_jitter() -> String {
     VALID.replace("start_jitter = \"15m\"\n", "")
 }
 
+pub const REMINDER: &str = r#"
+day_starts_at = "05:00"
+
+[[rule_set]]
+name = "everyday"
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+[[rule_set.rule]]
+id = "stretch"
+start = "15:00"
+message = ["Stand up for a minute.", "Time to stretch."]
+"#;
+
+pub fn two_locks() -> String {
+    format!(
+        "{}\n[[rule_set.rule]]\nid = \"nap\"\nstart = \"14:00\"\nend = \"14:30\"\nlock = true\n",
+        no_jitter()
+    )
+}
+
 pub fn history_of(saves: &[(ZonedDateTime, &str)]) -> History {
     let mut history = History::default();
     for (id, (when, text)) in (1..).zip(saves) {
@@ -76,8 +96,8 @@ pub fn history_of(saves: &[(ZonedDateTime, &str)]) -> History {
     history
 }
 
-pub fn one_extension() -> NightLog {
-    NightLog {
+pub fn one_extension() -> DayLog {
+    DayLog {
         extensions: vec![GrantedExtension {
             rule_set: "weeknight".to_owned(),
             rule_id: "bedtime".to_owned(),
@@ -86,6 +106,6 @@ pub fn one_extension() -> NightLog {
             until: at(19, 23, 25).timestamp(),
             reason: "talking to my sister".to_owned(),
         }],
-        ..NightLog::default()
+        ..DayLog::default()
     }
 }

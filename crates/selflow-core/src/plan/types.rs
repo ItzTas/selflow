@@ -1,25 +1,26 @@
 use jiff::{SignedDuration, ZonedDateTime, civil};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Challenges;
+use crate::config::{Action, Challenges};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LockWindow {
-    pub rule_set: String,
+pub struct RuleWindow {
+    pub set: String,
     pub rule_id: String,
     pub label: String,
     pub logical_date: civil::Date,
     pub starts_at: ZonedDateTime,
     pub ends_at: ZonedDateTime,
-    pub warnings: Vec<SignedDuration>,
-    pub shutdown_after: Option<SignedDuration>,
+    pub notices: Vec<SignedDuration>,
+    pub message: Vec<String>,
+    pub action: Action,
     pub challenges: Challenges,
     #[serde(default)]
     pub test: bool,
 }
 
-impl LockWindow {
+impl RuleWindow {
     pub fn key(&self) -> String {
-        format!("{}/{}", self.rule_set, self.rule_id)
+        self.rule_id.clone()
     }
 }

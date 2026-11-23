@@ -57,6 +57,7 @@ pub enum Call {
 pub struct Calls {
     calls: Arc<Mutex<Vec<Call>>>,
     last_view: Arc<Mutex<Option<LockView>>>,
+    last_title: Arc<Mutex<Option<String>>>,
 }
 
 impl Calls {
@@ -68,6 +69,10 @@ impl Calls {
         self.last_view.lock().unwrap().clone()
     }
 
+    pub fn last_title(&self) -> Option<String> {
+        self.last_title.lock().unwrap().clone()
+    }
+
     fn push(&self, call: Call) {
         self.calls.lock().unwrap().push(call);
     }
@@ -76,7 +81,8 @@ impl Calls {
 pub struct FakeEnforcer(Calls);
 
 impl Enforcer for FakeEnforcer {
-    fn warn(&mut self, _title: String, body: String) {
+    fn warn(&mut self, title: String, body: String) {
+        *self.0.last_title.lock().unwrap() = Some(title);
         self.0.push(Call::Warn(body));
     }
 
@@ -188,6 +194,20 @@ shutdown_after = "30m"
 pub fn no_jitter() -> String {
     VALID.replace("start_jitter = \"15m\"\n", "")
 }
+
+pub const REMINDER: &str = r#"
+language = "en"
+day_starts_at = "05:00"
+
+[[rule_set]]
+name = "everyday"
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+[[rule_set.rule]]
+id = "stretch"
+start = "15:00"
+message = ["Stand up for a minute.", "Time to stretch."]
+"#;
 
 pub const M1_TEXT: &str = r#"
 language = "pt-BR"

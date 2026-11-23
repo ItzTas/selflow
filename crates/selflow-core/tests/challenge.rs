@@ -3,11 +3,11 @@ mod support;
 use jiff::{ZonedDateTime, civil::date};
 use selflow_core::challenge::{ExtensionAnswer, Refusal, request_extension};
 use selflow_core::config::{Config, parse};
-use selflow_core::enforce::{ActiveLock, Enforcement, NightLog, evaluate};
+use selflow_core::enforce::{ActiveLock, DayLog, Enforcement, evaluate};
 use selflow_core::timing::Seed;
 use support::{at, no_jitter, one_extension};
 
-fn lock_at(now: ZonedDateTime, config: &Config, log: &NightLog) -> ActiveLock {
+fn lock_at(now: ZonedDateTime, config: &Config, log: &DayLog) -> ActiveLock {
     match evaluate(&now, config, Seed(7), log).enforcement {
         Enforcement::Locked(lock) => lock,
         Enforcement::Free => panic!("expected a lock"),
@@ -26,7 +26,7 @@ fn refuses_before_the_wait_is_over() {
     let lock = lock_at(
         at(19, 23, 1),
         &parse(&no_jitter()).unwrap(),
-        &NightLog::default(),
+        &DayLog::default(),
     );
     assert_eq!(
         request_extension(
@@ -45,7 +45,7 @@ fn refuses_a_reason_that_is_too_short() {
     let lock = lock_at(
         at(19, 23, 3),
         &parse(&no_jitter()).unwrap(),
-        &NightLog::default(),
+        &DayLog::default(),
     );
     assert_eq!(
         request_extension(at(19, 23, 3).timestamp(), &lock, &answer("   ok    ", "")),
@@ -56,7 +56,7 @@ fn refuses_a_reason_that_is_too_short() {
 #[test]
 fn grants_the_extension_length_but_never_past_the_end_of_the_lock() {
     let config = parse(&no_jitter()).unwrap();
-    let evening = lock_at(at(19, 23, 3), &config, &NightLog::default());
+    let evening = lock_at(at(19, 23, 3), &config, &DayLog::default());
     let granted = request_extension(
         at(19, 23, 3).timestamp(),
         &evening,
@@ -69,7 +69,7 @@ fn grants_the_extension_length_but_never_past_the_end_of_the_lock() {
         ("weeknight", "bedtime")
     );
     assert_eq!(granted.logical_date, date(2026, 11, 19));
-    let morning = lock_at(at(20, 6, 50), &config, &NightLog::default());
+    let morning = lock_at(at(20, 6, 50), &config, &DayLog::default());
     let granted = request_extension(
         at(20, 6, 50).timestamp(),
         &morning,
@@ -102,7 +102,7 @@ fn accepts_the_phrase_whatever_the_case_and_spacing() {
         "extensions = 1",
         "extensions = 1\nphrase = \"I choose to stay up\"",
     );
-    let lock = lock_at(at(19, 23, 3), &parse(&text).unwrap(), &NightLog::default());
+    let lock = lock_at(at(19, 23, 3), &parse(&text).unwrap(), &DayLog::default());
     let now = at(19, 23, 3).timestamp();
     assert!(
         request_extension(

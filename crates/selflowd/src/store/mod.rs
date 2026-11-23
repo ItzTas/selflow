@@ -5,8 +5,8 @@ use std::path::Path;
 
 use jiff::{Timestamp, civil};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use selflow_core::enforce::{GrantedExtension, NightLog};
-use selflow_core::plan::LockWindow;
+use selflow_core::enforce::{DayLog, GrantedExtension};
+use selflow_core::plan::RuleWindow;
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
 use selflow_platform::secure_fs::{private_dir, private_file};
@@ -210,7 +210,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn record_started(&self, window: &LockWindow) -> Result<(), StoreError> {
+    pub fn record_started(&self, window: &RuleWindow) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR IGNORE INTO started_windows (key, logical_date, window) VALUES (?1, ?2, ?3)",
             params![
@@ -222,8 +222,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn night_log(&self, dates: &[civil::Date]) -> Result<NightLog, StoreError> {
-        let mut log = NightLog::default();
+    pub fn night_log(&self, dates: &[civil::Date]) -> Result<DayLog, StoreError> {
+        let mut log = DayLog::default();
         for date in dates {
             log.extensions.extend(self.extensions_on(*date)?);
             log.started.extend(self.started_on(*date)?);
@@ -259,7 +259,7 @@ impl Store {
         .collect()
     }
 
-    fn started_on(&self, date: civil::Date) -> Result<Vec<LockWindow>, StoreError> {
+    fn started_on(&self, date: civil::Date) -> Result<Vec<RuleWindow>, StoreError> {
         let mut statement = self
             .conn
             .prepare("SELECT window FROM started_windows WHERE logical_date = ?1 ORDER BY rowid")?;

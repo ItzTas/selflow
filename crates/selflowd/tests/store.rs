@@ -5,7 +5,7 @@ use std::path::Path;
 
 use jiff::civil::date;
 use selflow_core::config::parse;
-use selflow_core::enforce::NightLog;
+use selflow_core::enforce::DayLog;
 use selflow_core::plan::windows_for;
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
@@ -99,7 +99,7 @@ fn an_m1_store_opens_with_its_settings_kept_aside() {
     assert_eq!(kinds, [EventKind::ConfigSaved]);
     assert_eq!(
         store.night_log(&[date(2026, 11, 19)]).unwrap(),
-        NightLog::default()
+        DayLog::default()
     );
 }
 
@@ -139,7 +139,7 @@ fn reads_back_the_log_of_the_requested_nights() {
     );
     assert_eq!(
         store.night_log(&[date(2026, 11, 18)]).unwrap(),
-        NightLog::default()
+        DayLog::default()
     );
 }
 

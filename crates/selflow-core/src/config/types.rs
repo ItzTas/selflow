@@ -81,6 +81,10 @@ impl Rule {
         self.action != Action::Nothing
     }
 
+    pub fn locks(&self) -> bool {
+        self.action.locks()
+    }
+
     pub fn notice_offsets(&self) -> Vec<SignedDuration> {
         let mut offsets = self
             .notices
@@ -105,7 +109,7 @@ pub enum RuleEnd {
     DayEnd,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
     Nothing,
     Lock {
@@ -114,6 +118,12 @@ pub enum Action {
     ShutDown {
         repeat: bool,
     },
+}
+
+impl Action {
+    pub fn locks(&self) -> bool {
+        matches!(self, Action::Lock { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

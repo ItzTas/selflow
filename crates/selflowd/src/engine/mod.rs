@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil, tz::TimeZone};
-use selflow_core::config::{Config, parse};
-use selflow_core::enforce::{ActiveLock, Enforcement, NightLog, Warning, evaluate};
-use selflow_core::plan::LockWindow;
+use selflow_core::config::{Action, Config, parse};
+use selflow_core::enforce::{ActiveLock, DayLog, Enforcement, Notice, NoticeKind, evaluate};
+use selflow_core::plan::{RuleWindow, windows_around};
 use selflow_core::timing::{Seed, logical_date};
 use selflow_core::versions::{History, SavedConfig, StoredVersion, config_at, rule_since};
 use selflow_i18n::language::Language;
@@ -57,7 +57,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         let (log, history) = self.load(&now)?;
         let evaluation = evaluate(&now, &self.config, self.seed, &log);
         let language = Language::from_tag(&self.config.language).unwrap_or(Language::En);
-        self.send_warnings(&now, &evaluation.warnings, language);
+        let mut records = self.send_notices(&now, &evaluation.notices, &log, language);
         let outcome = match &evaluation.enforcement {
             Enforcement::Free => self.release(instant),
             Enforcement::Locked(lock) => {
@@ -65,7 +65,8 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 self.enforce(&log, lock, earliest, instant, language)
             }
         };
-        self.record(&outcome.records);
+        records.extend(outcome.records);
+        self.record(&records);
         if outcome.shut_down {
             self.enforcer.shut_down();
         }
@@ -76,7 +77,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             .fold(later_by(instant, MAX_SLEEP), Ord::min))
     }
 
-    fn load(&mut self, now: &ZonedDateTime) -> Result<(NightLog, History), EngineError> {
+    fn load(&mut self, now: &ZonedDateTime) -> Result<(DayLog, History), EngineError> {
         let shared = Arc::clone(&self.store);
         let store = locked(&shared);
         let history = history_with(&store, &mut self.parsed)?;
@@ -119,30 +120,46 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         }
     }
 
-    fn send_warnings(&mut self, now: &ZonedDateTime, warnings: &[Warning], language: Language) {
+    fn send_notices(
+        &mut self,
+        now: &ZonedDateTime,
+        notices: &[Notice],
+        log: &DayLog,
+        language: Language,
+    ) -> Vec<Record> {
         let instant = now.timestamp();
         let since = earlier_by(instant, WARNING_GRACE);
-        for warning in warnings
+        let due: Vec<&Notice> = notices
             .iter()
-            .filter(|warning| since < warning.at && warning.at <= instant)
-        {
-            if !self.sent.insert((warning.key.clone(), warning.at)) {
-                continue;
-            }
-            let localizer = self
-                .localizers
-                .entry(language)
-                .or_insert_with(|| Localizer::new(language));
-            let args = warning_args(warning, now.time_zone());
-            let title = localizer.text("warning-title", &args);
-            let body = localizer.text(&format!("warning-body-{}", warning.variant), &args);
+            .filter(|notice| since < notice.at && notice.at <= instant)
+            .filter(|notice| self.sent.insert((notice.key.clone(), notice.at)))
+            .collect();
+        if due.is_empty() {
+            return Vec::new();
+        }
+        let localizer = self
+            .localizers
+            .entry(language)
+            .or_insert_with(|| Localizer::new(language));
+        for notice in &due {
+            let (title, body) = rendered(localizer, notice, now.time_zone());
             self.enforcer.warn(title, body);
         }
+        let windows = windows_around(&self.config, self.seed, now);
+        due.iter()
+            .filter_map(|notice| {
+                windows.iter().find(|window| {
+                    window.key() == notice.key && window.starts_at.timestamp() == notice.moment
+                })
+            })
+            .filter(|window| window.action != Action::Nothing && !recorded(log, window))
+            .map(|window| Record::Started(window.clone()))
+            .collect()
     }
 
     fn enforce(
         &mut self,
-        log: &NightLog,
+        log: &DayLog,
         lock: &ActiveLock,
         earliest_shutdown: Timestamp,
         now: Timestamp,
@@ -186,10 +203,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             ))
         };
         let mut records = Vec::new();
-        let recorded = log.started.iter().any(|started| {
-            started.key() == window.key() && started.logical_date == window.logical_date
-        });
-        if !recorded {
+        if !recorded(log, window) {
             records.push(Record::Started(window.clone()));
         }
         records.push(event(EventKind::LockStarted));
@@ -277,12 +291,21 @@ fn config_of(
     Ok(config)
 }
 
-fn earliest_shutdown(history: &History, window: &LockWindow, now: Timestamp) -> Timestamp {
-    let since = rule_since(history, now, window.logical_date.weekday(), &window.rule_id);
-    let (Some(since), Some(after)) = (since, window.shutdown_after) else {
+fn recorded(log: &DayLog, window: &RuleWindow) -> bool {
+    log.started
+        .iter()
+        .any(|started| started.key() == window.key() && started.logical_date == window.logical_date)
+}
+
+fn earliest_shutdown(history: &History, window: &RuleWindow, now: Timestamp) -> Timestamp {
+    let Action::Lock {
+        shutdown_after: Some(after),
+    } = window.action
+    else {
         return Timestamp::MIN;
     };
-    later_by(since, after)
+    rule_since(history, now, window.logical_date.weekday(), &window.rule_id)
+        .map_or(Timestamp::MIN, |since| later_by(since, after))
 }
 
 pub fn lock_view(lock: &ActiveLock, language: &str) -> LockView {
@@ -301,17 +324,31 @@ pub fn lock_view(lock: &ActiveLock, language: &str) -> LockView {
     }
 }
 
-fn warning_args(warning: &Warning, tz: &TimeZone) -> [(&'static str, Arg); 3] {
-    let time = warning
-        .lock_at
+fn rendered(localizer: &Localizer, notice: &Notice, tz: &TimeZone) -> (String, String) {
+    let args = notice_args(notice, tz);
+    let (title, body) = match notice.kind {
+        NoticeKind::Lock => ("notice-title", "warning-body"),
+        NoticeKind::ShutDown => ("notice-shutdown-title", "notice-shutdown-body"),
+        NoticeKind::Reminder => ("notice-title", "notice-reminder-body"),
+    };
+    let body = notice
+        .message
+        .clone()
+        .unwrap_or_else(|| localizer.text(&format!("{body}-{}", notice.variant), &args));
+    (localizer.text(title, &args), body)
+}
+
+fn notice_args(notice: &Notice, tz: &TimeZone) -> [(&'static str, Arg); 3] {
+    let time = notice
+        .moment
         .to_zoned_datetime(tz.clone())
         .strftime("%H:%M");
     [
-        ("label", Arg::Text(warning.label.clone())),
+        ("label", Arg::Text(notice.label.clone())),
         ("time", Arg::Text(time.to_string())),
         (
             "minutes",
-            Arg::Number(warning.at.duration_until(warning.lock_at).as_mins()),
+            Arg::Number(notice.at.duration_until(notice.moment).as_mins()),
         ),
     ]
 }

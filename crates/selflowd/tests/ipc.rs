@@ -2,8 +2,8 @@ mod support;
 
 use jiff::civil::date;
 use jiff::{SignedDuration, Timestamp};
-use selflow_core::config::parse;
-use selflow_core::plan::{LockWindow, windows_for};
+use selflow_core::config::{Action, parse};
+use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
 use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
@@ -192,6 +192,20 @@ async fn with_nothing_saved_the_status_uses_the_environment_language() {
 }
 
 #[tokio::test]
+async fn the_status_names_the_next_lock_and_skips_rules_without_one() {
+    let text = format!(
+        "{}\n[[rule_set.rule]]\nid = \"stretch\"\nstart = \"22:00\"\n",
+        no_jitter()
+    );
+    let (client, _shared, _clock) =
+        start_with(&text, PowerMode::LogOnly, None, at(19, 21, 0)).await;
+    let Response::Status(status) = client.request(Request::Status).await else {
+        panic!("expected Status")
+    };
+    assert_eq!(status.next_lock_at, Some(at(19, 23, 0).timestamp()));
+}
+
+#[tokio::test]
 async fn after_an_upgrade_the_first_edit_shows_the_old_settings() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("selflow/selflow.db");
@@ -370,7 +384,12 @@ async fn a_test_lock_starts_now_with_todays_first_rule() {
     );
     let config = parse(&no_jitter()).unwrap();
     let rule = windows_for(&config, Seed(0), date(2026, 11, 19), &brt()).remove(0);
-    assert_eq!(rule.shutdown_after, Some(SignedDuration::from_mins(30)));
+    assert_eq!(
+        rule.action,
+        Action::Lock {
+            shutdown_after: Some(SignedDuration::from_mins(30))
+        }
+    );
     let started = shared
         .store
         .lock()
@@ -380,11 +399,13 @@ async fn a_test_lock_starts_now_with_todays_first_rule() {
         .started;
     assert_eq!(
         started,
-        vec![LockWindow {
-            rule_set: format!("weeknight#test-{}", at(19, 20, 0).timestamp().as_second()),
+        vec![RuleWindow {
+            rule_id: format!("bedtime#test-{}", at(19, 20, 0).timestamp().as_second()),
             starts_at: at(19, 20, 0),
             ends_at: at(19, 20, 10),
-            shutdown_after: None,
+            action: Action::Lock {
+                shutdown_after: None
+            },
             test: true,
             ..rule
         }]
@@ -412,15 +433,11 @@ async fn a_test_lock_can_use_a_rule_from_another_day() {
     assert_eq!(
         started
             .iter()
-            .map(|window| (
-                window.rule_set.as_str(),
-                window.rule_id.as_str(),
-                window.test
-            ))
+            .map(|window| (window.set.as_str(), window.rule_id.as_str(), window.test))
             .collect::<Vec<_>>(),
         vec![(
-            format!("weekend#test-{}", at(19, 20, 0).timestamp().as_second()).as_str(),
-            "late",
+            "weekend",
+            format!("late#test-{}", at(19, 20, 0).timestamp().as_second()).as_str(),
             true
         )]
     );

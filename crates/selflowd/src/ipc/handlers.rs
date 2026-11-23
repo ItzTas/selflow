@@ -5,7 +5,7 @@ use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 use selflow_core::challenge::{ExtensionAnswer, Refusal, request_extension};
 use selflow_core::config::{Action, Config, ConfigError, Rule, RuleSet, parse};
 use selflow_core::enforce::{Enforcement, GrantedExtension, evaluate};
-use selflow_core::plan::{LockWindow, windows_around};
+use selflow_core::plan::{RuleWindow, windows_around};
 use selflow_core::timing::logical_date;
 use selflow_core::versions::{TimedChange, config_at, plan_save, shown, stored_changes, waiting};
 use selflow_i18n::catalog::default_config;
@@ -69,6 +69,7 @@ fn status(store: &Store, now: &ZonedDateTime, shared: &Shared) -> Result<Respons
     let config = config_at(&history, instant);
     let next_lock_at = windows_around(&config, store.seed()?, now)
         .iter()
+        .filter(|window| window.action.locks())
         .map(|window| window.starts_at.timestamp())
         .filter(|starts_at| *starts_at > instant)
         .min();
@@ -209,15 +210,18 @@ fn test_lock(
         Ok(chosen) => chosen,
         Err(refusal) => return Ok(Response::Error(refusal)),
     };
-    let window = LockWindow {
-        rule_set: format!("{}#test-{}", set.name, now.timestamp().as_second()),
-        rule_id: lock.id.clone(),
+    let window = RuleWindow {
+        set: set.name.clone(),
+        rule_id: format!("{}#test-{}", lock.id, now.timestamp().as_second()),
         label: lock.label.clone(),
         logical_date: today,
         starts_at: now.clone(),
         ends_at: now.checked_add(duration)?,
-        warnings: lock.notice_offsets(),
-        shutdown_after: None,
+        notices: lock.notice_offsets(),
+        message: lock.message.clone(),
+        action: Action::Lock {
+            shutdown_after: None,
+        },
         challenges: lock.challenges.clone(),
         test: true,
     };
@@ -261,9 +265,7 @@ fn chosen_rule<'a>(
 }
 
 fn lock_rules(set: &RuleSet) -> impl Iterator<Item = &Rule> {
-    set.rules
-        .iter()
-        .filter(|rule| matches!(rule.action, Action::Lock { .. }))
+    set.rules.iter().filter(|rule| rule.locks())
 }
 
 fn report(

@@ -1,6 +1,6 @@
 use jiff::{Timestamp, civil};
 use selflow_core::config::ConfigError;
-use selflow_core::plan::LockWindow;
+use selflow_core::plan::RuleWindow;
 use selflow_protocol::ipc::LockView;
 use thiserror::Error;
 
@@ -31,8 +31,9 @@ pub(super) struct ShownLock {
 }
 
 #[derive(Debug)]
+#[expect(clippy::large_enum_variant)]
 pub(super) enum Record {
-    Started(LockWindow),
+    Started(RuleWindow),
     Event(Event),
 }
 

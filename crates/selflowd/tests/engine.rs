@@ -5,14 +5,16 @@ use std::os::unix::fs::PermissionsExt;
 
 use jiff::SignedDuration;
 use jiff::civil::date;
+use selflow_i18n::language::Language;
+use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::{Request, Response};
 use selflowd::enforcer::PowerMode;
 use selflowd::ipc::handle;
 use selflowd::store::{EventKind, Store};
 use serde_json::{Value, json};
 use support::{
-    Call, Calls, at, brt, engine_on, extension, no_jitter, save_at, setup, setup_on, setup_over,
-    shared_over,
+    Call, Calls, REMINDER, at, brt, engine_on, extension, no_jitter, save_at, save_text, setup,
+    setup_on, setup_over, shared_over,
 };
 
 #[test]
@@ -291,4 +293,80 @@ fn a_test_lock_shows_marks_its_events_and_never_shuts_down() {
             (EventKind::LockEnded, marked)
         ]
     );
+}
+
+fn warnings(calls: &Calls) -> Vec<String> {
+    calls
+        .take()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Warn(body) => Some(body),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_reminder_rule_shows_its_own_text_at_its_start() {
+    let store = Store::open_in_memory().unwrap();
+    save_text(&store, REMINDER);
+    let (mut engine, calls, _clock, _store) = setup_over(store, at(19, 15, 0));
+    engine.tick().unwrap();
+    let warned = warnings(&calls);
+    assert_eq!(warned.len(), 1);
+    assert!(["Stand up for a minute.", "Time to stretch."].contains(&warned[0].as_str()));
+}
+
+#[test]
+fn the_first_notice_records_the_window() {
+    let (mut engine, calls, _clock, store) = setup(at(19, 22, 45));
+    engine.tick().unwrap();
+    assert_eq!(warnings(&calls).len(), 1);
+    let started = store
+        .lock()
+        .unwrap()
+        .night_log(&[date(2026, 11, 19)])
+        .unwrap()
+        .started;
+    assert_eq!(
+        started
+            .iter()
+            .map(|window| (window.rule_id.as_str(), window.starts_at.clone()))
+            .collect::<Vec<_>>(),
+        vec![("bedtime", at(19, 23, 0))]
+    );
+}
+
+#[test]
+fn a_shutdown_notice_with_its_own_text_still_says_it_shuts_down() {
+    let store = Store::open_in_memory().unwrap();
+    save_text(
+        &store,
+        r#"
+language = "en"
+
+[[rule_set]]
+name = "always"
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+[[rule_set.rule]]
+id = "lights-out"
+start = "02:00"
+end = "04:00"
+notices = ["10m"]
+shutdown = "once"
+message = "Time to stop."
+"#,
+    );
+    let (mut engine, calls, _clock, _store) = setup_over(store, at(20, 1, 50));
+    engine.tick().unwrap();
+    assert_eq!(warnings(&calls), ["Time to stop."]);
+    let title = Localizer::new(Language::En).text(
+        "notice-shutdown-title",
+        &[
+            ("label", Arg::Text("lights-out".to_owned())),
+            ("time", Arg::Text("02:00".to_owned())),
+        ],
+    );
+    assert_eq!(calls.last_title(), Some(title));
 }

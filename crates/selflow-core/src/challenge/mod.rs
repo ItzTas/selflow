@@ -38,7 +38,7 @@ pub fn request_extension(
         .unwrap_or(Timestamp::MAX)
         .min(lock.window.ends_at.timestamp());
     Ok(GrantedExtension {
-        rule_set: lock.window.rule_set.clone(),
+        rule_set: lock.window.set.clone(),
         rule_id: lock.window.rule_id.clone(),
         logical_date: lock.window.logical_date,
         granted_at: now,

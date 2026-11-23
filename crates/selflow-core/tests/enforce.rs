@@ -1,25 +1,40 @@
 mod support;
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil::date};
-use selflow_core::config::{Challenges, Config, parse};
-use selflow_core::enforce::{Enforcement, GrantedExtension, NightLog, evaluate};
-use selflow_core::plan::{LockWindow, windows_for};
+use selflow_core::config::{Action, Challenges, Config, parse};
+use selflow_core::enforce::{
+    DayLog, Enforcement, GrantedException, GrantedExtension, NoticeKind, evaluate,
+};
+use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
-use support::{at, brt, no_jitter, one_extension};
+use support::{REMINDER, at, brt, no_jitter, one_extension, two_locks};
+
+fn started_on_the_19th() -> DayLog {
+    DayLog {
+        started: windows_for(
+            &parse(&no_jitter()).unwrap(),
+            Seed(7),
+            date(2026, 11, 19),
+            &brt(),
+        ),
+        ..DayLog::default()
+    }
+}
+
+fn locked(now: &ZonedDateTime, config: &Config, log: &DayLog) -> bool {
+    matches!(
+        evaluate(now, config, Seed(7), log).enforcement,
+        Enforcement::Locked(_)
+    )
+}
 
 #[test]
 fn locks_from_bedtime_until_wake() {
     let c = parse(&no_jitter()).unwrap();
-    let free = |now: ZonedDateTime| {
-        matches!(
-            evaluate(&now, &c, Seed(7), &NightLog::default()).enforcement,
-            Enforcement::Free
-        )
-    };
-    assert!(free(at(19, 22, 59)));
-    assert!(free(at(20, 7, 0)));
+    assert!(!locked(&at(19, 22, 59), &c, &DayLog::default()));
+    assert!(!locked(&at(20, 7, 0), &c, &DayLog::default()));
     let Enforcement::Locked(lock) =
-        evaluate(&at(19, 23, 0), &c, Seed(7), &NightLog::default()).enforcement
+        evaluate(&at(19, 23, 0), &c, Seed(7), &DayLog::default()).enforcement
     else {
         panic!("expected a lock")
     };
@@ -30,17 +45,65 @@ fn locks_from_bedtime_until_wake() {
 }
 
 #[test]
-fn warns_fifteen_five_and_one_minute_before() {
+fn notifies_fifteen_five_and_one_minute_before_a_lock() {
     let c = parse(&no_jitter()).unwrap();
-    let evaluation = evaluate(&at(19, 22, 0), &c, Seed(7), &NightLog::default());
-    let times: Vec<_> = evaluation.warnings.iter().map(|w| w.at).collect();
+    let evaluation = evaluate(&at(19, 22, 0), &c, Seed(7), &DayLog::default());
+    let times: Vec<_> = evaluation.notices.iter().map(|n| n.at).collect();
     assert_eq!(
         times,
         [(22, 45), (22, 55), (22, 59)]
             .map(|(h, m)| at(19, h, m).timestamp())
             .to_vec()
     );
+    assert!(evaluation.notices.iter().all(|notice| {
+        notice.kind == NoticeKind::Lock
+            && notice.key == "bedtime"
+            && notice.moment == at(19, 23, 0).timestamp()
+            && notice.message.is_none()
+    }));
     assert_eq!(evaluation.next_change_at, Some(at(19, 22, 45).timestamp()));
+}
+
+#[test]
+fn a_lock_notice_at_the_start_is_due_with_the_lock() {
+    let c = parse(&no_jitter().replace(r#"notices = ["5m", "15m", "1m"]"#, r#"notices = ["0m"]"#))
+        .unwrap();
+    let evaluation = evaluate(&at(19, 23, 0), &c, Seed(7), &DayLog::default());
+    assert!(matches!(evaluation.enforcement, Enforcement::Locked(_)));
+    assert_eq!(
+        evaluation.notices.iter().map(|n| n.at).collect::<Vec<_>>(),
+        vec![at(19, 23, 0).timestamp()]
+    );
+}
+
+#[test]
+fn a_rule_without_a_lock_notifies_at_its_start_and_never_locks() {
+    let c = parse(REMINDER).unwrap();
+    let before = evaluate(&at(19, 14, 0), &c, Seed(7), &DayLog::default());
+    assert_eq!(
+        before.notices.iter().map(|n| n.at).collect::<Vec<_>>(),
+        vec![at(19, 15, 0).timestamp()]
+    );
+    assert_eq!(before.notices[0].kind, NoticeKind::Reminder);
+    assert_eq!(before.next_change_at, Some(at(19, 15, 0).timestamp()));
+    assert!(matches!(
+        evaluate(&at(19, 15, 0), &c, Seed(7), &DayLog::default()).enforcement,
+        Enforcement::Free
+    ));
+}
+
+#[test]
+fn a_custom_message_picks_one_text_per_day() {
+    let c = parse(REMINDER).unwrap();
+    let message_at = |now: ZonedDateTime| {
+        evaluate(&now, &c, Seed(7), &DayLog::default()).notices[0]
+            .message
+            .clone()
+            .unwrap()
+    };
+    let chosen = message_at(at(19, 14, 0));
+    assert!(["Stand up for a minute.", "Time to stretch."].contains(&chosen.as_str()));
+    assert_eq!(message_at(at(19, 14, 30)), chosen);
 }
 
 #[test]
@@ -48,12 +111,18 @@ fn an_extension_frees_the_screen_and_the_lock_comes_back_after_it() {
     let c = parse(&no_jitter()).unwrap();
     let during = evaluate(&at(19, 23, 10), &c, Seed(7), &one_extension());
     assert!(matches!(during.enforcement, Enforcement::Free));
-    let times: Vec<_> = during.warnings.iter().map(|w| w.at).collect();
+    let times: Vec<_> = during.notices.iter().map(|n| n.at).collect();
     assert_eq!(
         times,
         [(23, 10), (23, 20), (23, 24)]
             .map(|(h, m)| at(19, h, m).timestamp())
             .to_vec()
+    );
+    assert!(
+        during
+            .notices
+            .iter()
+            .all(|notice| notice.kind == NoticeKind::Lock)
     );
     let Enforcement::Locked(lock) =
         evaluate(&at(19, 23, 25), &c, Seed(7), &one_extension()).enforcement
@@ -66,10 +135,36 @@ fn an_extension_frees_the_screen_and_the_lock_comes_back_after_it() {
 }
 
 #[test]
+fn each_rule_has_its_own_extension_budget() {
+    let c = parse(&two_locks()).unwrap();
+    let log = DayLog {
+        extensions: vec![GrantedExtension {
+            rule_set: "weeknight".to_owned(),
+            rule_id: "nap".to_owned(),
+            logical_date: date(2026, 11, 19),
+            granted_at: at(19, 14, 5).timestamp(),
+            until: at(19, 14, 25).timestamp(),
+            reason: "finishing a call".to_owned(),
+        }],
+        ..DayLog::default()
+    };
+    let Enforcement::Locked(nap) = evaluate(&at(19, 14, 25), &c, Seed(7), &log).enforcement else {
+        panic!("expected the nap lock")
+    };
+    assert_eq!(nap.extensions_left, 0);
+    let Enforcement::Locked(bedtime) = evaluate(&at(19, 23, 0), &c, Seed(7), &log).enforcement
+    else {
+        panic!("expected the bedtime lock")
+    };
+    assert_eq!(bedtime.window.rule_id, "bedtime");
+    assert_eq!(bedtime.extensions_left, 1);
+}
+
+#[test]
 fn no_shutdown_when_the_lock_ends_first() {
     let short = parse(&no_jitter().replace(r#"wake = "07:00""#, r#"wake = "23:20""#)).unwrap();
     let Enforcement::Locked(lock) =
-        evaluate(&at(19, 23, 0), &short, Seed(7), &NightLog::default()).enforcement
+        evaluate(&at(19, 23, 0), &short, Seed(7), &DayLog::default()).enforcement
     else {
         panic!("expected a lock")
     };
@@ -77,24 +172,55 @@ fn no_shutdown_when_the_lock_ends_first() {
 }
 
 #[test]
-fn a_started_lock_keeps_its_times_when_the_configuration_changes() {
+fn an_exception_day_skips_its_rules() {
+    let c = parse(&format!(
+        "{}\n[[exception]]\ndate = \"2026-11-19\"\nrules = [\"bedtime\"]\n",
+        no_jitter()
+    ))
+    .unwrap();
+    assert!(!locked(&at(19, 23, 30), &c, &DayLog::default()));
+    assert!(locked(&at(18, 23, 30), &c, &DayLog::default()));
+}
+
+#[test]
+fn a_granted_exception_drops_a_started_window() {
     let c = parse(&no_jitter()).unwrap();
-    let started = windows_for(&c, Seed(7), date(2026, 11, 19), &brt());
-    let log = NightLog {
-        started,
-        ..NightLog::default()
+    let log = DayLog {
+        exceptions: vec![GrantedException {
+            rule_id: "bedtime".to_owned(),
+            logical_date: date(2026, 11, 19),
+            granted_at: at(19, 22, 50).timestamp(),
+            reason: "on call tonight".to_owned(),
+        }],
+        ..started_on_the_19th()
     };
+    let evaluation = evaluate(&at(19, 23, 30), &c, Seed(7), &log);
+    assert!(matches!(evaluation.enforcement, Enforcement::Free));
+    assert!(evaluation.notices.is_empty());
+    assert!(locked(&at(18, 23, 30), &c, &log));
+}
+
+#[test]
+fn a_loosening_after_the_first_notice_does_not_move_the_coming_lock() {
+    let log = started_on_the_19th();
     let later =
         parse(&no_jitter().replace(r#"bedtime = "23:00""#, r#"bedtime = "01:00""#)).unwrap();
-    let Enforcement::Locked(lock) = evaluate(&at(19, 23, 10), &later, Seed(7), &log).enforcement
+    let Enforcement::Locked(lock) = evaluate(&at(19, 23, 0), &later, Seed(7), &log).enforcement
     else {
         panic!("expected a lock")
     };
+    assert_eq!(lock.window.starts_at, at(19, 23, 0));
     assert_eq!(lock.window.ends_at, at(20, 7, 0));
-    assert!(matches!(
-        evaluate(&at(19, 23, 10), &Config::empty(), Seed(7), &log).enforcement,
-        Enforcement::Locked(_)
-    ));
+    assert!(locked(&at(19, 23, 10), &Config::empty(), &log));
+}
+
+#[test]
+fn a_tightening_after_the_first_notice_brings_the_lock_earlier() {
+    let log = started_on_the_19th();
+    let earlier =
+        parse(&no_jitter().replace(r#"bedtime = "23:00""#, r#"bedtime = "22:50""#)).unwrap();
+    assert!(!locked(&at(19, 22, 49), &earlier, &log));
+    assert!(locked(&at(19, 22, 50), &earlier, &log));
 }
 
 #[test]
@@ -109,7 +235,7 @@ fn huge_durations_saturate_instead_of_overflowing() {
     )
     .unwrap();
     let Enforcement::Locked(lock) =
-        evaluate(&at(19, 23, 0), &patient, Seed(7), &NightLog::default()).enforcement
+        evaluate(&at(19, 23, 0), &patient, Seed(7), &DayLog::default()).enforcement
     else {
         panic!("expected a lock")
     };
@@ -120,36 +246,12 @@ fn huge_durations_saturate_instead_of_overflowing() {
         r#"notices = ["200000000h"]"#,
     ))
     .unwrap();
-    assert!(matches!(
-        evaluate(&at(19, 22, 0), &early, Seed(7), &NightLog::default()).enforcement,
-        Enforcement::Free
-    ));
-}
-
-#[test]
-fn the_extension_budget_covers_the_whole_night() {
-    let two_locks = parse(&format!(
-        "{}\n[[rule_set.rule]]\nid = \"dawn\"\nstart = \"04:30\"\nend = \"04:50\"\nlock = true\n",
-        no_jitter().replace(r#"wake = "07:00""#, r#"wake = "04:00""#)
-    ))
-    .unwrap();
-    let Enforcement::Locked(lock) =
-        evaluate(&at(20, 4, 40), &two_locks, Seed(7), &one_extension()).enforcement
-    else {
-        panic!("expected a lock")
-    };
-    assert_eq!(lock.window.rule_id, "dawn");
-    assert_eq!(lock.window.logical_date, date(2026, 11, 19));
-    assert_eq!(lock.extensions_left, 0);
+    assert!(!locked(&at(19, 22, 0), &early, &DayLog::default()));
 }
 
 #[test]
 fn a_started_lock_follows_a_later_wake_and_keeps_its_end_over_an_earlier_one() {
-    let c = parse(&no_jitter()).unwrap();
-    let log = NightLog {
-        started: windows_for(&c, Seed(7), date(2026, 11, 19), &brt()),
-        ..NightLog::default()
-    };
+    let log = started_on_the_19th();
     let lock_with_wake = |wake: &str, now: ZonedDateTime| {
         let config =
             parse(&no_jitter().replace(r#"wake = "07:00""#, &format!(r#"wake = "{wake}""#)))
@@ -171,11 +273,7 @@ fn a_started_lock_follows_a_later_wake_and_keeps_its_end_over_an_earlier_one() {
 
 #[test]
 fn a_started_lock_takes_only_the_stricter_settings_of_a_new_configuration() {
-    let c = parse(&no_jitter()).unwrap();
-    let log = NightLog {
-        started: windows_for(&c, Seed(7), date(2026, 11, 19), &brt()),
-        ..NightLog::default()
-    };
+    let log = started_on_the_19th();
     let lock_under = |text: String| {
         let Enforcement::Locked(lock) =
             evaluate(&at(19, 23, 10), &parse(&text).unwrap(), Seed(7), &log).enforcement
@@ -192,7 +290,10 @@ fn a_started_lock_takes_only_the_stricter_settings_of_a_new_configuration() {
             )
             .replace("extensions = 1", "extensions = 0")
             .replace(r#"extension_length = "20m""#, r#"extension_length = "10m""#)
-            .replace(r#"id = "bedtime""#, "id = \"bedtime\"\nlabel = \"sleep\"")
+            .replace(
+                r#"id = "bedtime""#,
+                "id = \"bedtime\"\nlabel = \"sleep\"\nmessage = \"Good night.\"",
+            )
             .replace(r#"notices = ["5m", "15m", "1m"]"#, r#"notices = ["10m"]"#)
             .replace(r#"shutdown_after = "30m""#, r#"shutdown_after = "10m""#),
     );
@@ -207,11 +308,14 @@ fn a_started_lock_takes_only_the_stricter_settings_of_a_new_configuration() {
         }
     );
     assert_eq!(
-        stricter.window.shutdown_after,
-        Some(SignedDuration::from_mins(10))
+        stricter.window.action,
+        Action::Lock {
+            shutdown_after: Some(SignedDuration::from_mins(10))
+        }
     );
     assert_eq!(stricter.window.label, "sleep");
-    assert_eq!(stricter.window.warnings, [SignedDuration::from_mins(10)]);
+    assert_eq!(stricter.window.message, ["Good night."]);
+    assert_eq!(stricter.window.notices, [SignedDuration::from_mins(10)]);
     assert_eq!(stricter.window.starts_at, at(19, 23, 0));
     let looser = lock_under(
         no_jitter()
@@ -223,8 +327,10 @@ fn a_started_lock_takes_only_the_stricter_settings_of_a_new_configuration() {
     );
     assert_eq!(looser.window.challenges, log.started[0].challenges);
     assert_eq!(
-        looser.window.shutdown_after,
-        Some(SignedDuration::from_mins(30))
+        looser.window.action,
+        Action::Lock {
+            shutdown_after: Some(SignedDuration::from_mins(30))
+        }
     );
 }
 
@@ -232,23 +338,27 @@ fn a_started_lock_takes_only_the_stricter_settings_of_a_new_configuration() {
 fn a_test_window_stays_apart_from_the_real_window_of_its_rule() {
     let c = parse(&no_jitter()).unwrap();
     let real = windows_for(&c, Seed(7), date(2026, 11, 19), &brt()).remove(0);
-    let test = LockWindow {
-        rule_set: "weeknight#test-1".to_owned(),
+    let test = RuleWindow {
+        rule_id: "bedtime#test-1".to_owned(),
         starts_at: at(19, 20, 0),
         ends_at: at(19, 20, 30),
+        action: Action::Lock {
+            shutdown_after: None,
+        },
         test: true,
         ..real.clone()
     };
-    let log = NightLog {
+    let log = DayLog {
         started: vec![test.clone()],
         extensions: vec![GrantedExtension {
-            rule_set: test.rule_set.clone(),
-            rule_id: "bedtime".to_owned(),
+            rule_set: "weeknight".to_owned(),
+            rule_id: test.rule_id.clone(),
             logical_date: date(2026, 11, 19),
             granted_at: at(19, 20, 2).timestamp(),
             until: at(19, 20, 22).timestamp(),
             reason: "checking the lock screen".to_owned(),
         }],
+        ..DayLog::default()
     };
     let during = evaluate(&at(19, 20, 25), &c, Seed(7), &log);
     let Enforcement::Locked(lock) = during.enforcement else {
@@ -256,9 +366,11 @@ fn a_test_window_stays_apart_from_the_real_window_of_its_rule() {
     };
     assert_eq!(lock.window, test);
     assert_eq!(lock.extensions_left, 0);
-    assert!(during.warnings.iter().any(|warning| {
-        warning.key == "weeknight/bedtime" && warning.lock_at == at(19, 23, 0).timestamp()
-    }));
+    assert!(
+        during.notices.iter().any(|notice| {
+            notice.key == "bedtime" && notice.moment == at(19, 23, 0).timestamp()
+        })
+    );
     let Enforcement::Locked(lock) = evaluate(&at(19, 23, 0), &c, Seed(7), &log).enforcement else {
         panic!("expected the real lock")
     };
