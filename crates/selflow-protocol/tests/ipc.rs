@@ -1,6 +1,6 @@
 use selflow_protocol::ipc::{
-    ChangeView, ExtensionSource, MAX_LINE_BYTES, MessageView, RefusalView, Request, Response,
-    read_message, write_message,
+    ChallengeView, ChangeView, ExtensionSource, MAX_LINE_BYTES, MessageView, RefusalView, Request,
+    Response, read_message, write_message,
 };
 
 #[tokio::test]
@@ -133,4 +133,49 @@ async fn round_trips_a_save_answer_with_each_change_and_its_time() {
         read_message::<Response>(&mut reader).await.unwrap(),
         Some(sent)
     );
+}
+
+#[tokio::test]
+async fn round_trips_an_exception_request_and_its_answers() {
+    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
+    let mut reader = tokio::io::BufReader::new(other_end);
+    let requests = [
+        Request::StartException {
+            rule: "bedtime".into(),
+        },
+        Request::ConfirmException {
+            rule: "bedtime".into(),
+            reason: "on call tonight".into(),
+            phrase: String::new(),
+        },
+    ];
+    for sent in requests {
+        write_message(&mut writer, &sent).await.unwrap();
+        assert_eq!(
+            read_message::<Request>(&mut reader).await.unwrap(),
+            Some(sent)
+        );
+    }
+    let responses = [
+        Response::ExceptionChallenge(ChallengeView {
+            label: "bedtime".into(),
+            available_at: jiff::Timestamp::from_second(1_000).unwrap(),
+            reason_required: true,
+            phrase: Some("I choose to rest".into()),
+            extensions_left: 1,
+        }),
+        Response::ExceptionGranted {
+            label: "bedtime".into(),
+        },
+        Response::ExceptionRefused(RefusalView::TooEarly {
+            available_at: jiff::Timestamp::from_second(1_000).unwrap(),
+        }),
+    ];
+    for sent in responses {
+        write_message(&mut writer, &sent).await.unwrap();
+        assert_eq!(
+            read_message::<Response>(&mut reader).await.unwrap(),
+            Some(sent)
+        );
+    }
 }

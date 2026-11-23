@@ -13,4 +13,6 @@ pub const MIGRATIONS: &[&str] = &[
      CREATE TABLE config_changes (id INTEGER PRIMARY KEY, version_id INTEGER NOT NULL REFERENCES config_versions (id),
        unit TEXT NOT NULL, kind TEXT NOT NULL, effective_at TEXT NOT NULL) STRICT;
      DELETE FROM started_windows;",
+    "CREATE TABLE exceptions (rule_id TEXT NOT NULL, logical_date TEXT NOT NULL, requested_at TEXT NOT NULL,
+       granted_at TEXT, reason TEXT, PRIMARY KEY (rule_id, logical_date)) STRICT;",
 ];

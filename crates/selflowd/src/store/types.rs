@@ -24,6 +24,7 @@ pub enum EventKind {
     Shutdown,
     ConfigSaved,
     RuleShutdown,
+    ExceptionGranted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

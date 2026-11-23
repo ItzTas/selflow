@@ -1,17 +1,21 @@
 mod support;
 
 use jiff::{ZonedDateTime, civil::date};
-use selflow_core::challenge::{ExtensionAnswer, Refusal, request_extension};
-use selflow_core::config::{Config, parse};
-use selflow_core::enforce::{ActiveLock, DayLog, Enforcement, evaluate};
+use selflow_core::challenge::{ExtensionAnswer, Refusal, request_exception, request_extension};
+use selflow_core::config::{Config, Rule, parse};
+use selflow_core::enforce::{ActiveLock, DayLog, Enforcement, GrantedException, evaluate};
 use selflow_core::timing::Seed;
-use support::{at, no_jitter, one_extension};
+use support::{REMINDER, at, no_jitter, one_extension};
 
 fn lock_at(now: ZonedDateTime, config: &Config, log: &DayLog) -> ActiveLock {
     match evaluate(&now, config, Seed(7), log).enforcement {
         Enforcement::Locked(lock) => lock,
         Enforcement::Free => panic!("expected a lock"),
     }
+}
+
+fn rule_on_the_19th(text: &str) -> Rule {
+    parse(text).unwrap().rules_on(date(2026, 11, 19).weekday())[0].clone()
 }
 
 fn answer(reason: &str, phrase: &str) -> ExtensionAnswer {
@@ -115,5 +119,78 @@ fn accepts_the_phrase_whatever_the_case_and_spacing() {
     assert_eq!(
         request_extension(now, &lock, &answer("talking to my sister", "i choose")),
         Err(Refusal::PhraseMismatch)
+    );
+}
+
+#[test]
+fn an_exception_waits_from_its_request() {
+    let bedtime = rule_on_the_19th(&no_jitter());
+    let requested_at = at(19, 20, 0).timestamp();
+    let ask = |now: ZonedDateTime| {
+        request_exception(
+            now.timestamp(),
+            requested_at,
+            &bedtime,
+            date(2026, 11, 19),
+            1,
+            &answer("  on call tonight  ", ""),
+        )
+    };
+    assert_eq!(
+        ask(at(19, 20, 1)),
+        Err(Refusal::TooEarly {
+            available_at: at(19, 20, 2).timestamp()
+        })
+    );
+    assert_eq!(
+        ask(at(19, 20, 2)),
+        Ok(GrantedException {
+            rule_id: "bedtime".to_owned(),
+            logical_date: date(2026, 11, 19),
+            granted_at: at(19, 20, 2).timestamp(),
+            reason: "on call tonight".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn an_exception_needs_an_extension_left() {
+    let bedtime = rule_on_the_19th(&no_jitter());
+    let requested_at = at(19, 20, 0).timestamp();
+    let ask = |now: ZonedDateTime, extensions_left, reason| {
+        request_exception(
+            now.timestamp(),
+            requested_at,
+            &bedtime,
+            date(2026, 11, 19),
+            extensions_left,
+            &answer(reason, ""),
+        )
+    };
+    assert_eq!(
+        ask(at(19, 20, 1), 0, "on call tonight"),
+        Err(Refusal::TooEarly {
+            available_at: at(19, 20, 2).timestamp()
+        })
+    );
+    assert_eq!(ask(at(19, 20, 2), 0, "ok"), Err(Refusal::NoBudget));
+    assert_eq!(
+        ask(at(19, 20, 2), 1, "ok"),
+        Err(Refusal::ReasonTooShort { min_chars: 10 })
+    );
+}
+
+#[test]
+fn a_rule_with_only_notices_is_skipped_without_challenges() {
+    let stretch = rule_on_the_19th(REMINDER);
+    let now = at(19, 14, 0).timestamp();
+    assert_eq!(
+        request_exception(now, now, &stretch, date(2026, 11, 19), 0, &answer("", "")),
+        Ok(GrantedException {
+            rule_id: "stretch".to_owned(),
+            logical_date: date(2026, 11, 19),
+            granted_at: now,
+            reason: String::new(),
+        })
     );
 }

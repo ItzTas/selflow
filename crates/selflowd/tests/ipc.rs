@@ -1,5 +1,7 @@
 mod support;
 
+use std::sync::{Arc, Mutex};
+
 use jiff::civil::date;
 use jiff::{SignedDuration, Timestamp};
 use selflow_core::config::{Action, parse};
@@ -8,14 +10,16 @@ use selflow_core::timing::Seed;
 use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
 use selflow_protocol::ipc::{
-    ChangeView, ExtensionSource, MessageView, RefusalView, ReportEntry, Request, Response,
+    ChallengeView, ChangeView, ExtensionSource, MessageView, RefusalView, ReportEntry, Request,
+    Response,
 };
 use selflowd::enforcer::PowerMode;
+use selflowd::ipc::handle;
 use selflowd::store::{Event, EventKind, Store};
 use serde_json::{Value, json};
 use support::{
-    VALID, at, brt, m1_store, no_jitter, sample_view, start, start_over, start_with,
-    start_with_config, subscribe,
+    Call, LIGHTS_OUT, TestClock, VALID, at, brt, engine_on, m1_store, no_jitter, sample_view,
+    save_text, setup, shared_over, start, start_over, start_with, start_with_config, subscribe,
 };
 
 fn with_weekend() -> String {
@@ -633,4 +637,196 @@ async fn the_report_tells_test_locks_apart() {
             entry(4, "report-lock-ended-test", &[("label", "bedtime")]),
         ]
     );
+}
+
+fn start_exception(rule: &str) -> Request {
+    Request::StartException {
+        rule: rule.to_owned(),
+    }
+}
+
+fn confirm_exception(rule: &str, reason: &str) -> Request {
+    Request::ConfirmException {
+        rule: rule.to_owned(),
+        reason: reason.to_owned(),
+        phrase: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn an_exception_is_refused_while_its_lock_is_on_screen() {
+    let (client, shared, _clock) = start_with(
+        &no_jitter(),
+        PowerMode::Real,
+        Some(sample_view()),
+        at(19, 23, 3),
+    )
+    .await;
+    shared
+        .store
+        .lock()
+        .unwrap()
+        .start_exception("bedtime", date(2026, 11, 19), at(19, 22, 50).timestamp())
+        .unwrap();
+    let locked = error("ipc-exception-locked", &[("label", "bedtime")]);
+    assert_eq!(client.request(start_exception("bedtime")).await, locked);
+    assert_eq!(
+        client
+            .request(confirm_exception("bedtime", "on call tonight"))
+            .await,
+        locked
+    );
+    let log = shared
+        .store
+        .lock()
+        .unwrap()
+        .night_log(&[date(2026, 11, 19)])
+        .unwrap();
+    assert_eq!(log.exceptions, vec![]);
+}
+
+#[tokio::test]
+async fn an_exception_needs_an_extension_left_for_its_rule() {
+    let (client, _shared, clock) = start_with_config(at(19, 23, 3)).await;
+    client
+        .request(Request::RequestExtension {
+            reason: "talking to my sister".into(),
+            phrase: String::new(),
+            source: ExtensionSource::Terminal,
+        })
+        .await;
+    clock.set(at(19, 23, 10));
+    let Response::ExceptionChallenge(challenge) = client.request(start_exception("bedtime")).await
+    else {
+        panic!("expected ExceptionChallenge")
+    };
+    assert_eq!(challenge.extensions_left, 0);
+    clock.set(at(19, 23, 12));
+    assert_eq!(
+        client
+            .request(confirm_exception("bedtime", "on call tonight"))
+            .await,
+        Response::ExceptionRefused(RefusalView::NoBudget)
+    );
+}
+
+#[test]
+fn an_exception_is_granted_after_the_wait_and_shows_in_the_report() {
+    let (mut engine, calls, clock, store) = setup(at(19, 20, 0));
+    let shared = shared_over(store, clock.clone(), PowerMode::LogOnly);
+    assert_eq!(
+        handle(start_exception("bedtime"), &shared),
+        Response::ExceptionChallenge(ChallengeView {
+            label: "bedtime".to_owned(),
+            available_at: at(19, 20, 2).timestamp(),
+            reason_required: true,
+            phrase: None,
+            extensions_left: 1,
+        })
+    );
+    clock.set(at(19, 20, 1));
+    assert_eq!(
+        handle(confirm_exception("bedtime", "on call tonight"), &shared),
+        Response::ExceptionRefused(RefusalView::TooEarly {
+            available_at: at(19, 20, 2).timestamp()
+        })
+    );
+    clock.set(at(19, 20, 2));
+    assert_eq!(
+        handle(confirm_exception("bedtime", "on call tonight"), &shared),
+        Response::ExceptionGranted {
+            label: "bedtime".to_owned()
+        }
+    );
+    assert_eq!(
+        handle(start_exception("bedtime"), &shared),
+        error("ipc-exception-done", &[("label", "bedtime")])
+    );
+    let request = Request::Report {
+        logical_date: Some(date(2026, 11, 19)),
+    };
+    let Response::Report(report) = handle(request, &shared) else {
+        panic!("expected Report")
+    };
+    assert_eq!(
+        report.entries,
+        vec![ReportEntry {
+            at: at(19, 20, 2).timestamp(),
+            message: MessageView {
+                id: "report-exception".to_owned(),
+                args: vec![
+                    ("label".to_owned(), "bedtime".to_owned()),
+                    ("reason".to_owned(), "on call tonight".to_owned()),
+                ],
+            },
+        }]
+    );
+    clock.set(at(19, 23, 0));
+    engine.tick().unwrap();
+    assert_eq!(calls.take(), vec![Call::Hide]);
+}
+
+#[tokio::test]
+async fn an_unknown_rule_is_refused_with_todays_rules() {
+    let text = with_weekend().replace(
+        "\n[[rule_set]]\nname = \"weekend\"",
+        "\n[[rule_set.rule]]\nid = \"stretch\"\nstart = \"22:00\"\n\n[[rule_set]]\nname = \"weekend\"",
+    );
+    let (client, _shared, _clock) =
+        start_with(&text, PowerMode::LogOnly, None, at(19, 20, 0)).await;
+    let unknown = error(
+        "ipc-exception-unknown-rule",
+        &[("rule", "late"), ("rules", "bedtime, stretch")],
+    );
+    assert_eq!(client.request(start_exception("late")).await, unknown);
+    assert_eq!(
+        client
+            .request(confirm_exception("late", "on call tonight"))
+            .await,
+        unknown
+    );
+}
+
+#[test]
+fn the_wait_of_an_exception_carries_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selflow/selflow.db");
+    let repeat = LIGHTS_OUT.replace(r#"shutdown = "once""#, r#"shutdown = "repeat""#);
+    save_text(&Store::open(&path).unwrap(), &repeat);
+    let requested_at = at(20, 2, 0)
+        .checked_add(SignedDuration::from_secs(30))
+        .unwrap();
+    let clock = Arc::new(TestClock::new(requested_at.clone()));
+    let first_run = shared_over(
+        Arc::new(Mutex::new(Store::open(&path).unwrap())),
+        clock.clone(),
+        PowerMode::LogOnly,
+    );
+    let Response::ExceptionChallenge(challenge) = handle(start_exception("lights-out"), &first_run)
+    else {
+        panic!("expected ExceptionChallenge")
+    };
+    assert_eq!(
+        challenge.available_at,
+        requested_at
+            .checked_add(SignedDuration::from_mins(2))
+            .unwrap()
+            .timestamp()
+    );
+    drop(first_run);
+    clock.set(at(20, 2, 3));
+    let store = Arc::new(Mutex::new(Store::open(&path).unwrap()));
+    let second_run = shared_over(store.clone(), clock.clone(), PowerMode::LogOnly);
+    assert_eq!(
+        handle(
+            confirm_exception("lights-out", "the update has to finish"),
+            &second_run
+        ),
+        Response::ExceptionGranted {
+            label: "lights-out".to_owned()
+        }
+    );
+    let (mut engine, calls) = engine_on(store, clock);
+    engine.tick().unwrap();
+    assert_eq!(calls.take(), vec![Call::Hide]);
 }

@@ -4,6 +4,7 @@ report-extension = You asked for { $minutes } more min during the { $label } loc
 report-extension-terminal = You asked for { $minutes } more min from the terminal during the { $label } lock. Your reason: { $reason }
 report-shutdown = The computer shut down during the { $label } lock.
 report-rule-shutdown = The computer shut down for the { $label } rule.
+report-exception = You skipped the { $label } rule for the rest of the day. Your reason: { $reason }
 report-lock-started-test = Test lock "{ $label }" started.
 report-lock-ended-test = Test lock "{ $label }" ended.
 report-extension-test = You asked for { $minutes } more min during the test lock "{ $label }". Your reason: { $reason }

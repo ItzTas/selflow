@@ -5,7 +5,7 @@ use std::path::Path;
 
 use jiff::{Timestamp, civil};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use selflow_core::enforce::{DayLog, GrantedExtension, ShutdownDone};
+use selflow_core::enforce::{DayLog, GrantedException, GrantedExtension, ShutdownDone};
 use selflow_core::plan::RuleWindow;
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
@@ -21,13 +21,14 @@ const CHANGE_KINDS: [(ChangeKind, &str); 3] = [
     (ChangeKind::Neutral, "neutral"),
 ];
 
-const EVENT_KINDS: [(EventKind, &str); 6] = [
+const EVENT_KINDS: [(EventKind, &str); 7] = [
     (EventKind::LockStarted, "lock_started"),
     (EventKind::LockEnded, "lock_ended"),
     (EventKind::ExtensionGranted, "extension_granted"),
     (EventKind::Shutdown, "shutdown"),
     (EventKind::ConfigSaved, "config_saved"),
     (EventKind::RuleShutdown, "rule_shutdown"),
+    (EventKind::ExceptionGranted, "exception_granted"),
 ];
 
 fn change_kind_text(kind: ChangeKind) -> &'static str {
@@ -251,8 +252,80 @@ impl Store {
             log.extensions.extend(self.extensions_on(*date)?);
             log.started.extend(self.started_on(*date)?);
             log.shutdowns.extend(self.shutdowns_on(*date)?);
+            log.exceptions.extend(self.exceptions_on(*date)?);
         }
         Ok(log)
+    }
+
+    pub fn start_exception(
+        &self,
+        rule_id: &str,
+        logical_date: civil::Date,
+        at: Timestamp,
+    ) -> Result<Timestamp, StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO exceptions (rule_id, logical_date, requested_at) VALUES (?1, ?2, ?3)",
+            params![rule_id, logical_date.to_string(), timestamp_text(at)],
+        )?;
+        Ok(self
+            .exception_requested_at(rule_id, logical_date)?
+            .unwrap_or(at))
+    }
+
+    pub fn exception_requested_at(
+        &self,
+        rule_id: &str,
+        logical_date: civil::Date,
+    ) -> Result<Option<Timestamp>, StoreError> {
+        let requested_at: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT requested_at FROM exceptions WHERE rule_id = ?1 AND logical_date = ?2",
+                params![rule_id, logical_date.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(requested_at.map(|text| text.parse()).transpose()?)
+    }
+
+    pub fn grant_exception(&self, exception: &GrantedException) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO exceptions (rule_id, logical_date, requested_at, granted_at, reason)
+             VALUES (?1, ?2, ?3, ?3, ?4)
+             ON CONFLICT (rule_id, logical_date) DO UPDATE
+             SET granted_at = excluded.granted_at, reason = excluded.reason",
+            params![
+                exception.rule_id,
+                exception.logical_date.to_string(),
+                timestamp_text(exception.granted_at),
+                exception.reason
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn exceptions_on(&self, date: civil::Date) -> Result<Vec<GrantedException>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT rule_id, granted_at, reason FROM exceptions
+             WHERE logical_date = ?1 AND granted_at IS NOT NULL ORDER BY granted_at, rule_id",
+        )?;
+        let rows = statement.query_map(params![date.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (rule_id, granted_at, reason) = row?;
+            Ok(GrantedException {
+                rule_id,
+                logical_date: date,
+                granted_at: granted_at.parse()?,
+                reason,
+            })
+        })
+        .collect()
     }
 
     fn extensions_on(&self, date: civil::Date) -> Result<Vec<GrantedExtension>, StoreError> {

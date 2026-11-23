@@ -26,6 +26,14 @@ pub enum Request {
         duration: SignedDuration,
     },
     ReleaseScreen,
+    StartException {
+        rule: String,
+    },
+    ConfirmException {
+        rule: String,
+        reason: String,
+        phrase: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +71,11 @@ pub enum Response {
         ends_at: Timestamp,
     },
     Released,
+    ExceptionChallenge(ChallengeView),
+    ExceptionGranted {
+        label: String,
+    },
+    ExceptionRefused(RefusalView),
     Error(MessageView),
 }
 
@@ -97,6 +110,15 @@ pub struct LockView {
     pub phrase: Option<String>,
     pub shutdown_at: Option<Timestamp>,
     pub language: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChallengeView {
+    pub label: String,
+    pub available_at: Timestamp,
+    pub reason_required: bool,
+    pub phrase: Option<String>,
+    pub extensions_left: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

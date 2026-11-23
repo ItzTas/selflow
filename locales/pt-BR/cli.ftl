@@ -23,6 +23,10 @@ cli-test-lock-started = Bloqueio de teste "{ $label }" até { $time }.
 cli-unlock-wait = Você pode pedir mais tempo a partir das { $time }.
 cli-unlock-granted = Desbloqueado até { $time }.
 cli-unlock-not-locked = Nada está bloqueado agora. Se a tela ainda parecer bloqueada, ela libera em instantes.
+cli-exception-wait = Você pode pular a regra { $label } a partir das { $time }.
+cli-exception-reason = Por que pular hoje?
+cli-exception-granted = A regra { $label } fica de fora pelo resto do dia.
+cli-exception-no-budget = A regra { $label } não tem mais extensões hoje, e pular a regra precisa de uma.
 cli-moment = { $weekday } { $day } { $month }, { $time }
 
 weekday-short-mon = seg

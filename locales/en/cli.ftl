@@ -23,6 +23,10 @@ cli-test-lock-started = Test lock "{ $label }" until { $time }.
 cli-unlock-wait = You can ask for more time from { $time }.
 cli-unlock-granted = Unlocked until { $time }.
 cli-unlock-not-locked = Nothing is locked right now. If the screen still looks locked, it clears in a moment.
+cli-exception-wait = You can skip the { $label } rule from { $time }.
+cli-exception-reason = Why skip it today?
+cli-exception-granted = The { $label } rule is off for the rest of the day.
+cli-exception-no-budget = The { $label } rule has no extensions left today, and skipping it needs one.
 cli-moment = { $weekday } { $day } { $month }, { $time }
 
 weekday-short-mon = Mon

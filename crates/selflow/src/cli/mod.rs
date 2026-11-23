@@ -21,6 +21,7 @@ pub fn run() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Config(args) => commands::config_cmd(args),
+        Command::Exception(args) => commands::exception_cmd(args),
         Command::Report(args) => commands::report_cmd(args),
         Command::TestLock(args) => commands::test_lock_cmd(args),
         Command::Unlock(args) => commands::unlock_cmd(args),

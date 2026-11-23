@@ -2,9 +2,9 @@ use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
-use selflow_core::challenge::{ExtensionAnswer, Refusal, request_extension};
+use selflow_core::challenge::{ExtensionAnswer, Refusal, request_exception, request_extension};
 use selflow_core::config::{Action, Config, ConfigError, Rule, RuleSet, parse};
-use selflow_core::enforce::{Enforcement, GrantedExtension, evaluate};
+use selflow_core::enforce::{Enforcement, GrantedException, GrantedExtension, evaluate};
 use selflow_core::plan::{RuleWindow, windows_around};
 use selflow_core::timing::logical_date;
 use selflow_core::versions::{TimedChange, config_at, plan_save, shown, stored_changes, waiting};
@@ -12,13 +12,13 @@ use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
-    ChangeView, ConfigStatusView, ExtensionSource, LockView, MessageView, PositionedMessage,
-    RefusalView, ReportEntry, ReportView, Request, Response, StatusView,
+    ChallengeView, ChangeView, ConfigStatusView, ExtensionSource, LockView, MessageView,
+    PositionedMessage, RefusalView, ReportEntry, ReportView, Request, Response, StatusView,
 };
 use serde_json::{Value, json};
 
 use super::constants::{TEST_LOCK_MAX, TEST_LOCK_MIN};
-use super::types::{IpcError, Shared};
+use super::types::{ExceptionDay, IpcError, Shared};
 use crate::enforcer::PowerMode;
 use crate::engine::{config_in_force, event_detail, stored_history};
 use crate::store::{Event, EventKind, Store};
@@ -42,6 +42,12 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
             test_lock(&store, &now, shared, rule.as_deref(), duration)
         }
         Request::ReleaseScreen => Ok(release_screen(shared)),
+        Request::StartException { rule } => start_exception(&store, &now, &rule),
+        Request::ConfirmException {
+            rule,
+            reason,
+            phrase,
+        } => confirm_exception(&store, &now, &rule, &ExtensionAnswer { reason, phrase }),
     };
     drop(store);
     let response = answer.unwrap_or_else(|error| {
@@ -53,6 +59,7 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
         Response::Saved { .. }
             | Response::ExtensionGranted { .. }
             | Response::TestLockStarted { .. }
+            | Response::ExceptionGranted { .. }
     ) {
         let _ = shared.wake.try_send(());
     }
@@ -187,6 +194,141 @@ fn extend(
     })
 }
 
+fn start_exception(
+    store: &Store,
+    now: &ZonedDateTime,
+    rule_id: &str,
+) -> Result<Response, IpcError> {
+    let day = exception_day(store, now)?;
+    let rule = match skippable(&day, now, rule_id) {
+        Ok(rule) => rule,
+        Err(refusal) => return Ok(Response::Error(refusal)),
+    };
+    let requested_at = store.start_exception(&rule.id, day.today, now.timestamp())?;
+    Ok(Response::ExceptionChallenge(challenge_view(
+        rule,
+        requested_at,
+        extensions_left(rule, &day),
+    )))
+}
+
+fn confirm_exception(
+    store: &Store,
+    now: &ZonedDateTime,
+    rule_id: &str,
+    answer: &ExtensionAnswer,
+) -> Result<Response, IpcError> {
+    let day = exception_day(store, now)?;
+    let rule = match skippable(&day, now, rule_id) {
+        Ok(rule) => rule,
+        Err(refusal) => return Ok(Response::Error(refusal)),
+    };
+    let Some(requested_at) = store.exception_requested_at(&rule.id, day.today)? else {
+        return Ok(Response::Error(message("ipc-exception-not-started", &[])));
+    };
+    let left = extensions_left(rule, &day);
+    let exception =
+        match request_exception(now.timestamp(), requested_at, rule, day.today, left, answer) {
+            Ok(exception) => exception,
+            Err(refusal) => return Ok(Response::ExceptionRefused(refusal_view(refusal))),
+        };
+    store.grant_exception(&exception)?;
+    record(store, &exception_event(&exception, &rule.label));
+    Ok(Response::ExceptionGranted {
+        label: rule.label.clone(),
+    })
+}
+
+fn exception_day(store: &Store, now: &ZonedDateTime) -> Result<ExceptionDay, IpcError> {
+    let config = config_in_force(store, now.timestamp())?;
+    let today = logical_date(now, config.day_starts_at);
+    let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
+    Ok(ExceptionDay {
+        log: store.night_log(&nights)?,
+        seed: store.seed()?,
+        config,
+        today,
+    })
+}
+
+fn skippable<'a>(
+    day: &'a ExceptionDay,
+    now: &ZonedDateTime,
+    rule_id: &str,
+) -> Result<&'a Rule, MessageView> {
+    let rules = day.config.rules_on(day.today.weekday());
+    let Some(rule) = rules.iter().find(|rule| rule.id == rule_id) else {
+        let ids: Vec<&str> = rules.iter().map(|rule| rule.id.as_str()).collect();
+        return Err(message(
+            "ipc-exception-unknown-rule",
+            &[("rule", rule_id.to_owned()), ("rules", ids.join(", "))],
+        ));
+    };
+    let label = [("label", rule.label.clone())];
+    if locked_by(day, now, rule_id) {
+        return Err(message("ipc-exception-locked", &label));
+    }
+    if skipped(day, rule_id) {
+        return Err(message("ipc-exception-done", &label));
+    }
+    Ok(rule)
+}
+
+fn locked_by(day: &ExceptionDay, now: &ZonedDateTime, rule_id: &str) -> bool {
+    matches!(
+        evaluate(now, &day.config, day.seed, &day.log).enforcement,
+        Enforcement::Locked(lock) if lock.window.rule_id == rule_id
+    )
+}
+
+fn skipped(day: &ExceptionDay, rule_id: &str) -> bool {
+    let granted = day
+        .log
+        .exceptions
+        .iter()
+        .any(|exception| exception.rule_id == rule_id && exception.logical_date == day.today);
+    granted
+        || day
+            .config
+            .exception_on(day.today)
+            .is_some_and(|exception| exception.covers(rule_id))
+}
+
+fn extensions_left(rule: &Rule, day: &ExceptionDay) -> u32 {
+    let used = day
+        .log
+        .extensions
+        .iter()
+        .filter(|extension| extension.rule_id == rule.id && extension.logical_date == day.today)
+        .count();
+    rule.challenges
+        .extensions
+        .saturating_sub(u32::try_from(used).unwrap_or(u32::MAX))
+}
+
+fn challenge_view(rule: &Rule, requested_at: Timestamp, extensions_left: u32) -> ChallengeView {
+    let label = rule.label.clone();
+    if !rule.enforces() {
+        return ChallengeView {
+            label,
+            available_at: requested_at,
+            reason_required: false,
+            phrase: None,
+            extensions_left,
+        };
+    }
+    let challenges = &rule.challenges;
+    ChallengeView {
+        label,
+        available_at: requested_at
+            .checked_add(challenges.wait)
+            .unwrap_or(Timestamp::MAX),
+        reason_required: challenges.reason,
+        phrase: challenges.phrase.clone(),
+        extensions_left,
+    }
+}
+
 fn test_lock(
     store: &Store,
     now: &ZonedDateTime,
@@ -316,6 +458,7 @@ fn report_entry(event: &Event) -> ReportEntry {
         ),
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
         EventKind::RuleShutdown => ("report-rule-shutdown".to_owned(), &["label"]),
+        EventKind::ExceptionGranted => ("report-exception".to_owned(), &["label", "reason"]),
         EventKind::ConfigSaved => match &detail["kind"] {
             Value::String(kind) => (format!("report-config-saved-{kind}"), &[]),
             _ => ("report-config-saved".to_owned(), &["now", "waiting"]),
@@ -376,6 +519,16 @@ fn granted_event(
             extension.rule_set, extension.rule_id, extension.logical_date, extension.granted_at
         ),
         detail: Some(event_detail(detail, test)),
+    }
+}
+
+fn exception_event(exception: &GrantedException, label: &str) -> Event {
+    Event {
+        at: exception.granted_at,
+        logical_date: exception.logical_date,
+        kind: EventKind::ExceptionGranted,
+        key: format!("{}/{}", exception.rule_id, exception.logical_date),
+        detail: Some(json!({ "label": label, "reason": exception.reason }).to_string()),
     }
 }
 

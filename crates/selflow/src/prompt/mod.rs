@@ -4,7 +4,7 @@ use std::time::Duration;
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use selflow_i18n::localizer::{Arg, Localizer};
-use selflow_protocol::ipc::{LockView, RefusalView, Response};
+use selflow_protocol::ipc::{ChallengeView, LockView, RefusalView, Response};
 
 use crate::cli::CliError;
 
@@ -46,6 +46,36 @@ pub struct Challenge {
     pub reason_required: bool,
     pub phrase: Option<String>,
     pub extensions_left: u32,
+    pub kind: ChallengeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChallengeKind {
+    Unlock,
+    Exception,
+}
+
+impl ChallengeKind {
+    fn wait_id(self) -> &'static str {
+        match self {
+            ChallengeKind::Unlock => "cli-unlock-wait",
+            ChallengeKind::Exception => "cli-exception-wait",
+        }
+    }
+
+    fn reason_id(self) -> &'static str {
+        match self {
+            ChallengeKind::Unlock => "lock-reason-label",
+            ChallengeKind::Exception => "cli-exception-reason",
+        }
+    }
+
+    fn refused(self, refusal: RefusalView) -> Response {
+        match self {
+            ChallengeKind::Unlock => Response::ExtensionRefused(refusal),
+            ChallengeKind::Exception => Response::ExceptionRefused(refusal),
+        }
+    }
 }
 
 impl From<&LockView> for Challenge {
@@ -56,6 +86,20 @@ impl From<&LockView> for Challenge {
             reason_required: view.reason_required,
             phrase: view.phrase.clone(),
             extensions_left: view.extensions_left,
+            kind: ChallengeKind::Unlock,
+        }
+    }
+}
+
+impl From<&ChallengeView> for Challenge {
+    fn from(view: &ChallengeView) -> Challenge {
+        Challenge {
+            label: view.label.clone(),
+            available_at: view.available_at,
+            reason_required: view.reason_required,
+            phrase: view.phrase.clone(),
+            extensions_left: view.extensions_left,
+            kind: ChallengeKind::Exception,
         }
     }
 }
@@ -68,14 +112,17 @@ pub fn answer_challenges(
     submit: &mut dyn FnMut(String, String) -> Result<Response, CliError>,
 ) -> Result<Response, CliError> {
     if challenge.extensions_left == 0 {
-        return Ok(Response::ExtensionRefused(RefusalView::NoBudget));
+        return Ok(challenge.kind.refused(RefusalView::NoBudget));
     }
     let mut wait = Some(challenge.available_at);
     let mut last = None;
     loop {
         if let Some(at) = wait.take() {
-            let time = Arg::Text(clock_time(at, tz));
-            prompt.say(&localizer.text("cli-unlock-wait", &[("time", time)]));
+            let args = [
+                ("label", Arg::Text(challenge.label.clone())),
+                ("time", Arg::Text(clock_time(at, tz))),
+            ];
+            prompt.say(&localizer.text(challenge.kind.wait_id(), &args));
             prompt.wait_until(at);
         }
         let Some((reason, phrase)) = answers(challenge, localizer, prompt) else {
@@ -120,7 +167,7 @@ fn answers(
     prompt: &mut dyn Prompt,
 ) -> Option<(String, String)> {
     let reason = match challenge.reason_required {
-        true => prompt.ask(&localizer.text("lock-reason-label", &[]))?,
+        true => prompt.ask(&localizer.text(challenge.kind.reason_id(), &[]))?,
         false => String::new(),
     };
     let phrase = match &challenge.phrase {
@@ -135,7 +182,7 @@ fn answers(
 
 fn refusal_of(response: &Response) -> Option<&RefusalView> {
     match response {
-        Response::ExtensionRefused(refusal) => Some(refusal),
+        Response::ExtensionRefused(refusal) | Response::ExceptionRefused(refusal) => Some(refusal),
         _ => None,
     }
 }

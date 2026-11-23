@@ -3,7 +3,7 @@ mod support;
 use std::process::ExitCode;
 
 use selflow::cli::commands::unlock_with;
-use selflow::prompt::{Challenge, answer_challenges};
+use selflow::prompt::{Challenge, ChallengeKind, answer_challenges};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
@@ -18,6 +18,7 @@ fn challenge(phrase: Option<&str>, extensions_left: u32) -> Challenge {
         reason_required: true,
         phrase: phrase.map(str::to_owned),
         extensions_left,
+        kind: ChallengeKind::Unlock,
     }
 }
 
