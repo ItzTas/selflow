@@ -7,7 +7,9 @@ use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
 use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
-use selflow_protocol::ipc::{ChangeView, MessageView, RefusalView, ReportEntry, Request, Response};
+use selflow_protocol::ipc::{
+    ChangeView, ExtensionSource, MessageView, RefusalView, ReportEntry, Request, Response,
+};
 use selflowd::enforcer::PowerMode;
 use selflowd::store::{Event, EventKind, Store};
 use serde_json::{Value, json};
@@ -240,6 +242,7 @@ async fn grants_one_extension_after_the_wait() {
     let ask = || Request::RequestExtension {
         reason: "talking to my sister".into(),
         phrase: String::new(),
+        source: ExtensionSource::Screen,
     };
     assert_eq!(
         client.request(ask()).await,
@@ -252,6 +255,70 @@ async fn grants_one_extension_after_the_wait() {
         client.request(ask()).await,
         Response::ExtensionRefused(RefusalView::NoBudget)
     );
+}
+
+#[tokio::test]
+async fn an_extension_from_a_terminal_is_marked_in_the_report() {
+    let (client, _shared, _clock) = start_with_config(at(19, 23, 3)).await;
+    let ask = Request::RequestExtension {
+        reason: "talking to my sister".into(),
+        phrase: String::new(),
+        source: ExtensionSource::Terminal,
+    };
+    assert_eq!(
+        client.request(ask).await,
+        Response::ExtensionGranted {
+            until: at(19, 23, 23).timestamp()
+        }
+    );
+    let Response::Report(report) = client
+        .request(Request::Report {
+            logical_date: Some(date(2026, 11, 19)),
+        })
+        .await
+    else {
+        panic!("expected Report")
+    };
+    assert_eq!(
+        report.entries,
+        vec![ReportEntry {
+            at: at(19, 23, 3).timestamp(),
+            message: MessageView {
+                id: "report-extension-terminal".to_owned(),
+                args: vec![
+                    ("label".to_owned(), "bedtime".to_owned()),
+                    ("minutes".to_owned(), "20".to_owned()),
+                    ("reason".to_owned(), "talking to my sister".to_owned()),
+                ],
+            },
+        }]
+    );
+}
+
+#[tokio::test]
+async fn releasing_is_refused_during_a_lock() {
+    let (client, _shared, _clock) = start_with(
+        &no_jitter(),
+        PowerMode::Real,
+        Some(sample_view()),
+        at(19, 23, 0),
+    )
+    .await;
+    assert_eq!(
+        client.request(Request::ReleaseScreen).await,
+        error("ipc-release-locked", &[])
+    );
+    assert_eq!(client.releases(), 0);
+}
+
+#[tokio::test]
+async fn releasing_with_nothing_locked_starts_one_client() {
+    let (client, _shared) = start(at(19, 12, 0)).await;
+    assert_eq!(
+        client.request(Request::ReleaseScreen).await,
+        Response::Released
+    );
+    assert_eq!(client.releases(), 1);
 }
 
 #[tokio::test]
@@ -455,6 +522,7 @@ async fn an_extension_in_a_test_lock_is_recorded_as_a_test() {
             .request(Request::RequestExtension {
                 reason: "checking the lock screen".into(),
                 phrase: String::new(),
+                source: ExtensionSource::Screen,
             })
             .await,
         Response::ExtensionGranted {
@@ -494,9 +562,18 @@ async fn the_report_tells_test_locks_apart() {
         "test": true
     })
     .to_string();
+    let from_terminal = json!({
+        "label": "bedtime",
+        "minutes": 20,
+        "reason": "checking the terminal",
+        "source": "terminal",
+        "test": true
+    })
+    .to_string();
     let events = [
         (EventKind::LockStarted, 0, &label),
         (EventKind::ExtensionGranted, 2, &extension),
+        (EventKind::ExtensionGranted, 3, &from_terminal),
         (EventKind::LockEnded, 4, &label),
     ];
     for (kind, minute, detail) in events {
@@ -542,6 +619,15 @@ async fn the_report_tells_test_locks_apart() {
                     ("label", "bedtime"),
                     ("minutes", "20"),
                     ("reason", "checking the lock screen")
+                ]
+            ),
+            entry(
+                3,
+                "report-extension-terminal-test",
+                &[
+                    ("label", "bedtime"),
+                    ("minutes", "20"),
+                    ("reason", "checking the terminal")
                 ]
             ),
             entry(4, "report-lock-ended-test", &[("label", "bedtime")]),

@@ -23,6 +23,7 @@ pub fn run() -> ExitCode {
         Command::Config(args) => commands::config_cmd(args),
         Command::Report(args) => commands::report_cmd(args),
         Command::TestLock(args) => commands::test_lock_cmd(args),
+        Command::Unlock(args) => commands::unlock_cmd(args),
     };
     match result {
         Ok(code) => code,

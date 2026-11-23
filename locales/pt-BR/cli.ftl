@@ -20,6 +20,9 @@ cli-report-empty = Nada a relatar neste dia.
 cli-report-waiting = Mudanças ainda aguardando:
 cli-report-waiting-line = { $when }  { $text }
 cli-test-lock-started = Bloqueio de teste "{ $label }" até { $time }.
+cli-unlock-wait = Você pode pedir mais tempo a partir das { $time }.
+cli-unlock-granted = Desbloqueado até { $time }.
+cli-unlock-not-locked = Nada está bloqueado agora. Se a tela ainda parecer bloqueada, ela libera em instantes.
 cli-moment = { $weekday } { $day } { $month }, { $time }
 
 weekday-short-mon = seg

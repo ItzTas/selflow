@@ -15,7 +15,7 @@ use jiff::{SignedDuration, Timestamp};
 use selflow_client::client::{ClientError, LockFeed, exchange};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
-use selflow_protocol::ipc::{LockView, Request, Response};
+use selflow_protocol::ipc::{ExtensionSource, LockView, Request, Response};
 
 pub use model::{ExtensionArea, FormError, LockEffect, LockEvent, LockModel, Screen};
 
@@ -214,7 +214,11 @@ fn lock_event(response: Response) -> Option<LockEvent> {
 }
 
 async fn ask_for_extension(socket: PathBuf, reason: String, phrase: String) -> LockEvent {
-    let request = Request::RequestExtension { reason, phrase };
+    let request = Request::RequestExtension {
+        reason,
+        phrase,
+        source: ExtensionSource::Screen,
+    };
     let Ok(answer) = tokio::time::timeout(REQUEST_TIMEOUT, exchange(&socket, &request)).await
     else {
         tracing::warn!(

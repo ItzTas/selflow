@@ -4,7 +4,7 @@ use selflow_client::client::ClientError;
 use selflow_protocol::ipc::MessageView;
 use std::io;
 
-use super::commands::TestLockArgs;
+use super::commands::{TestLockArgs, UnlockArgs};
 
 #[derive(Debug, Parser)]
 #[command(name = "selflow", arg_required_else_help = true)]
@@ -18,6 +18,7 @@ pub enum Command {
     Config(ConfigArgs),
     Report(ReportArgs),
     TestLock(TestLockArgs),
+    Unlock(UnlockArgs),
 }
 
 #[derive(Debug, Args)]

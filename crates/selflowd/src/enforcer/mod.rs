@@ -11,6 +11,10 @@ pub use lock_supervisor::{LockSupervisor, lock_program_from};
 pub use notifier::Notifier;
 pub use power::{PowerMode, power_mode, power_mode_from, shut_down};
 
+pub trait ScreenControl: Send + Sync {
+    fn release(&self);
+}
+
 pub struct SystemEnforcer {
     supervisor: LockSupervisor,
     notifier: Notifier,

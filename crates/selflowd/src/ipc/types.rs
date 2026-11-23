@@ -6,7 +6,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
 use crate::clock::Clock;
-use crate::enforcer::PowerMode;
+use crate::enforcer::{PowerMode, ScreenControl};
 use crate::engine::EngineError;
 use crate::store::{Store, StoreError};
 
@@ -17,6 +17,7 @@ pub struct Shared {
     pub views: watch::Receiver<Option<LockView>>,
     pub power: PowerMode,
     pub env_language: Language,
+    pub screen: Arc<dyn ScreenControl>,
 }
 
 #[derive(Debug, Error)]

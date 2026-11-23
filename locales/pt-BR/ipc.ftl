@@ -5,3 +5,4 @@ ipc-test-lock-duration = Um bloqueio de teste pode durar de { $min } a { $max } 
 ipc-test-lock-busy = Há um bloqueio na tela agora. Você pode iniciar um bloqueio de teste quando ele terminar.
 ipc-test-lock-no-rule = Não há regra de bloqueio para hoje. Escolha uma com --rule.
 ipc-test-lock-unknown-rule = Não há regra chamada { $rule }. As regras que você tem são: { $rules }
+ipc-release-locked = Há um bloqueio na tela agora, então ele continua. Para pedir mais tempo, rode selflow unlock de novo.

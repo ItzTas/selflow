@@ -10,6 +10,8 @@ pub enum Request {
     RequestExtension {
         reason: String,
         phrase: String,
+        #[serde(default)]
+        source: ExtensionSource,
     },
     GetConfig,
     SaveConfig {
@@ -23,6 +25,15 @@ pub enum Request {
         rule: Option<String>,
         duration: SignedDuration,
     },
+    ReleaseScreen,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionSource {
+    #[default]
+    Screen,
+    Terminal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -51,6 +62,7 @@ pub enum Response {
         label: String,
         ends_at: Timestamp,
     },
+    Released,
     Error(MessageView),
 }
 

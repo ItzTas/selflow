@@ -3,8 +3,23 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use selflowd::enforcer::{LockSupervisor, PowerMode, lock_program_from, power_mode_from};
+use selflowd::enforcer::{
+    LockSupervisor, PowerMode, ScreenControl, lock_program_from, power_mode_from,
+};
 use support::{sample_view, wait_for};
+
+const STAYS: &str = "echo started >> \"$0\"; exec sleep 30";
+
+fn counting(starts: &Path, script: &str) -> LockSupervisor {
+    LockSupervisor::new(
+        "sh".into(),
+        vec!["-c".into(), script.into(), starts.display().to_string()],
+    )
+}
+
+fn started(starts: &Path) -> usize {
+    std::fs::read_to_string(starts).map_or(0, |text| text.lines().count())
+}
 
 #[tokio::test]
 async fn restarts_the_lock_client_when_it_dies() {
@@ -85,13 +100,76 @@ async fn retries_a_client_that_could_not_start() {
 }
 
 #[tokio::test]
-async fn hiding_publishes_the_end_and_stops_the_client() {
-    let mut supervisor = LockSupervisor::new("sleep".into(), vec!["30".into()]);
+async fn show_waits_out_the_backoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let starts = dir.path().join("starts");
+    let mut supervisor = counting(&starts, "echo started >> \"$0\"");
+    supervisor.show(sample_view());
+    assert!(
+        wait_for(Duration::from_secs(3), || started(&starts) == 2
+            && supervisor.pid().is_none())
+        .await
+    );
+    for _ in 0..10 {
+        supervisor.show(sample_view());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(started(&starts), 2);
+    supervisor.hide();
+}
+
+#[tokio::test]
+async fn quick_exits_reset_after_a_steady_client_is_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let starts = dir.path().join("starts");
+    let mut supervisor = counting(
+        &starts,
+        "echo started >> \"$0\"; case $(wc -l < \"$0\") in 3) exec sleep 30 ;; esac",
+    );
+    supervisor.show(sample_view());
+    assert!(wait_for(Duration::from_secs(5), || started(&starts) == 3).await);
+    tokio::time::sleep(Duration::from_millis(5500)).await;
+    supervisor.hide();
+    supervisor.release();
+    assert!(
+        wait_for(Duration::from_secs(2), || started(&starts) == 4
+            && supervisor.pid().is_none())
+        .await
+    );
+    supervisor.show(sample_view());
+    assert!(wait_for(Duration::from_millis(2500), || started(&starts) == 6).await);
+    supervisor.hide();
+}
+
+#[tokio::test]
+async fn a_release_starts_one_client_that_is_not_restarted() {
+    let dir = tempfile::tempdir().unwrap();
+    let starts = dir.path().join("starts");
+    let supervisor = counting(&starts, STAYS);
+    supervisor.release();
+    assert!(wait_for(Duration::from_secs(2), || started(&starts) == 1).await);
+    let client = supervisor.pid().expect("the release client is running");
+    std::process::Command::new("kill")
+        .arg(client.to_string())
+        .status()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(started(&starts), 1);
+    assert_eq!(supervisor.pid(), None);
+}
+
+#[tokio::test]
+async fn a_client_killed_after_the_lock_ends_is_followed_by_one_release_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let starts = dir.path().join("starts");
+    let mut supervisor = counting(&starts, STAYS);
     let views = supervisor.views();
     supervisor.show(sample_view());
     supervisor.hide();
     assert_eq!(*views.borrow(), None);
-    assert!(wait_for(Duration::from_secs(7), || supervisor.pid().is_none()).await);
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    assert_eq!(started(&starts), 2);
+    assert_eq!(supervisor.pid(), None);
 }
 
 #[test]

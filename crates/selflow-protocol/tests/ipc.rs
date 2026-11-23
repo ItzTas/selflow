@@ -1,6 +1,6 @@
 use selflow_protocol::ipc::{
-    ChangeView, MAX_LINE_BYTES, MessageView, RefusalView, Request, Response, read_message,
-    write_message,
+    ChangeView, ExtensionSource, MAX_LINE_BYTES, MessageView, RefusalView, Request, Response,
+    read_message, write_message,
 };
 
 #[tokio::test]
@@ -22,6 +22,19 @@ fn tags_messages_with_a_snake_case_type() {
     assert_eq!(
         serde_json::to_string(&Request::Status).unwrap(),
         r#"{"type":"status"}"#
+    );
+}
+
+#[test]
+fn an_extension_request_without_a_source_comes_from_the_screen() {
+    let line = r#"{"type":"request_extension","reason":"talking to my sister","phrase":""}"#;
+    assert_eq!(
+        serde_json::from_str::<Request>(line).unwrap(),
+        Request::RequestExtension {
+            reason: "talking to my sister".into(),
+            phrase: String::new(),
+            source: ExtensionSource::Screen,
+        }
     );
 }
 

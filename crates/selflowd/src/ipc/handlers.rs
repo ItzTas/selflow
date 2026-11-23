@@ -12,8 +12,8 @@ use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
-    ChangeView, ConfigStatusView, LockView, MessageView, PositionedMessage, RefusalView,
-    ReportEntry, ReportView, Request, Response, StatusView,
+    ChangeView, ConfigStatusView, ExtensionSource, LockView, MessageView, PositionedMessage,
+    RefusalView, ReportEntry, ReportView, Request, Response, StatusView,
 };
 use serde_json::{Value, json};
 
@@ -29,9 +29,11 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
     let answer = match request {
         Request::Status => status(&store, &now, shared),
         Request::SubscribeLock => Ok(lock_state(&shared.views.borrow())),
-        Request::RequestExtension { reason, phrase } => {
-            extend(&store, &now, &ExtensionAnswer { reason, phrase })
-        }
+        Request::RequestExtension {
+            reason,
+            phrase,
+            source,
+        } => extend(&store, &now, &ExtensionAnswer { reason, phrase }, source),
         Request::GetConfig => config_text(&store, shared.env_language),
         Request::SaveConfig { text } => save(&store, &now, text),
         Request::ConfigStatus => config_status(&store, now.timestamp()),
@@ -39,6 +41,7 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
         Request::TestLock { rule, duration } => {
             test_lock(&store, &now, shared, rule.as_deref(), duration)
         }
+        Request::ReleaseScreen => Ok(release_screen(shared)),
     };
     drop(store);
     let response = answer.unwrap_or_else(|error| {
@@ -149,10 +152,19 @@ fn config_status(store: &Store, now: Timestamp) -> Result<Response, IpcError> {
     }))
 }
 
+fn release_screen(shared: &Shared) -> Response {
+    if shared.views.borrow().is_some() {
+        return Response::Error(message("ipc-release-locked", &[]));
+    }
+    shared.screen.release();
+    Response::Released
+}
+
 fn extend(
     store: &Store,
     now: &ZonedDateTime,
     answer: &ExtensionAnswer,
+    source: ExtensionSource,
 ) -> Result<Response, IpcError> {
     let config = config_in_force(store, now.timestamp())?;
     let today = logical_date(now, config.day_starts_at);
@@ -168,7 +180,7 @@ fn extend(
     store.record_extension(&extension)?;
     record(
         store,
-        &granted_event(&extension, &lock.window.label, lock.window.test),
+        &granted_event(&extension, &lock.window.label, source, lock.window.test),
     );
     Ok(Response::ExtensionGranted {
         until: extension.until,
@@ -299,7 +311,7 @@ fn report_entry(event: &Event) -> ReportEntry {
         EventKind::LockStarted => ("report-lock-started".to_owned(), &["label"]),
         EventKind::LockEnded => ("report-lock-ended".to_owned(), &["label"]),
         EventKind::ExtensionGranted => (
-            "report-extension".to_owned(),
+            extension_id(&detail).to_owned(),
             &["label", "minutes", "reason"],
         ),
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
@@ -324,6 +336,13 @@ fn report_entry(event: &Event) -> ReportEntry {
     }
 }
 
+fn extension_id(detail: &Value) -> &'static str {
+    if detail["source"] == "terminal" {
+        return "report-extension-terminal";
+    }
+    "report-extension"
+}
+
 fn detail_of(event: &Event) -> Value {
     let Some(text) = &event.detail else {
         return Value::Null;
@@ -334,11 +353,20 @@ fn detail_of(event: &Event) -> Value {
     })
 }
 
-fn granted_event(extension: &GrantedExtension, label: &str, test: bool) -> Event {
+fn granted_event(
+    extension: &GrantedExtension,
+    label: &str,
+    source: ExtensionSource,
+    test: bool,
+) -> Event {
     let minutes = extension
         .granted_at
         .duration_until(extension.until)
         .as_mins();
+    let mut detail = json!({ "label": label, "minutes": minutes, "reason": extension.reason });
+    if source == ExtensionSource::Terminal {
+        detail["source"] = json!(source);
+    }
     Event {
         at: extension.granted_at,
         logical_date: extension.logical_date,
@@ -347,10 +375,7 @@ fn granted_event(extension: &GrantedExtension, label: &str, test: bool) -> Event
             "{}/{}/{}/{}",
             extension.rule_set, extension.rule_id, extension.logical_date, extension.granted_at
         ),
-        detail: Some(event_detail(
-            json!({ "label": label, "minutes": minutes, "reason": extension.reason }),
-            test,
-        )),
+        detail: Some(event_detail(detail, test)),
     }
 }
 

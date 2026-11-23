@@ -10,7 +10,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 
 use crate::clock::SystemClock;
-use crate::enforcer::{LockSupervisor, Notifier, SystemEnforcer, lock_program_from, power_mode};
+use crate::enforcer::{
+    LockSupervisor, Notifier, ScreenControl, SystemEnforcer, lock_program_from, power_mode,
+};
 use crate::engine::{Engine, EngineError};
 use crate::ipc::{IpcError, Shared, serve};
 use crate::os::StopSignal;
@@ -57,6 +59,7 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
         lock_program_from(&std::env::current_exe()?),
         vec!["--lock".into()],
     );
+    let screen: Arc<dyn ScreenControl> = Arc::new(supervisor.clone());
     let power = power_mode();
     tracing::info!("power mode: {power}");
     let enforcer = SystemEnforcer::new(supervisor, Notifier, power);
@@ -74,6 +77,7 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
         views,
         power,
         env_language: Language::from_env(),
+        screen,
     });
     let mut server = tokio::spawn(serve(listener, shared));
     tracing::info!("selflowd is running");

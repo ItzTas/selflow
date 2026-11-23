@@ -9,11 +9,14 @@ use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 
+use super::ScreenControl;
+
 const RESPAWN_DELAY: Duration = Duration::from_secs(1);
 const MAX_RESPAWN_DELAY: Duration = Duration::from_secs(30);
 const STEADY_RUN: Duration = Duration::from_secs(5);
 const HIDE_GRACE: Duration = Duration::from_secs(5);
 
+#[derive(Clone)]
 pub struct LockSupervisor {
     shared: Arc<Shared>,
 }
@@ -32,6 +35,8 @@ struct Running {
     stop: Option<oneshot::Sender<()>>,
     next_spawn_at: Option<Instant>,
     quick_exits: u32,
+    releasing: bool,
+    release_next: bool,
 }
 
 impl LockSupervisor {
@@ -69,14 +74,7 @@ impl LockSupervisor {
             }
             running.generation
         };
-        let shared = Arc::clone(&self.shared);
-        tokio::spawn(async move {
-            tokio::time::sleep(HIDE_GRACE).await;
-            if shared.views.borrow().is_some() {
-                return;
-            }
-            shared.running().stop(generation);
-        });
+        stop_after_grace(&self.shared, generation);
     }
 
     pub fn views(&self) -> watch::Receiver<Option<LockView>> {
@@ -88,6 +86,19 @@ impl LockSupervisor {
     }
 }
 
+impl ScreenControl for LockSupervisor {
+    fn release(&self) {
+        let mut running = self.shared.running();
+        if running.pid.is_none() {
+            start_release(&self.shared, &mut running);
+            return;
+        }
+        running.release_next = true;
+        let generation = running.generation;
+        running.stop(generation);
+    }
+}
+
 impl Shared {
     fn running(&self) -> MutexGuard<'_, Running> {
         self.running.lock().unwrap_or_else(PoisonError::into_inner)
@@ -95,13 +106,31 @@ impl Shared {
 }
 
 impl Running {
-    fn stop(&mut self, generation: u64) {
+    fn stop(&mut self, generation: u64) -> bool {
         if self.generation != generation {
-            return;
+            return false;
         }
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+        let Some(stop) = self.stop.take() else {
+            return false;
+        };
+        let _ = stop.send(());
+        true
+    }
+
+    fn stop_hidden(&mut self, generation: u64) {
+        if self.stop(generation) && !self.releasing {
+            self.release_next = true;
         }
+    }
+
+    fn exited(&mut self, ran: Duration) -> bool {
+        self.pid = None;
+        self.stop = None;
+        self.releasing = false;
+        if ran >= STEADY_RUN {
+            self.quick_exits = 0;
+        }
+        std::mem::take(&mut self.release_next)
     }
 
     fn waiting(&self) -> bool {
@@ -110,7 +139,6 @@ impl Running {
 
     fn back_off(&mut self, ran: Duration) -> Instant {
         if ran >= STEADY_RUN {
-            self.quick_exits = 0;
             return self.respawn_in(RESPAWN_DELAY);
         }
         let delay = RESPAWN_DELAY
@@ -140,6 +168,20 @@ fn start(shared: &Arc<Shared>) {
     if running.pid.is_some() || running.waiting() || shared.views.borrow().is_none() {
         return;
     }
+    if spawn(shared, &mut running, false) {
+        return;
+    }
+    retry(shared, running.back_off(Duration::ZERO));
+}
+
+fn start_release(shared: &Arc<Shared>, running: &mut Running) {
+    tracing::info!("starting a client to release the screen");
+    if spawn(shared, running, true) {
+        stop_after_grace(shared, running.generation);
+    }
+}
+
+fn spawn(shared: &Arc<Shared>, running: &mut Running, releasing: bool) -> bool {
     let spawned = Command::new(&shared.program)
         .args(&shared.args)
         .stdin(Stdio::null())
@@ -151,20 +193,33 @@ fn start(shared: &Arc<Shared>) {
         Err(error) => {
             let program = shared.program.display();
             tracing::error!(%error, %program, "couldn't start the lock client");
-            retry(shared, running.back_off(Duration::ZERO));
-            return;
+            return false;
         }
     };
     let (stop, stopped) = oneshot::channel();
     running.generation += 1;
     running.pid = child.id();
     running.stop = Some(stop);
+    running.releasing = releasing;
     tokio::spawn(supervise(
         Arc::clone(shared),
         child,
         stopped,
         Instant::now(),
+        releasing,
     ));
+    true
+}
+
+fn stop_after_grace(shared: &Arc<Shared>, generation: u64) {
+    let shared = Arc::clone(shared);
+    tokio::spawn(async move {
+        tokio::time::sleep(HIDE_GRACE).await;
+        if shared.views.borrow().is_some() {
+            return;
+        }
+        shared.running().stop_hidden(generation);
+    });
 }
 
 fn retry(shared: &Arc<Shared>, at: Instant) {
@@ -180,27 +235,27 @@ async fn supervise(
     mut child: Child,
     stopped: oneshot::Receiver<()>,
     started: Instant,
+    releasing: bool,
 ) {
     let status = tokio::select! {
         status = child.wait() => status,
         Ok(()) = stopped => stop(&mut child).await,
     };
     let ran = started.elapsed();
-    log_exit(status, ran);
-    if let Some(at) = released(&shared, ran) {
-        retry(&shared, at);
-    }
+    log_exit(status, ran, releasing);
+    released(&shared, ran);
 }
 
-fn released(shared: &Shared, ran: Duration) -> Option<Instant> {
+fn released(shared: &Arc<Shared>, ran: Duration) {
     let mut running = shared.running();
-    running.pid = None;
-    running.stop = None;
-    shared
-        .views
-        .borrow()
-        .is_some()
-        .then(|| running.back_off(ran))
+    let release = running.exited(ran);
+    if shared.views.borrow().is_some() {
+        retry(shared, running.back_off(ran));
+        return;
+    }
+    if release {
+        start_release(shared, &mut running);
+    }
 }
 
 async fn stop(child: &mut Child) -> io::Result<ExitStatus> {
@@ -208,8 +263,9 @@ async fn stop(child: &mut Child) -> io::Result<ExitStatus> {
     child.wait().await
 }
 
-fn log_exit(status: io::Result<ExitStatus>, ran: Duration) {
+fn log_exit(status: io::Result<ExitStatus>, ran: Duration, releasing: bool) {
     match status {
+        Ok(status) if releasing => tracing::info!(%status, "the release client exited"),
         Ok(status) if ran < STEADY_RUN => {
             tracing::warn!(%status, ?ran, "the lock client exited soon after it started");
         }

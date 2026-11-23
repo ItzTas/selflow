@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use selflow_i18n::language::Language;
 use selflow_platform::transport::{Stream, connect, listen};
 use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
 use selflowd::clock::Clock;
-use selflowd::enforcer::PowerMode;
+use selflowd::enforcer::{PowerMode, ScreenControl};
 use selflowd::engine::{Enforcer, Engine, stored_history};
 use selflowd::ipc::{Shared, serve};
 use selflowd::store::Store;
@@ -98,6 +99,23 @@ impl Enforcer for FakeEnforcer {
 
     fn shut_down(&mut self) {
         self.0.push(Call::ShutDown);
+    }
+}
+
+#[derive(Default)]
+pub struct FakeScreen {
+    releases: AtomicU32,
+}
+
+impl FakeScreen {
+    pub fn releases(&self) -> u32 {
+        self.releases.load(Ordering::SeqCst)
+    }
+}
+
+impl ScreenControl for FakeScreen {
+    fn release(&self) {
+        self.releases.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -342,10 +360,15 @@ pub async fn wait_for(limit: Duration, condition: impl Fn() -> bool) -> bool {
 
 pub struct TestClient {
     stream: tokio::sync::Mutex<BufReader<Stream>>,
+    screen: Arc<FakeScreen>,
     _dir: TempDir,
 }
 
 impl TestClient {
+    pub fn releases(&self) -> u32 {
+        self.screen.releases()
+    }
+
     pub async fn request(&self, request: Request) -> Response {
         let mut stream = self.stream.lock().await;
         write_message(stream.get_mut(), &request).await.unwrap();
@@ -392,9 +415,11 @@ pub async fn start_with(
     save_text(&store, text);
     let clock = Arc::new(TestClock::new(now));
     let (_, views) = watch::channel(view);
-    let (dir, stream, shared) = launch(store, clock.clone(), views, power, Language::En).await;
+    let (dir, stream, shared, screen) =
+        launch(store, clock.clone(), views, power, Language::En).await;
     let client = TestClient {
         stream: tokio::sync::Mutex::new(BufReader::new(stream)),
+        screen,
         _dir: dir,
     };
     (client, shared, clock)
@@ -410,13 +435,14 @@ pub fn shared_over(store: Arc<Mutex<Store>>, clock: Arc<TestClock>, power: Power
         views,
         power,
         env_language: Language::En,
+        screen: Arc::new(FakeScreen::default()),
     }
 }
 
 pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
     let (sender, views) = watch::channel(None);
     let clock = Arc::new(TestClock::new(at(19, 23, 0)));
-    let (dir, stream, _shared) = launch(
+    let (dir, stream, _shared, _screen) = launch(
         Store::open_in_memory().unwrap(),
         clock,
         views,
@@ -438,10 +464,11 @@ pub async fn start_over(
 ) -> (TestClient, Arc<Shared>, Arc<TestClock>) {
     let clock = Arc::new(TestClock::new(now));
     let (_, views) = watch::channel(None);
-    let (dir, stream, shared) =
+    let (dir, stream, shared, screen) =
         launch(store, clock.clone(), views, PowerMode::Real, env_language).await;
     let client = TestClient {
         stream: tokio::sync::Mutex::new(BufReader::new(stream)),
+        screen,
         _dir: dir,
     };
     (client, shared, clock)
@@ -453,11 +480,12 @@ async fn launch(
     views: watch::Receiver<Option<LockView>>,
     power: PowerMode,
     env_language: Language,
-) -> (TempDir, Stream, Arc<Shared>) {
+) -> (TempDir, Stream, Arc<Shared>, Arc<FakeScreen>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("selflow/daemon.sock");
     let listener = listen(&path).unwrap();
     let (wake, _) = mpsc::channel(1);
+    let screen = Arc::new(FakeScreen::default());
     let shared = Arc::new(Shared {
         store: Arc::new(Mutex::new(store)),
         clock,
@@ -465,8 +493,9 @@ async fn launch(
         views,
         power,
         env_language,
+        screen: screen.clone(),
     });
     tokio::spawn(serve(listener, Arc::clone(&shared)));
     let stream = connect(&path).await.unwrap();
-    (dir, stream, shared)
+    (dir, stream, shared, screen)
 }
