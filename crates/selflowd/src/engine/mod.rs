@@ -4,7 +4,7 @@ mod types;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil, tz::TimeZone};
+use jiff::{SignedDuration, Timestamp, Unit, ZonedDateTime, civil, tz::TimeZone};
 use selflow_core::config::{Action, Config, parse};
 use selflow_core::enforce::{
     ActiveLock, DayLog, Enforcement, Evaluation, Notice, NoticeKind, evaluate,
@@ -152,7 +152,8 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         }
         let localizer = localizer_for(&mut self.localizers, language);
         for notice in &due {
-            let (title, body) = rendered(localizer, notice, now.time_zone());
+            let told = as_told(notice, &self.announced, instant);
+            let (title, body) = rendered(localizer, &told, now.time_zone());
             self.enforcer.warn(title, body);
         }
         let visible = matches!(evaluation.enforcement, Enforcement::Free);
@@ -305,11 +306,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         let starts_at = rule.starts_at.timestamp();
         let ends_at = rule.ends_at.timestamp();
         let identity = (rule.key(), starts_at);
-        let announced = self
-            .announced
-            .get(&identity)
-            .map(|at| starts_at.max(later_by(*at, SHUTDOWN_NOTICE)))
-            .filter(|at| still_on_time(*at, instant));
+        let announced = announced_shutdown_at(self.announced.get(&identity), starts_at, instant);
         if let Some(shutdown_at) = announced {
             return (shutdown_at < ends_at).then_some(shutdown_at);
         }
@@ -355,6 +352,34 @@ fn shown_shutdown(
     let floor = later_by(now, SHUTDOWN_NOTICE).min(on_screen);
     shown.shutdown_on_screen = wanted.map(|at| at.max(floor)).filter(|at| *at < ends_at);
     shown.shutdown_on_screen
+}
+
+fn as_told(
+    notice: &Notice,
+    announced: &HashMap<(String, Timestamp), Timestamp>,
+    now: Timestamp,
+) -> Notice {
+    if notice.kind != NoticeKind::ShutDown {
+        return notice.clone();
+    }
+    let identity = (notice.key.clone(), notice.moment);
+    let moment = announced_shutdown_at(announced.get(&identity), notice.moment, now)
+        .unwrap_or_else(|| notice.moment.max(later_by(now, SHUTDOWN_NOTICE)));
+    Notice {
+        at: now,
+        moment,
+        ..notice.clone()
+    }
+}
+
+fn announced_shutdown_at(
+    announced: Option<&Timestamp>,
+    starts_at: Timestamp,
+    now: Timestamp,
+) -> Option<Timestamp> {
+    announced
+        .map(|at| starts_at.max(later_by(*at, SHUTDOWN_NOTICE)))
+        .filter(|at| still_on_time(*at, now))
 }
 
 fn still_on_time(shutdown_at: Timestamp, now: Timestamp) -> bool {
@@ -488,12 +513,13 @@ fn rendered(localizer: &Localizer, notice: &Notice, tz: &TimeZone) -> (String, S
 }
 
 fn notice_args(notice: &Notice, tz: &TimeZone) -> [(&'static str, Arg); 3] {
+    let until = notice.at.duration_until(notice.moment);
     [
         ("label", Arg::Text(notice.label.clone())),
         ("time", Arg::Text(clock_time(notice.moment, tz))),
         (
             "minutes",
-            Arg::Number(notice.at.duration_until(notice.moment).as_mins()),
+            Arg::Number(until.round(Unit::Minute).unwrap_or(until).as_mins()),
         ),
     ]
 }

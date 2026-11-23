@@ -551,6 +551,52 @@ fn configured_notices_count_as_the_minute() {
     assert_eq!(steps(&calls), ["shut down"]);
 }
 
+fn shutdown_notice(time: &str, minutes: i64) -> (String, Vec<String>) {
+    let en = Localizer::new(Language::En);
+    let args = [
+        ("label", Arg::Text("lights-out".to_owned())),
+        ("time", Arg::Text(time.to_owned())),
+        ("minutes", Arg::Number(minutes)),
+    ];
+    let bodies = (1..=3)
+        .map(|variant| en.text(&format!("notice-shutdown-body-{variant}"), &args))
+        .collect();
+    (en.text("notice-shutdown-title", &args), bodies)
+}
+
+#[test]
+fn a_notice_at_the_start_of_a_shutdown_names_the_minute_it_waits() {
+    let zero = LIGHTS_OUT.replace("notices = []", r#"notices = ["0m"]"#);
+    let (mut engine, calls, clock, _store) = start_engine_with(&zero, at(20, 2, 0));
+    assert_eq!(engine.tick().unwrap(), at(20, 2, 1).timestamp());
+    let (title, bodies) = shutdown_notice("02:01", 1);
+    assert_eq!(calls.last_title(), Some(title));
+    let warned = warnings(&calls);
+    assert_eq!(warned.len(), 1);
+    assert!(bodies.contains(&warned[0]), "{}", warned[0]);
+    clock.set(at(20, 2, 1));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
+fn a_notice_at_the_start_after_an_earlier_one_names_the_start() {
+    let both = LIGHTS_OUT.replace("notices = []", r#"notices = ["15m", "0m"]"#);
+    let (mut engine, calls, clock, _store) = start_engine_with(&both, at(20, 1, 45));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["warn"]);
+    clock.set(at(20, 2, 0));
+    engine.tick().unwrap();
+    let (title, bodies) = shutdown_notice("02:00", 0);
+    assert_eq!(calls.last_title(), Some(title));
+    let taken = calls.take();
+    let Some(Call::Warn(body)) = taken.first() else {
+        panic!("expected a notice first: {taken:?}")
+    };
+    assert!(bodies.contains(body), "{body}");
+    assert_eq!(taken.last(), Some(&Call::ShutDown));
+}
+
 #[test]
 fn a_resume_after_the_start_still_gets_its_one_shutdown() {
     let (mut engine, calls, clock, _store) = start_engine_with(LIGHTS_OUT, at(20, 1, 0));
