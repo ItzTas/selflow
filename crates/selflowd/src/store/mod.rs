@@ -272,6 +272,19 @@ impl Store {
             .unwrap_or(at))
     }
 
+    pub fn restart_exception(
+        &self,
+        rule_id: &str,
+        logical_date: civil::Date,
+        at: Timestamp,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE exceptions SET requested_at = ?3 WHERE rule_id = ?1 AND logical_date = ?2",
+            params![rule_id, logical_date.to_string(), timestamp_text(at)],
+        )?;
+        Ok(())
+    }
+
     pub fn exception_requested_at(
         &self,
         rule_id: &str,

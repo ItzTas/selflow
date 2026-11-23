@@ -767,6 +767,51 @@ fn an_exception_is_granted_after_the_wait_and_shows_in_the_report() {
     assert_eq!(calls.take(), vec![Call::Hide]);
 }
 
+#[tokio::test]
+async fn an_exception_start_expires_ten_minutes_after_its_wait() {
+    let (client, _shared, clock) = start_with_config(at(19, 9, 0)).await;
+    client.request(start_exception("bedtime")).await;
+    clock.set(at(19, 22, 59));
+    assert_eq!(
+        client
+            .request(confirm_exception("bedtime", "on call tonight"))
+            .await,
+        error("ipc-exception-not-started", &[])
+    );
+}
+
+#[tokio::test]
+async fn a_start_after_the_old_one_expired_waits_from_now() {
+    let (client, _shared, clock) = start_with_config(at(19, 9, 0)).await;
+    client.request(start_exception("bedtime")).await;
+    clock.set(at(19, 22, 50));
+    let Response::ExceptionChallenge(challenge) = client.request(start_exception("bedtime")).await
+    else {
+        panic!("expected ExceptionChallenge")
+    };
+    assert_eq!(challenge.available_at, at(19, 22, 52).timestamp());
+    clock.set(at(19, 22, 52));
+    assert_eq!(
+        client
+            .request(confirm_exception("bedtime", "on call tonight"))
+            .await,
+        Response::ExceptionGranted {
+            label: "bedtime".to_owned()
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_exception_confirmed_without_a_start_is_refused() {
+    let (client, _shared, _clock) = start_with_config(at(19, 20, 0)).await;
+    assert_eq!(
+        client
+            .request(confirm_exception("bedtime", "on call tonight"))
+            .await,
+        error("ipc-exception-not-started", &[])
+    );
+}
+
 #[test]
 fn a_notice_only_rule_is_skipped_at_once_and_reported_plainly() {
     let text = REMINDER.replace(

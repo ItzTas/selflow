@@ -17,11 +17,11 @@ use selflow_protocol::ipc::{
 };
 use serde_json::{Value, json};
 
-use super::constants::{TEST_LOCK_MAX, TEST_LOCK_MIN};
+use super::constants::{EXCEPTION_START_TTL, TEST_LOCK_MAX, TEST_LOCK_MIN};
 use super::types::{ExceptionDay, IpcError, Shared};
 use crate::enforcer::PowerMode;
 use crate::engine::{config_in_force, event_detail, stored_history};
-use crate::store::{Event, EventKind, Store};
+use crate::store::{Event, EventKind, Store, StoreError};
 
 pub fn handle(request: Request, shared: &Shared) -> Response {
     let now = shared.clock.now();
@@ -204,7 +204,7 @@ fn start_exception(
         Ok(rule) => rule,
         Err(refusal) => return Ok(Response::Error(refusal)),
     };
-    let requested_at = store.start_exception(&rule.id, day.today, now.timestamp())?;
+    let requested_at = open_start(store, rule, day.today, now.timestamp())?;
     if !rule.enforces() {
         let unasked = ExtensionAnswer {
             reason: String::new(),
@@ -230,10 +230,34 @@ fn confirm_exception(
         Ok(rule) => rule,
         Err(refusal) => return Ok(Response::Error(refusal)),
     };
-    let Some(requested_at) = store.exception_requested_at(&rule.id, day.today)? else {
+    let instant = now.timestamp();
+    let Some(requested_at) = store
+        .exception_requested_at(&rule.id, day.today)?
+        .filter(|requested_at| instant <= start_open_until(rule, *requested_at))
+    else {
         return Ok(Response::Error(message("ipc-exception-not-started", &[])));
     };
     answer_exception(store, now, &day, rule, requested_at, answer)
+}
+
+fn open_start(
+    store: &Store,
+    rule: &Rule,
+    today: civil::Date,
+    now: Timestamp,
+) -> Result<Timestamp, StoreError> {
+    let requested_at = store.start_exception(&rule.id, today, now)?;
+    if now <= start_open_until(rule, requested_at) {
+        return Ok(requested_at);
+    }
+    store.restart_exception(&rule.id, today, now)?;
+    Ok(now)
+}
+
+fn start_open_until(rule: &Rule, requested_at: Timestamp) -> Timestamp {
+    requested_at
+        .checked_add(rule.challenges.wait.saturating_add(EXCEPTION_START_TTL))
+        .unwrap_or(Timestamp::MAX)
 }
 
 fn answer_exception(
