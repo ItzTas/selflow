@@ -43,19 +43,12 @@ async fn restarts_the_lock_client_when_it_dies() {
 async fn backs_off_when_the_client_keeps_exiting_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let starts = dir.path().join("starts");
-    let mut supervisor = LockSupervisor::new(
-        "sh".into(),
-        vec![
-            "-c".into(),
-            "echo started >> \"$0\"".into(),
-            starts.display().to_string(),
-        ],
-    );
+    let mut supervisor = counting(&starts, "echo started >> \"$0\"");
     supervisor.show(sample_view());
-    tokio::time::sleep(Duration::from_millis(4500)).await;
-    let count = std::fs::read_to_string(&starts).unwrap().lines().count();
+    assert!(wait_for(Duration::from_secs(10), || started(&starts) == 3).await);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(started(&starts), 3);
     supervisor.hide();
-    assert!((2..=3).contains(&count), "started {count} times");
 }
 
 #[tokio::test]
@@ -157,7 +150,8 @@ async fn hiding_during_the_backoff_starts_one_release_client() {
     );
     supervisor.hide();
     assert!(supervisor.pid().is_some());
-    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert!(wait_for(Duration::from_secs(15), || supervisor.pid().is_none()).await);
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(started(&starts), 3);
     assert_eq!(supervisor.pid(), None);
     supervisor.hide();
@@ -176,6 +170,7 @@ async fn a_release_starts_one_client_that_is_not_restarted() {
         .arg(client.to_string())
         .status()
         .unwrap();
+    assert!(wait_for(Duration::from_secs(5), || supervisor.pid().is_none()).await);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(started(&starts), 1);
     assert_eq!(supervisor.pid(), None);
@@ -190,7 +185,12 @@ async fn a_client_killed_after_the_lock_ends_is_followed_by_one_release_client()
     supervisor.show(sample_view());
     supervisor.hide();
     assert_eq!(*views.borrow(), None);
-    tokio::time::sleep(Duration::from_secs(11)).await;
+    assert!(
+        wait_for(Duration::from_secs(15), || started(&starts) == 2
+            && supervisor.pid().is_none())
+        .await
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(started(&starts), 2);
     assert_eq!(supervisor.pid(), None);
 }

@@ -9,7 +9,7 @@ use jiff::civil::date;
 use jiff::{SignedDuration, ZonedDateTime};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::{Arg, Localizer};
-use selflow_protocol::ipc::{MessageView, ReportEntry, Request, Response};
+use selflow_protocol::ipc::{ExtensionSource, MessageView, ReportEntry, Request, Response};
 use selflowd::enforcer::PowerMode;
 use selflowd::ipc::handle;
 use selflowd::store::{EventKind, Store};
@@ -731,4 +731,101 @@ fn a_boot_less_than_a_minute_before_a_shutdown_rule_ends_stays_quiet() {
     clock.set(second(20, 3, 59, 59));
     engine.tick().unwrap();
     assert_eq!(steps(&calls), Vec::<&str>::new());
+}
+
+fn with_late_lock(text: &str, start: &str, end: &str, extra: &str) -> String {
+    format!(
+        "{text}\n[[rule_set.rule]]\nid = \"late\"\nstart = \"{start}\"\nend = \"{end}\"\nlock = true\n{extra}"
+    )
+}
+
+#[test]
+fn a_shutdown_shown_on_the_lock_screen_keeps_its_time_when_the_lock_lifts() {
+    let text = with_late_lock(LIGHTS_OUT, "01:50", "03:00", "");
+    let (mut engine, calls, clock, store) = start_engine_with(&text, at(20, 2, 0));
+    engine.tick().unwrap();
+    assert_eq!(
+        calls.last_view().and_then(|view| view.shutdown_at),
+        Some(at(20, 2, 1).timestamp())
+    );
+    clock.set(second(20, 2, 0, 30));
+    let shared = shared_over(store, clock.clone(), PowerMode::LogOnly);
+    let ask = Request::RequestExtension {
+        reason: "talking to my sister".into(),
+        phrase: String::new(),
+        source: ExtensionSource::Terminal,
+    };
+    assert!(matches!(
+        handle(ask, &shared),
+        Response::ExtensionGranted { .. }
+    ));
+    calls.take();
+    engine.tick().unwrap();
+    assert_eq!(calls.take(), [Call::Hide]);
+    clock.set(at(20, 2, 1));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
+fn a_shutdown_notice_under_a_lock_does_not_count_as_its_announcement() {
+    let ten = LIGHTS_OUT.replace("notices = []", r#"notices = ["10m"]"#);
+    let text = with_late_lock(&ten, "01:30", "01:58", "");
+    let (mut engine, calls, clock, _store) = start_engine_with(&text, at(20, 1, 50));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["warn"]);
+    clock.set(at(20, 1, 58));
+    engine.tick().unwrap();
+    assert_eq!(calls.take(), [Call::Hide]);
+    clock.set(at(20, 2, 0));
+    assert_eq!(engine.tick().unwrap(), at(20, 2, 1).timestamp());
+    assert_eq!(
+        calls.take(),
+        [Call::Hide, Call::Warn(shutdown_now_text("02:01"))]
+    );
+    clock.set(at(20, 2, 1));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
+fn a_rule_shutdown_that_would_reach_the_lock_end_is_left_off_the_lock_screen() {
+    let text = with_late_lock(LIGHTS_OUT, "01:30", "02:01", "");
+    let (mut engine, calls, clock, _store) = start_engine_with(&text, at(20, 2, 0));
+    engine.tick().unwrap();
+    assert_eq!(calls.last_view().map(|view| view.shutdown_at), Some(None));
+    clock.set(second(20, 2, 0, 59));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    clock.set(at(20, 2, 1));
+    assert_eq!(engine.tick().unwrap(), at(20, 2, 2).timestamp());
+    assert_eq!(
+        calls.take(),
+        [Call::Hide, Call::Warn(shutdown_now_text("02:02"))]
+    );
+    clock.set(at(20, 2, 2));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
+fn a_lock_shutdown_at_a_once_rules_start_counts_for_the_rule() {
+    let text = with_late_lock(LIGHTS_OUT, "01:50", "02:30", "shutdown_after = \"10m\"\n");
+    let (mut engine, calls, clock, store) = start_engine_with(&text, at(20, 1, 50));
+    engine.tick().unwrap();
+    calls.take();
+    clock.set(at(20, 2, 0));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+    clock.set(at(20, 2, 35));
+    let (mut after_boot, calls) = engine_on(store.clone(), clock);
+    after_boot.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    assert_eq!(
+        rule_shutdowns(&store),
+        [(
+            "lights-out/2026-11-19".to_owned(),
+            json!({ "label": "lights-out", "rule": "lights-out", "repeat": false })
+        )]
+    );
 }
