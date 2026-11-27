@@ -22,6 +22,11 @@ below come from the code at `6a88ea3`, not from older plans.
 **Repository root:** `/home/talinux/Workspace/github.com/ItzTas/personal-projects/selflow`. Paths
 are relative to it.
 
+**Status:** not started. It runs with superpowers:subagent-driven-development (the owner's choice
+on 2026-11-26): one fresh implementer and one fresh reviewer per task, then a review of the whole
+range. Before Task 1, check that no other session is still working on `main` in this tree (the
+M2.1 close-out was running against the owner's daemon on 2026-11-26).
+
 ## Global Constraints
 
 - `CLAUDE.md` rules: English everywhere, no comments in code, `main.rs` holds only `main`,
