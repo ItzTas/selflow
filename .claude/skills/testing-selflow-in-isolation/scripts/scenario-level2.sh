@@ -94,7 +94,8 @@ main() {
 	DIR=$("$ISO" up --level 2 --ttl 1800 "${build[@]}")
 	trap teardown EXIT
 	printf 'env dir: %s\n' "$DIR"
-	"$ISO" hyprctl "$DIR" monitors | sed -n 1,2p
+	"$ISO" ctl "$DIR" monitors | sed -n 1,2p
+	"$ISO" hyprctl "$DIR" version | sed -n 1p
 
 	step "save a config with a lock rule"
 	write_config
