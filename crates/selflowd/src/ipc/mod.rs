@@ -5,8 +5,10 @@ mod types;
 use std::sync::Arc;
 
 use selflow_platform::transport::{Listener, Stream};
-use selflow_protocol::ipc::{LockView, Request, read_message, write_message};
-use tokio::io::{AsyncReadExt, BufReader};
+use selflow_protocol::ipc::{
+    LockView, MessageReader, Request, message_reader, read_message, write_message,
+};
+use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 
 pub use handlers::handle;
@@ -16,11 +18,11 @@ pub use types::{IpcError, Shared};
 pub async fn serve(listener: Listener, shared: Arc<Shared>) -> Result<(), IpcError> {
     loop {
         let stream = listener.accept().await?;
-        tokio::spawn(converse(BufReader::new(stream), Arc::clone(&shared)));
+        tokio::spawn(converse(message_reader(stream), Arc::clone(&shared)));
     }
 }
 
-async fn converse(mut stream: BufReader<Stream>, shared: Arc<Shared>) {
+async fn converse(mut stream: MessageReader<Stream>, shared: Arc<Shared>) {
     loop {
         let request = match read_message::<Request>(&mut stream).await {
             Ok(Some(request)) => request,
@@ -42,7 +44,7 @@ async fn converse(mut stream: BufReader<Stream>, shared: Arc<Shared>) {
     }
 }
 
-async fn follow(mut stream: BufReader<Stream>, mut views: watch::Receiver<Option<LockView>>) {
+async fn follow(mut stream: MessageReader<Stream>, mut views: watch::Receiver<Option<LockView>>) {
     let mut probe = [0; 1];
     loop {
         let state = lock_state(&views.borrow_and_update());
@@ -52,7 +54,7 @@ async fn follow(mut stream: BufReader<Stream>, mut views: watch::Receiver<Option
         }
         let open = tokio::select! {
             changed = views.changed() => changed.is_ok(),
-            _ = stream.read(&mut probe) => false,
+            _ = stream.get_mut().read(&mut probe) => false,
         };
         if !open {
             return;

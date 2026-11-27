@@ -18,14 +18,15 @@ use selflow_core::timing::Seed;
 use selflow_core::versions::{plan_save, stored_changes};
 use selflow_i18n::language::Language;
 use selflow_platform::transport::{Stream, connect, listen};
-use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
+use selflow_protocol::ipc::{
+    LockView, MessageReader, Request, Response, message_reader, read_message, write_message,
+};
 use selflowd::clock::Clock;
 use selflowd::enforcer::{PowerMode, ScreenControl};
 use selflowd::engine::{Enforcer, Engine, stored_history};
 use selflowd::ipc::{Shared, serve};
 use selflowd::store::Store;
 use tempfile::TempDir;
-use tokio::io::BufReader;
 use tokio::sync::{mpsc, watch};
 
 pub struct TestClock(Mutex<ZonedDateTime>);
@@ -359,7 +360,7 @@ pub async fn wait_for(limit: Duration, condition: impl Fn() -> bool) -> bool {
 }
 
 pub struct TestClient {
-    stream: tokio::sync::Mutex<BufReader<Stream>>,
+    stream: tokio::sync::Mutex<MessageReader<Stream>>,
     screen: Arc<FakeScreen>,
     _dir: TempDir,
 }
@@ -380,7 +381,7 @@ impl TestClient {
 }
 
 pub struct Subscriber {
-    stream: BufReader<Stream>,
+    stream: MessageReader<Stream>,
     _dir: TempDir,
 }
 
@@ -418,7 +419,7 @@ pub async fn start_with(
     let (dir, stream, shared, screen) =
         launch(store, clock.clone(), views, power, Language::En).await;
     let client = TestClient {
-        stream: tokio::sync::Mutex::new(BufReader::new(stream)),
+        stream: tokio::sync::Mutex::new(message_reader(stream)),
         screen,
         _dir: dir,
     };
@@ -450,7 +451,7 @@ pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
         Language::En,
     )
     .await;
-    let mut stream = BufReader::new(stream);
+    let mut stream = message_reader(stream);
     write_message(stream.get_mut(), &Request::SubscribeLock)
         .await
         .unwrap();
@@ -467,7 +468,7 @@ pub async fn start_over(
     let (dir, stream, shared, screen) =
         launch(store, clock.clone(), views, PowerMode::Real, env_language).await;
     let client = TestClient {
-        stream: tokio::sync::Mutex::new(BufReader::new(stream)),
+        stream: tokio::sync::Mutex::new(message_reader(stream)),
         screen,
         _dir: dir,
     };

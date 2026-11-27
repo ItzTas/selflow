@@ -13,9 +13,8 @@ use selflow::editor::Editor;
 use selflow::prompt::Prompt;
 use selflow_client::client::Client;
 use selflow_platform::transport::listen;
-use selflow_protocol::ipc::{Request, Response, read_message, write_message};
+use selflow_protocol::ipc::{Request, Response, message_reader, read_message, write_message};
 use tempfile::TempDir;
-use tokio::io::BufReader;
 
 pub fn brt() -> TimeZone {
     TimeZone::fixed(tz::offset(-3))
@@ -152,7 +151,7 @@ async fn answer(
     let listener = listen(path).unwrap();
     listening.send(()).unwrap();
     while let Ok(stream) = listener.accept().await {
-        let mut stream = BufReader::new(stream);
+        let mut stream = message_reader(stream);
         while let Ok(Some(request)) = read_message::<Request>(&mut stream).await {
             requests.lock().unwrap().push(request);
             let Some(response) = script.pop_front() else {

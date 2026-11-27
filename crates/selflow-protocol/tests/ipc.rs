@@ -1,12 +1,12 @@
 use selflow_protocol::ipc::{
     ChallengeView, ChangeView, ExtensionSource, MAX_LINE_BYTES, MessageView, RefusalView, Request,
-    Response, read_message, write_message,
+    Response, message_reader, read_message, write_message,
 };
 
 #[tokio::test]
 async fn round_trips_messages_as_json_lines() {
     let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = tokio::io::BufReader::new(other_end);
+    let mut reader = message_reader(other_end);
     let sent = Request::SaveConfig {
         text: "a\nb".into(),
     };
@@ -41,14 +41,14 @@ fn an_extension_request_without_a_source_comes_from_the_screen() {
 #[tokio::test]
 async fn rejects_a_line_over_the_limit() {
     let line = format!("\"{}\"\n", "x".repeat(MAX_LINE_BYTES + 1));
-    let mut reader = tokio::io::BufReader::new(line.as_bytes());
+    let mut reader = message_reader(line.as_bytes());
     let error = read_message::<Request>(&mut reader).await.unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
 
 #[tokio::test]
 async fn rejects_malformed_json_and_reads_none_at_end_of_input() {
-    let mut reader = tokio::io::BufReader::new(&b"not json\n"[..]);
+    let mut reader = message_reader(&b"not json\n"[..]);
     let error = read_message::<Request>(&mut reader).await.unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     assert_eq!(read_message::<Request>(&mut reader).await.unwrap(), None);
@@ -64,7 +64,7 @@ async fn round_trips_extension_refusals() {
     ];
     for refusal in refusals {
         let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-        let mut reader = tokio::io::BufReader::new(other_end);
+        let mut reader = message_reader(other_end);
         let sent = Response::ExtensionRefused(refusal);
         write_message(&mut writer, &sent).await.unwrap();
         assert_eq!(
@@ -77,7 +77,7 @@ async fn round_trips_extension_refusals() {
 #[tokio::test]
 async fn round_trips_a_test_lock_request_and_its_answer() {
     let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = tokio::io::BufReader::new(other_end);
+    let mut reader = message_reader(other_end);
     let requests = [
         Request::TestLock {
             rule: Some("every-night/bedtime".into()),
@@ -109,7 +109,7 @@ async fn round_trips_a_test_lock_request_and_its_answer() {
 #[tokio::test]
 async fn round_trips_a_save_answer_with_each_change_and_its_time() {
     let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = tokio::io::BufReader::new(other_end);
+    let mut reader = message_reader(other_end);
     let saved_at = jiff::Timestamp::from_second(1_000).unwrap();
     let change = |id: &str, effective_at| ChangeView {
         message: MessageView {
@@ -138,7 +138,7 @@ async fn round_trips_a_save_answer_with_each_change_and_its_time() {
 #[tokio::test]
 async fn round_trips_an_exception_request_and_its_answers() {
     let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = tokio::io::BufReader::new(other_end);
+    let mut reader = message_reader(other_end);
     let requests = [
         Request::StartException {
             rule: "bedtime".into(),

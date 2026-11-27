@@ -1,17 +1,17 @@
 use std::io;
 
 use selflow_platform::transport::Stream;
+use selflow_protocol::ipc::MessageReader;
 use thiserror::Error;
-use tokio::io::BufReader;
 use tokio::runtime::Runtime;
 
 pub struct Client {
     pub(super) runtime: Runtime,
-    pub(super) stream: BufReader<Stream>,
+    pub(super) stream: MessageReader<Stream>,
 }
 
 pub struct LockFeed {
-    pub(super) stream: BufReader<Stream>,
+    pub(super) stream: MessageReader<Stream>,
 }
 
 #[derive(Debug, Error)]

@@ -4,8 +4,9 @@ use std::thread;
 use jiff::{SignedDuration, Timestamp};
 use selflow_client::client::{Client, ClientError, LockFeed};
 use selflow_platform::transport::listen;
-use selflow_protocol::ipc::{LockView, Request, Response, read_message, write_message};
-use tokio::io::BufReader;
+use selflow_protocol::ipc::{
+    LockView, Request, Response, message_reader, read_message, write_message,
+};
 
 #[test]
 fn a_request_gets_its_answer() -> Result<(), ClientError> {
@@ -22,7 +23,7 @@ fn a_request_gets_its_answer() -> Result<(), ClientError> {
             runtime.block_on(async {
                 let listener = listen(&path).unwrap();
                 listening.send(()).unwrap();
-                let mut stream = BufReader::new(listener.accept().await.unwrap());
+                let mut stream = message_reader(listener.accept().await.unwrap());
                 let request: Option<Request> = read_message(&mut stream).await.unwrap();
                 write_message(stream.get_mut(), &Response::LockEnded)
                     .await
@@ -54,7 +55,7 @@ async fn a_lock_feed_reads_what_the_daemon_sends() -> Result<(), ClientError> {
     let path = dir.path().join("selflow/daemon.sock");
     let listener = listen(&path).unwrap();
     let daemon = tokio::spawn(async move {
-        let mut stream = BufReader::new(listener.accept().await.unwrap());
+        let mut stream = message_reader(listener.accept().await.unwrap());
         let request: Option<Request> = read_message(&mut stream).await.unwrap();
         write_message(stream.get_mut(), &Response::Lock(view()))
             .await

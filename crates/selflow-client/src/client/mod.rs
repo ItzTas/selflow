@@ -3,8 +3,9 @@ mod types;
 use std::path::Path;
 
 use selflow_platform::transport::{Stream, connect};
-use selflow_protocol::ipc::{Request, Response, read_message, write_message};
-use tokio::io::BufReader;
+use selflow_protocol::ipc::{
+    MessageReader, Request, Response, message_reader, read_message, write_message,
+};
 use tokio::runtime::Builder;
 
 pub use types::{Client, ClientError, LockFeed};
@@ -45,12 +46,15 @@ pub async fn exchange(path: &Path, request: &Request) -> Result<Response, Client
     ask(&mut stream, request).await
 }
 
-async fn open(path: &Path) -> Result<BufReader<Stream>, ClientError> {
+async fn open(path: &Path) -> Result<MessageReader<Stream>, ClientError> {
     let stream = connect(path).await.map_err(|_| ClientError::Unreachable)?;
-    Ok(BufReader::new(stream))
+    Ok(message_reader(stream))
 }
 
-async fn ask(stream: &mut BufReader<Stream>, request: &Request) -> Result<Response, ClientError> {
+async fn ask(
+    stream: &mut MessageReader<Stream>,
+    request: &Request,
+) -> Result<Response, ClientError> {
     write_message(stream.get_mut(), request)
         .await
         .map_err(ClientError::Protocol)?;
