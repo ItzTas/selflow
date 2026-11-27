@@ -800,7 +800,9 @@ Neither the daemon nor the server may weigh on its machine. The rules:
 The targets have to be measured, not assumed. The daemon should use close to 0% CPU when idle and
 stay in the low tens of MB of RAM. The server process should run comfortably on the Pi next to the
 owner's other services. Each phase counts as done only after measuring the daemon on the owner's
-laptop and the server on the Pi.
+laptop and the server on the Pi. Each `selflow claude hook` call should finish within 10 ms at the
+95th percentile on the owner's laptop, counting the exchange with the daemon (owner, 2026-11-26).
+M2b counts as done only after measuring it.
 
 ## 16. Internationalization
 

@@ -149,8 +149,9 @@ machine like M1 and M2.1.
 
 Done when, with a Claude Code session open in `~/Workspace/github.com/ItzTas/seconv`, the agent
 gets the wind-down message at its time and passes it on, a prompt sent after it carries the
-reminder, a "Save only" step denies an edit while `git commit` still works, and a session that no
-step covers gets nothing.
+reminder, a "Save only" step denies an edit while `git commit` still works, a session that no
+step covers gets nothing, and each `selflow claude hook` call finishes within 10 ms at the 95th
+percentile on the owner's laptop, measured with the daemon running (§15).
 
 ## M2.2 Watching apps
 
