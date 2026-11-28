@@ -619,3 +619,214 @@ fn an_exception_entry_names_its_date_and_rules() {
         vec![("date", "2026-11-19".into()), ("rules", "bedtime".into())]
     );
 }
+
+fn stepped(step: Option<&str>) -> Config {
+    let tables = step.map_or(String::new(), |body| {
+        format!("\n[[rule_set.rule.agent]]\n{body}\n")
+    });
+    parse(&format!("{}{tables}", no_jitter())).unwrap()
+}
+
+#[test]
+fn agent_step_changes_are_judged() {
+    use ChangeKind::{Loosen, Neutral, Tighten};
+    const LIGHT: &str = "before = \"60m\"\nlevel = \"light\"";
+    let cases: &[(Option<&str>, Option<&str>, &str, ChangeKind)] = &[
+        (None, Some(LIGHT), "change-agent-step-added", Tighten),
+        (Some(LIGHT), None, "change-agent-step-removed", Loosen),
+        (
+            Some(LIGHT),
+            Some("before = \"30m\"\nlevel = \"light\""),
+            "change-agent-step-looser",
+            Loosen,
+        ),
+        (
+            Some("before = \"30m\"\nlevel = \"light\""),
+            Some(LIGHT),
+            "change-agent-step-firmer",
+            Tighten,
+        ),
+        (
+            Some(LIGHT),
+            Some("before = \"60m\"\nlevel = \"save-only\""),
+            "change-agent-step-firmer",
+            Tighten,
+        ),
+        (
+            Some("before = \"60m\"\nlevel = \"save-only\""),
+            Some("before = \"60m\"\nlevel = \"no-new-work\""),
+            "change-agent-step-looser",
+            Loosen,
+        ),
+        (
+            Some(LIGHT),
+            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\"]"),
+            "change-agent-step-looser",
+            Loosen,
+        ),
+        (
+            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\"]"),
+            Some(LIGHT),
+            "change-agent-step-firmer",
+            Tighten,
+        ),
+        (
+            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\"]"),
+            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/b\"]"),
+            "change-agent-step-looser",
+            Loosen,
+        ),
+        (
+            Some("before = \"60m\"\nlevel = \"light\"\nunattended = true"),
+            Some(LIGHT),
+            "change-agent-step-looser",
+            Loosen,
+        ),
+        (
+            Some(LIGHT),
+            Some("before = \"60m\"\nlevel = \"light\"\nunattended = true"),
+            "change-agent-step-firmer",
+            Tighten,
+        ),
+        (
+            Some(LIGHT),
+            Some("before = \"30m\"\nlevel = \"save-only\""),
+            "change-agent-step-changed",
+            Loosen,
+        ),
+        (
+            Some(LIGHT),
+            Some("before = \"60m\"\nlevel = \"light\"\nmessage = \"Wrap up\""),
+            "change-agent-message",
+            Neutral,
+        ),
+    ];
+    for &(current, proposed, id, kind) in cases {
+        let changes = diff(&stepped(current), &stepped(proposed));
+        assert!(
+            changes
+                .iter()
+                .any(|change| (change.unit().as_str(), change.id, change.kind)
+                    == ("thu/bedtime/agent", id, kind)),
+            "{id}: {changes:?}"
+        );
+    }
+}
+
+#[test]
+fn an_agent_step_change_names_its_position_and_both_sides() {
+    let changes = diff(
+        &stepped(Some("before = \"60m\"\nlevel = \"light\"")),
+        &stepped(Some(
+            "before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\", \"~/b\"]\nunattended = true",
+        )),
+    );
+    let change = changes
+        .iter()
+        .find(|change| change.unit() == "thu/bedtime/agent")
+        .unwrap();
+    assert_eq!(
+        change.args,
+        [
+            ("step", "1".into()),
+            ("old", "1h, light".into()),
+            ("new", "1h, light, ~/a ~/b, unattended".into())
+        ]
+    );
+}
+
+#[test]
+fn a_second_step_is_judged_against_the_second_step() {
+    let two = |second: &str| {
+        let text = format!(
+            "{}\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\n\n[[rule_set.rule.agent]]\n{second}\n",
+            no_jitter()
+        );
+        parse(&text).unwrap()
+    };
+    let changes = diff(
+        &two("before = \"15m\"\nlevel = \"no-new-work\""),
+        &two("before = \"15m\"\nlevel = \"save-only\""),
+    );
+    let change = changes
+        .iter()
+        .find(|change| change.unit() == "thu/bedtime/agent")
+        .unwrap();
+    assert_eq!(
+        (change.id, change.args[0].1.as_str()),
+        ("change-agent-step-firmer", "2")
+    );
+}
+
+#[test]
+fn removing_a_rule_with_only_steps_loosens() {
+    const WITH_STEPS: (&str, &str) = (
+        "[[rule_set.rule]]",
+        "[[rule_set.rule]]\nid = \"evening\"\nstart = \"21:00\"\n\n[[rule_set.rule.agent]]\nbefore = \"0m\"\nlevel = \"message\"\n\n[[rule_set.rule]]",
+    );
+    let changes = diff(&config(&[WITH_STEPS]), &config(&[]));
+    assert!(changes.iter().any(|change| {
+        (change.unit().as_str(), change.id, change.kind)
+            == (
+                "thu/evening/presence",
+                "change-rule-removed",
+                ChangeKind::Loosen,
+            )
+    }));
+}
+
+#[test]
+fn allowed_command_changes_are_judged() {
+    use ChangeKind::{Loosen, Tighten};
+    let listed = |commands: &str| {
+        parse(&format!(
+            "{}\n[agent]\nallowed_commands = {commands}\n",
+            no_jitter()
+        ))
+        .unwrap()
+    };
+    let default = r#"["git status", "git diff", "git add", "git commit", "git stash push"]"#;
+    let cases: &[(&str, &str, ChangeKind)] = &[
+        (
+            r#"["git status", "git diff", "git add", "git commit"]"#,
+            "change-agent-commands-fewer",
+            Tighten,
+        ),
+        (
+            r#"["git status", "git diff", "git add", "git commit", "git stash push", "git push"]"#,
+            "change-agent-commands-more",
+            Loosen,
+        ),
+        (
+            r#"["git status", "git diff", "git add", "git commit", "git push"]"#,
+            "change-agent-commands-changed",
+            Loosen,
+        ),
+    ];
+    for &(proposed, id, kind) in cases {
+        let changes = diff(&listed(default), &listed(proposed));
+        assert!(
+            changes
+                .iter()
+                .any(|change| (change.unit().as_str(), change.id, change.kind)
+                    == ("agent_allowed_commands", id, kind)),
+            "{id}: {changes:?}"
+        );
+    }
+}
+
+#[test]
+fn the_same_allowed_commands_in_another_order_change_nothing() {
+    let listed = |commands: &str| {
+        parse(&format!(
+            "{}\n[agent]\nallowed_commands = {commands}\n",
+            no_jitter()
+        ))
+        .unwrap()
+    };
+    let changes = diff(
+        &listed(r#"["git status", "git diff"]"#),
+        &listed(r#"["git diff", "git status"]"#),
+    );
+    assert!(changes.is_empty());
+}

@@ -63,7 +63,11 @@ impl<'h> InForce<'h> {
                 .filter_map(|(_, day)| self.rule_set(*day))
                 .collect(),
             exceptions: self.exceptions(),
-            agent_allowed_commands: self.latest.config.agent_allowed_commands.clone(),
+            agent_allowed_commands: self
+                .source("agent_allowed_commands")
+                .config
+                .agent_allowed_commands
+                .clone(),
         }
     }
 

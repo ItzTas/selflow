@@ -4,7 +4,7 @@ use jiff::{
     SignedDuration, ZonedDateTime,
     civil::{Weekday, time},
 };
-use selflow_core::config::{Action, Config, parse};
+use selflow_core::config::{Action, AgentLevel, AgentStep, Config, parse};
 use selflow_core::versions::{History, Scope, config_at, plan_save, rule_since, shown, waiting};
 use support::{VALID, at, history_of, no_jitter};
 
@@ -452,4 +452,95 @@ fn defaulted_notices_follow_the_action_in_force() {
     let later = rule(&config_at(&history, at(19, 12, 0).timestamp()));
     assert_eq!(later.action, Action::Nothing);
     assert_eq!(later.notice_offsets(), [SignedDuration::ZERO]);
+}
+
+fn with_step(body: &str) -> String {
+    format!("{}\n[[rule_set.rule.agent]]\n{body}\n", no_jitter())
+}
+
+fn thursday_step(history: &History, when: ZonedDateTime) -> AgentStep {
+    config_at(history, when.timestamp()).rules_on(Weekday::Thursday)[0].agent[0].clone()
+}
+
+#[test]
+fn a_lighter_level_waits_and_a_firmer_one_applies_at_once() {
+    let light = with_step("before = \"60m\"\nlevel = \"light\"");
+    let save_only = with_step("before = \"60m\"\nlevel = \"save-only\"");
+    let saved_at = || at(18, 12, 0);
+
+    let history = history_of(&[(at(18, 8, 0), &save_only)]);
+    let lighter = plan_save(&history, &parse(&light).unwrap(), saved_at().timestamp());
+    assert!(!lighter.is_empty());
+    assert!(
+        lighter
+            .iter()
+            .all(|timed| timed.effective_at == at(19, 12, 0).timestamp())
+    );
+    let history = history_of(&[(at(18, 8, 0), &save_only), (saved_at(), &light)]);
+    assert_eq!(
+        thursday_step(&history, at(19, 11, 0)).level,
+        AgentLevel::SaveOnly
+    );
+    assert_eq!(
+        thursday_step(&history, at(19, 12, 0)).level,
+        AgentLevel::Light
+    );
+
+    let history = history_of(&[(at(18, 8, 0), &light)]);
+    let firmer = plan_save(
+        &history,
+        &parse(&save_only).unwrap(),
+        saved_at().timestamp(),
+    );
+    assert!(!firmer.is_empty());
+    assert!(
+        firmer
+            .iter()
+            .all(|timed| timed.effective_at == saved_at().timestamp())
+    );
+    let history = history_of(&[(at(18, 8, 0), &light), (saved_at(), &save_only)]);
+    assert_eq!(
+        thursday_step(&history, saved_at()).level,
+        AgentLevel::SaveOnly
+    );
+}
+
+#[test]
+fn an_agent_message_edit_applies_at_once() {
+    let first = with_step("before = \"60m\"\nlevel = \"light\"\nmessage = \"Wrap up\"");
+    let second = with_step("before = \"60m\"\nlevel = \"light\"\nmessage = \"Time to stop\"");
+    let saved_at = || at(18, 12, 0);
+    let history = history_of(&[(at(18, 8, 0), &first)]);
+    let planned = plan_save(&history, &parse(&second).unwrap(), saved_at().timestamp());
+    assert!(!planned.is_empty());
+    assert!(
+        planned
+            .iter()
+            .all(|timed| timed.effective_at == saved_at().timestamp())
+    );
+    let history = history_of(&[(at(18, 8, 0), &first), (saved_at(), &second)]);
+    assert_eq!(
+        thursday_step(&history, saved_at()).message,
+        ["Time to stop".to_owned()]
+    );
+}
+
+#[test]
+fn allowed_commands_follow_the_loosening_clock() {
+    let listed =
+        |commands: &str| format!("{}\n[agent]\nallowed_commands = {commands}\n", no_jitter());
+    let fewer = listed(r#"["git status"]"#);
+    let more = listed(
+        r#"["git status", "git diff", "git add", "git commit", "git stash push", "git push"]"#,
+    );
+    let allowed = |history: &History, when: ZonedDateTime| {
+        config_at(history, when.timestamp()).agent_allowed_commands
+    };
+
+    let history = history_of(&[(at(18, 8, 0), &no_jitter()), (at(18, 12, 0), &fewer)]);
+    assert_eq!(allowed(&history, at(18, 12, 0)), ["git status".to_owned()]);
+
+    let history = history_of(&[(at(18, 8, 0), &no_jitter()), (at(18, 12, 0), &more)]);
+    assert_eq!(allowed(&history, at(19, 11, 0)).len(), 5);
+    assert_eq!(allowed(&history, at(19, 12, 0)).len(), 6);
 }

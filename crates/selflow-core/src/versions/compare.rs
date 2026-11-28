@@ -1,10 +1,13 @@
+use std::collections::HashSet;
+
 use jiff::{
     SignedDuration,
     civil::{Time, Weekday},
 };
 
 use super::types::{Change, ChangeKind, Scope, UnitChange};
-use crate::config::{Action, Challenges, Config, DAYS, Exception, Rule, RuleEnd};
+use crate::agent::folders_cover;
+use crate::config::{Action, AgentStep, Challenges, Config, DAYS, Exception, Rule, RuleEnd};
 
 type Args = Vec<(&'static str, String)>;
 type Field = (&'static str, Option<Change>);
@@ -22,7 +25,7 @@ pub(super) fn rules(old: &Config, new: &Config) -> Vec<UnitChange> {
 }
 
 pub(super) fn settings(old: &Config, new: &Config) -> Vec<UnitChange> {
-    let fields: [Field; 3] = [
+    let fields: [Field; 4] = [
         (
             "day_starts_at",
             (old.day_starts_at != new.day_starts_at).then(|| {
@@ -46,6 +49,10 @@ pub(super) fn settings(old: &Config, new: &Config) -> Vec<UnitChange> {
                 let args = old_new(&old.language, &new.language, String::clone);
                 change("change-language", ChangeKind::Neutral, args)
             }),
+        ),
+        (
+            "agent_allowed_commands",
+            allowed_commands(&old.agent_allowed_commands, &new.agent_allowed_commands),
         ),
     ];
     units(Scope::Setting, fields).collect()
@@ -122,6 +129,9 @@ fn rule_fields(old: Side, new: Side) -> Vec<Field> {
     let [first_action, second_action] = action(previous.action, next.action);
     let challenges = challenge_fields(&previous.challenges, &next.challenges)
         .map(|(field, change)| (field, judge(change)));
+    let agent = agent_fields(&previous.agent, &next.agent)
+        .into_iter()
+        .map(|(field, change)| (field, judge(change)));
     [
         ("timing", judge(first_timing)),
         ("timing", judge(second_timing)),
@@ -142,8 +152,111 @@ fn rule_fields(old: Side, new: Side) -> Vec<Field> {
         ),
     ]
     .into_iter()
+    .chain(agent)
     .chain(challenges)
     .collect()
+}
+
+fn agent_fields(old: &[AgentStep], new: &[AgentStep]) -> Vec<Field> {
+    (0..old.len().max(new.len()))
+        .filter_map(|index| agent_step(index + 1, old.get(index), new.get(index)))
+        .map(|change| ("agent", Some(change)))
+        .collect()
+}
+
+fn agent_step(position: usize, old: Option<&AgentStep>, new: Option<&AgentStep>) -> Option<Change> {
+    let step = ("step", position.to_string());
+    match (old, new) {
+        (None, Some(new)) => Some(change(
+            "change-agent-step-added",
+            ChangeKind::Tighten,
+            vec![step, ("new", step_summary(new))],
+        )),
+        (Some(old), None) => Some(change(
+            "change-agent-step-removed",
+            ChangeKind::Loosen,
+            vec![step, ("old", step_summary(old))],
+        )),
+        (Some(old), Some(new)) => paired_step(step, old, new),
+        (None, None) => None,
+    }
+}
+
+fn paired_step(step: (&'static str, String), old: &AgentStep, new: &AgentStep) -> Option<Change> {
+    let tightens = [
+        new.before > old.before,
+        new.level > old.level,
+        folders_cover(&new.folders, &old.folders) && !folders_cover(&old.folders, &new.folders),
+        !old.unattended && new.unattended,
+    ]
+    .contains(&true);
+    let loosens = [
+        new.before < old.before,
+        new.level < old.level,
+        !folders_cover(&new.folders, &old.folders),
+        old.unattended && !new.unattended,
+    ]
+    .contains(&true);
+    let args = vec![step, ("old", step_summary(old)), ("new", step_summary(new))];
+    match (tightens, loosens) {
+        (true, false) => Some(change(
+            "change-agent-step-firmer",
+            ChangeKind::Tighten,
+            args,
+        )),
+        (false, true) => Some(change("change-agent-step-looser", ChangeKind::Loosen, args)),
+        (true, true) => Some(change(
+            "change-agent-step-changed",
+            ChangeKind::Loosen,
+            args,
+        )),
+        (false, false) => (old.message != new.message).then(|| {
+            change(
+                "change-agent-message",
+                ChangeKind::Neutral,
+                args.into_iter().take(1).collect(),
+            )
+        }),
+    }
+}
+
+fn step_summary(step: &AgentStep) -> String {
+    let folders = (!step.folders.is_empty()).then(|| step.folders.join(" "));
+    let unattended = step.unattended.then(|| "unattended".to_owned());
+    [
+        Some(friendly(step.before)),
+        Some(step.level.name().to_owned()),
+        folders,
+        unattended,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn allowed_commands(old: &[String], new: &[String]) -> Option<Change> {
+    let (old_set, new_set): (HashSet<&String>, HashSet<&String>) =
+        (old.iter().collect(), new.iter().collect());
+    let args = old_new(old, new, |commands| commands.join(", "));
+    match (new_set.is_subset(&old_set), old_set.is_subset(&new_set)) {
+        (true, true) => None,
+        (true, false) => Some(change(
+            "change-agent-commands-fewer",
+            ChangeKind::Tighten,
+            args,
+        )),
+        (false, true) => Some(change(
+            "change-agent-commands-more",
+            ChangeKind::Loosen,
+            args,
+        )),
+        (false, false) => Some(change(
+            "change-agent-commands-changed",
+            ChangeKind::Loosen,
+            args,
+        )),
+    }
 }
 
 fn presence(id: &'static str, kind: ChangeKind, rule: &Rule) -> Field {
