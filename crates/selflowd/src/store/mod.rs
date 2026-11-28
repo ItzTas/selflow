@@ -428,9 +428,37 @@ impl Store {
         boot_id: &str,
         announcement: &Announcement,
     ) -> Result<(), StoreError> {
-        self.conn.execute(
+        self.write_announcement(
             "INSERT OR IGNORE INTO boot_announcements (boot_id, rule_key, starts_at, announced_at)
              VALUES (?1, ?2, ?3, ?4)",
+            boot_id,
+            announcement,
+        )
+    }
+
+    pub fn replace_announcement(
+        &self,
+        boot_id: &str,
+        announcement: &Announcement,
+    ) -> Result<(), StoreError> {
+        self.write_announcement(
+            "INSERT INTO boot_announcements (boot_id, rule_key, starts_at, announced_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (boot_id, rule_key, starts_at) DO UPDATE SET
+               announced_at = excluded.announced_at",
+            boot_id,
+            announcement,
+        )
+    }
+
+    fn write_announcement(
+        &self,
+        statement: &str,
+        boot_id: &str,
+        announcement: &Announcement,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            statement,
             params![
                 boot_id,
                 announcement.rule_key,

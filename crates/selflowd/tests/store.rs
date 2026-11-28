@@ -253,6 +253,29 @@ fn an_announcement_keeps_its_first_instant_within_a_boot() {
 }
 
 #[test]
+fn replacing_an_announcement_overwrites_its_instant_for_the_boot() {
+    let store = Store::open_in_memory().unwrap();
+    let starts_at = at(18, 2, 30).timestamp();
+    let first = at(18, 2, 0).timestamp();
+    let replaced = at(18, 2, 50).timestamp();
+    let later = replaced + jiff::SignedDuration::from_secs(30);
+    store
+        .record_announcement("b1", &announcement("rule", starts_at, first))
+        .unwrap();
+    store
+        .replace_announcement("b1", &announcement("rule", starts_at, replaced))
+        .unwrap();
+    store
+        .record_announcement("b1", &announcement("rule", starts_at, later))
+        .unwrap();
+    let state = store.boot_state("b1", date(2026, 11, 17)).unwrap();
+    assert_eq!(
+        state.announced,
+        vec![announcement("rule", starts_at, replaced)]
+    );
+}
+
+#[test]
 fn per_boot_rows_stay_with_their_boot() {
     let store = Store::open_in_memory().unwrap();
     let instant = at(18, 2, 0).timestamp();

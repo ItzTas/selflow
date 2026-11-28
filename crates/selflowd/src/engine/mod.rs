@@ -363,7 +363,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             starts_at,
             announced_at: instant,
         };
-        let stored = locked(&self.store).record_announcement(&self.boot_id, &announcement);
+        let stored = locked(&self.store).replace_announcement(&self.boot_id, &announcement);
         log_failed_write(stored, "a shutdown announcement");
         self.announced.insert(identity, instant);
         let localizer = localizer_for(&mut self.localizers, language);

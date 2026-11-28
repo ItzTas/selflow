@@ -47,6 +47,25 @@ fn restarting_in_a_loop_never_postpones_the_shutdown() {
 }
 
 #[test]
+fn a_restart_keeps_the_fresh_minute_a_resume_gave() {
+    let defaults = LIGHTS_OUT.replace("notices = []\n", "");
+    let (mut engine, calls, clock, store) = start_engine_with(&defaults, at(20, 1, 45));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["warn"]);
+    clock.set(at(20, 2, 20));
+    assert_eq!(engine.tick().unwrap(), at(20, 2, 21).timestamp());
+    assert_eq!(steps(&calls), ["warn"]);
+    drop(engine);
+    clock.set(second(20, 2, 20, 30));
+    let (mut restarted, calls) = engine_on(store, clock.clone());
+    assert_eq!(restarted.tick().unwrap(), at(20, 2, 21).timestamp());
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    clock.set(at(20, 2, 21));
+    restarted.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
 fn a_restart_keeps_the_shutdown_time_on_the_lock_screen() {
     let (mut engine, calls, clock, store) = setup(at(19, 23, 0));
     engine.tick().unwrap();
