@@ -43,6 +43,7 @@ bash $ISO down "$D"
 - Prompts read stdin line by line after the CLI's own wait, so pipe all answers up front (reason, then phrase if the rule has one) and wrap in `timeout` (wait + about 10 s). A refused answer is asked again; at EOF the CLI exits with the refusal.
 - Rule times: write clock times a few minutes ahead (`date -d '+3 min' +%H:%M`), start before :45 s of the minute, and stay out of 03:00–06:00 (the 05:00 day boundary). `report --date` takes the logical date, `YYYY-MM-DD`.
 - Wait for the lock before `selflow unlock`: until `bash $ISO lock-pids "$D"` lists a client (about 20 s after the start minute), `unlock` only answers "Nothing is locked right now" and releases the screen. The extension form opens `wait` after the lock starts.
+- The `systemctl` stub answers two calls, `--user show selflowd.service -p ExecStart --value` (prints the env's `bin/selflowd` path) and `--user --no-block restart selflowd.service` (runs `restart-daemon` for the env in the background, output in `restart.log`). Every other call is blocked and logged.
 - Lock rules reach a screen only at level 2. At level 1 the daemon still enforces the lock (unlock, extensions and the report work) but logs `couldn't start the lock client`.
 - `daemon.log` timestamps are UTC; the CLI and notices use local time.
 

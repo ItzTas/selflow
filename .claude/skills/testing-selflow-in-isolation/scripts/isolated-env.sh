@@ -224,6 +224,26 @@ exit 1
 EOF
 		chmod +x "$DIR/stubs/$name"
 	done
+	write_systemctl_stub
+}
+
+write_systemctl_stub() {
+	cat >"$DIR/stubs/systemctl" <<EOF
+#!/bin/sh
+case "\$*" in
+"--user show selflowd.service -p ExecStart --value")
+	printf '{ path=%s ; argv[]=%s ; }\n' "$DIR/bin/selflowd" "$DIR/bin/selflowd"
+	exit 0
+	;;
+"--user --no-block restart selflowd.service")
+	setsid -f /usr/bin/bash "$SCRIPT_PATH" restart-daemon "$DIR" >>"$DIR/restart.log" 2>&1 </dev/null
+	exit 0
+	;;
+esac
+printf '%s blocked: systemctl %s\n' "\$(date +%T)" "\$*" >>"$DIR/blocked.log"
+exit 1
+EOF
+	chmod +x "$DIR/stubs/systemctl"
 }
 
 build_binaries() {
