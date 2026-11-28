@@ -3,12 +3,13 @@ mod support;
 use std::fmt::Debug;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use jiff::ZonedDateTime;
 use selflow_protocol::ipc::{AgentSession, MessageView, Request, Response, ToolCall, ToolVerdict};
 use selflowd::agent::claude_code::inbox_frame;
-use selflowd::agent::courier::run_courier;
+use selflowd::agent::courier::{restarting, run_courier};
 use selflowd::ipc::handle;
 use selflowd::store::{Event, EventKind};
 use support::{AgentRig, agent_rig, agent_rig_on, at, no_jitter, session};
@@ -595,4 +596,24 @@ async fn a_refusing_inbox_leaves_the_message_for_the_next_prompt() {
     drop(UnixListener::bind(&inbox).unwrap());
     assert!(inbox.exists());
     assert_next_prompt_gets_the_message(&rig, with_inbox(&inbox)).await;
+}
+
+#[tokio::test]
+async fn the_courier_starts_again_after_it_panics_or_stops() {
+    let starts = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&starts);
+    let supervisor = tokio::spawn(restarting(Duration::from_millis(20), move || {
+        let start = counted.fetch_add(1, Ordering::SeqCst);
+        async move {
+            match start {
+                0 => panic!("a courier bug"),
+                1 => {}
+                _ => std::future::pending().await,
+            }
+        }
+    }));
+    eventually(|| starts.load(Ordering::SeqCst), 3).await;
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(starts.load(Ordering::SeqCst), 3);
+    supervisor.abort();
 }

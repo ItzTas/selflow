@@ -7,6 +7,7 @@ pub const MISSED_DELIVERY: &str = "missed";
 pub const HOME_SYMBOL: &str = "~";
 pub const INBOX_DELIVERY: &str = "inbox";
 pub const INBOX_TIMEOUT: Duration = Duration::from_secs(2);
+pub const COURIER_RESTART_DELAY: Duration = Duration::from_secs(1);
 pub const INBOX_FRAME_TYPE: &str = "user";
 pub const INBOX_ROLE: &str = "user";
 pub const FRAME_END: u8 = b'\n';

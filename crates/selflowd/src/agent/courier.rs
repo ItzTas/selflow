@@ -1,18 +1,39 @@
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use jiff::ZonedDateTime;
 use selflow_platform::transport::connect;
 use selflow_protocol::ipc::{AgentKind, AgentSession};
 use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use super::claude_code::inbox_frame;
-use super::constants::{INBOX_DELIVERY, INBOX_TIMEOUT, PARAGRAPH_BREAK};
+use super::constants::{COURIER_RESTART_DELAY, INBOX_DELIVERY, INBOX_TIMEOUT, PARAGRAPH_BREAK};
 use super::{AgentHub, Directives};
 use crate::clock::Clock;
+
+pub async fn supervise_courier(hub: Arc<AgentHub>, clock: Arc<dyn Clock>) {
+    restarting(COURIER_RESTART_DELAY, || {
+        run_courier(Arc::clone(&hub), Arc::clone(&clock))
+    })
+    .await;
+}
+
+pub async fn restarting<T>(delay: Duration, mut start: impl FnMut() -> T)
+where
+    T: Future<Output = ()> + Send + 'static,
+{
+    loop {
+        match tokio::spawn(start()).await {
+            Ok(()) => tracing::error!("the agent courier stopped, so it starts again"),
+            Err(error) => tracing::error!(%error, "the agent courier failed, so it starts again"),
+        }
+        sleep(delay).await;
+    }
+}
 
 pub async fn run_courier(hub: Arc<AgentHub>, clock: Arc<dyn Clock>) {
     let mut directives = hub.directives.clone();

@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 
 use crate::agent::AgentHub;
-use crate::agent::courier::run_courier;
+use crate::agent::courier::supervise_courier;
 use crate::clock::SystemClock;
 use crate::enforcer::{
     LockSupervisor, Notifier, ScreenControl, SystemEnforcer, lock_program_from, power_mode,
@@ -97,7 +97,7 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
         parsed,
         agents,
     });
-    tokio::spawn(run_courier(
+    tokio::spawn(supervise_courier(
         Arc::clone(&shared.agents),
         Arc::clone(&shared.clock),
     ));
