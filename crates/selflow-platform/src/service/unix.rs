@@ -11,8 +11,8 @@ pub fn parse_exec_start(output: &str) -> Option<PathBuf> {
         .split([';', '{', '}'])
         .map(str::trim)
         .find_map(|field| field.strip_prefix(PATH_FIELD))
-        .filter(|path| !path.is_empty())
         .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 pub fn daemon_binary() -> Result<PathBuf, ServiceError> {

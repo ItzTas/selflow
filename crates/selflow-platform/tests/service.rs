@@ -17,3 +17,14 @@ fn no_exec_start_means_no_path() {
         assert_eq!(parse_exec_start(output), None, "{output:?}");
     }
 }
+
+#[test]
+fn a_path_that_is_not_absolute_gives_no_path() {
+    for output in [
+        "{ path=selflowd ; argv[]=selflowd ; }",
+        "{ path=.cargo/bin/selflowd ; argv[]=.cargo/bin/selflowd ; }",
+        "{ path= ; argv[]=/x ; }",
+    ] {
+        assert_eq!(parse_exec_start(output), None, "{output:?}");
+    }
+}
