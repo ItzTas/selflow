@@ -341,6 +341,13 @@ Shutdown (owner):
   challenges (section 8.9). Otherwise only a change to the configuration stops it, and loosening
   waits (section 8.9).
 
+Notices that are hard to miss (owner, 2026-11-23). During the M2.1 checks the owner noticed a
+notice three minutes late, because a desktop notification is easy to overlook. A notice can show
+in two more ways, and the user configures both:
+
+- as a critical notification that stays on screen until it is dismissed;
+- as a `selflow-ui` popup window: centered, larger than a notification and calm.
+
 Messages (owner):
 
 - Notices, emails and Claude messages can all be the user's own text, per rule. When the user

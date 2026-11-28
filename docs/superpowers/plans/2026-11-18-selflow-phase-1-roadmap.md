@@ -115,9 +115,15 @@ Added on 2026-11-20 (§8.5.1). A small milestone right after M2.1, because it ne
 - No commands, and only calm animations.
 - Today's screen as the default theme, and `selflow lock theme init`, which writes a copy to start
   from.
+- Notices that are hard to miss (§8.3, owner feedback on 2026-11-23, carried here because this
+  milestone already works in `selflow-ui`): a notice can go out as a critical notification that
+  stays until dismissed, and as a centered, larger, calm `selflow-ui` popup window, each
+  configurable.
 
-Done when the owner's own `lock.toml` changes the next lock screen, and a theme that leaves out or
-shrinks the challenge form or the shutdown time still shows them legibly.
+Done when the owner's own `lock.toml` changes the next lock screen, a theme that leaves out or
+shrinks the challenge form or the shutdown time still shows them legibly, a notice set to the
+critical notification stays until the owner dismisses it, and a notice set to the popup opens the
+popup window.
 
 ## M2b. Claude Code sessions
 
