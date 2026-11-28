@@ -11,8 +11,8 @@ use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
 use selflow_platform::transport::Stream;
 use selflow_protocol::ipc::{
-    ChallengeView, ChangeView, ExtensionSource, MessageView, RefusalView, ReportEntry, Request,
-    Response,
+    AgentKind, AgentSession, ChallengeView, ChangeView, ExtensionSource, MessageView,
+    PROTOCOL_VERSION, RefusalView, ReportEntry, Request, Response, ToolCall, ToolVerdict,
 };
 use selflowd::enforcer::PowerMode;
 use selflowd::ipc::handle;
@@ -339,6 +339,46 @@ async fn a_lock_subscriber_gets_the_view_then_the_end() {
     assert_eq!(subscriber.next().await, Some(Response::LockEnded));
 }
 
+#[tokio::test]
+async fn agent_hooks_get_an_empty_answer_while_no_step_runs() {
+    let (client, _shared) = start(at(19, 12, 0)).await;
+    let session = AgentSession {
+        agent: AgentKind::ClaudeCode,
+        id: "3f6c1d52".into(),
+        cwd: "/home/user/project".into(),
+        inbox: None,
+        attended: true,
+    };
+    assert_eq!(
+        client
+            .request(Request::AgentSessionStarted(session.clone()))
+            .await,
+        Response::AgentNoted
+    );
+    assert_eq!(
+        client.request(Request::AgentPrompt(session.clone())).await,
+        Response::AgentContext { text: None }
+    );
+    assert_eq!(
+        client
+            .request(Request::AgentTool {
+                session,
+                tool: ToolCall::Edit,
+            })
+            .await,
+        Response::AgentVerdict(ToolVerdict::Allow)
+    );
+    assert_eq!(
+        client
+            .request(Request::AgentSessionEnded {
+                agent: AgentKind::ClaudeCode,
+                id: "3f6c1d52".into(),
+            })
+            .await,
+        Response::AgentNoted
+    );
+}
+
 async fn raw_connection() -> (tempfile::TempDir, Stream) {
     let (_, views) = watch::channel(None);
     let (dir, stream, _shared, _screen) = launch(
@@ -365,10 +405,14 @@ async fn is_closed_within(stream: &mut Stream, secs: u64) -> bool {
 #[tokio::test]
 async fn a_client_on_another_version_is_answered_then_closed() {
     let (_dir, mut stream) = raw_connection().await;
-    stream.write_all(b"SLFW\x02\0\0\0").await.unwrap();
+    let mut hello = b"SLFW".to_vec();
+    hello.extend_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
+    stream.write_all(&hello).await.unwrap();
     let mut answer = [0; 8];
     stream.read_exact(&mut answer).await.unwrap();
-    assert_eq!(&answer, b"SLFW\x01\0\0\0");
+    let mut expected = b"SLFW".to_vec();
+    expected.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    assert_eq!(answer.as_slice(), expected.as_slice());
     assert!(is_closed_within(&mut stream, 1).await);
 }
 

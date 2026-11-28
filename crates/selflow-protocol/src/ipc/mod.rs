@@ -9,6 +9,7 @@ pub use constants::{
 };
 pub use handshake::{hello_as_client, hello_as_daemon};
 pub use types::{
-    ChallengeView, ChangeView, ConfigStatusView, ExtensionSource, LockView, MessageView,
-    PositionedMessage, RefusalView, ReportEntry, ReportView, Request, Response, StatusView,
+    AgentKind, AgentSession, ChallengeView, ChangeView, ConfigStatusView, ExtensionSource,
+    LockView, MessageView, PositionedMessage, RefusalView, ReportEntry, ReportView, Request,
+    Response, StatusView, ToolCall, ToolVerdict,
 };

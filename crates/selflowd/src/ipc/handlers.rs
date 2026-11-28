@@ -16,6 +16,7 @@ use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
     ChallengeView, ChangeView, ConfigStatusView, ExtensionSource, LockView, MessageView,
     PositionedMessage, RefusalView, ReportEntry, ReportView, Request, Response, StatusView,
+    ToolVerdict,
 };
 use serde_json::{Value, json};
 
@@ -26,6 +27,9 @@ use crate::engine::{ParsedVersions, config_in_force, event_detail, stored_histor
 use crate::store::{Event, EventKind, Store, StoreError};
 
 pub fn handle(request: Request, shared: &Shared) -> Response {
+    if let Some(answer) = agent_answer(&request) {
+        return answer;
+    }
     let now = shared.clock.now();
     let store = locked(&shared.store);
     let answer = match request {
@@ -62,6 +66,10 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
             &rule,
             &ExtensionAnswer { reason, phrase },
         ),
+        Request::AgentSessionStarted(_)
+        | Request::AgentSessionEnded { .. }
+        | Request::AgentPrompt(_)
+        | Request::AgentTool { .. } => unreachable!("agent requests are answered before the store"),
     };
     drop(store);
     let response = answer.unwrap_or_else(|error| {
@@ -78,6 +86,17 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
         let _ = shared.wake.try_send(());
     }
     response
+}
+
+fn agent_answer(request: &Request) -> Option<Response> {
+    match request {
+        Request::AgentSessionStarted(_) | Request::AgentSessionEnded { .. } => {
+            Some(Response::AgentNoted)
+        }
+        Request::AgentPrompt(_) => Some(Response::AgentContext { text: None }),
+        Request::AgentTool { .. } => Some(Response::AgentVerdict(ToolVerdict::Allow)),
+        _ => None,
+    }
 }
 
 pub(super) fn lock_state(view: &Option<LockView>) -> Response {

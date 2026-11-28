@@ -1,10 +1,10 @@
 use jiff::civil::Date;
 use jiff::{SignedDuration, Timestamp};
 use selflow_protocol::ipc::{
-    ChallengeView, ChangeView, ConfigStatusView, ExtensionSource, LockView, MAX_FRAME_BYTES,
-    MessageView, PROTOCOL_VERSION, PositionedMessage, RefusalView, ReportEntry, ReportView,
-    Request, Response, StatusView, hello_as_client, hello_as_daemon, message_reader, read_message,
-    write_message,
+    AgentKind, AgentSession, ChallengeView, ChangeView, ConfigStatusView, ExtensionSource,
+    LockView, MAX_FRAME_BYTES, MessageView, PROTOCOL_VERSION, PositionedMessage, RefusalView,
+    ReportEntry, ReportView, Request, Response, StatusView, ToolCall, ToolVerdict, hello_as_client,
+    hello_as_daemon, message_reader, read_message, write_message,
 };
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
@@ -38,6 +38,16 @@ fn lock() -> LockView {
         phrase: Some("I choose to rest".into()),
         shutdown_at: Some(at(1_900)),
         language: "en".into(),
+    }
+}
+
+fn agent_session(attended: bool, inbox: Option<&str>) -> AgentSession {
+    AgentSession {
+        agent: AgentKind::ClaudeCode,
+        id: "3f6c1d52".into(),
+        cwd: "/home/user/project".into(),
+        inbox: inbox.map(str::to_owned),
+        attended,
     }
 }
 
@@ -79,6 +89,26 @@ fn requests() -> Vec<Request> {
             rule: "bedtime".into(),
             reason: "on call tonight".into(),
             phrase: String::new(),
+        },
+        Request::AgentSessionStarted(agent_session(true, Some("/run/user/1000/cc-socks/42.sock"))),
+        Request::AgentSessionEnded {
+            agent: AgentKind::ClaudeCode,
+            id: "3f6c1d52".into(),
+        },
+        Request::AgentPrompt(agent_session(false, None)),
+        Request::AgentTool {
+            session: agent_session(true, None),
+            tool: ToolCall::Edit,
+        },
+        Request::AgentTool {
+            session: agent_session(true, None),
+            tool: ToolCall::Shell {
+                command: "git status".into(),
+            },
+        },
+        Request::AgentTool {
+            session: agent_session(true, None),
+            tool: ToolCall::Other,
         },
     ]
 }
@@ -147,6 +177,15 @@ fn responses() -> Vec<Response> {
             available_at: at(1_000),
         }),
         Response::Error(message("internal-error")),
+        Response::AgentNoted,
+        Response::AgentContext {
+            text: Some("Save your work now.".into()),
+        },
+        Response::AgentContext { text: None },
+        Response::AgentVerdict(ToolVerdict::Allow),
+        Response::AgentVerdict(ToolVerdict::Deny {
+            reason: "Selflow: only git commands now.".into(),
+        }),
     ]
 }
 
@@ -198,6 +237,40 @@ fn sources() -> Vec<ExtensionSource> {
         .into_iter()
         .filter_map(|request| match request {
             Request::RequestExtension { source, .. } => Some(source),
+            _ => None,
+        })
+        .collect()
+}
+
+fn agent_kinds() -> Vec<AgentKind> {
+    requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            Request::AgentSessionStarted(session) | Request::AgentPrompt(session) => {
+                Some(session.agent)
+            }
+            Request::AgentSessionEnded { agent, .. } => Some(agent),
+            Request::AgentTool { session, .. } => Some(session.agent),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tool_calls() -> Vec<ToolCall> {
+    requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            Request::AgentTool { tool, .. } => Some(tool),
+            _ => None,
+        })
+        .collect()
+}
+
+fn tool_verdicts() -> Vec<ToolVerdict> {
+    responses()
+        .into_iter()
+        .filter_map(|response| match response {
+            Response::AgentVerdict(verdict) => Some(verdict),
             _ => None,
         })
         .collect()
@@ -272,7 +345,7 @@ async fn rejects_bytes_that_are_not_a_message() {
 fn changing_the_wire_format_needs_a_new_protocol_version() {
     assert_eq!(
         (PROTOCOL_VERSION, encoded_hex().as_str()),
-        (1, include_str!("wire/v1.hex"))
+        (2, include_str!("wire/v2.hex"))
     );
 }
 
@@ -290,6 +363,10 @@ fn the_samples_cover_every_variant_of_every_wire_enum() {
         ReleaseScreen,
         StartException,
         ConfirmException,
+        AgentSessionStarted,
+        AgentSessionEnded,
+        AgentPrompt,
+        AgentTool,
     );
     let response = variants!(Response:
         Status,
@@ -308,14 +385,23 @@ fn the_samples_cover_every_variant_of_every_wire_enum() {
         ExceptionGranted,
         ExceptionRefused,
         Error,
+        AgentNoted,
+        AgentContext,
+        AgentVerdict,
     );
     let refusal = variants!(RefusalView: TooEarly, NoBudget, ReasonTooShort, PhraseMismatch);
     let source = variants!(ExtensionSource: Screen, Terminal);
+    let agent = variants!(AgentKind: ClaudeCode);
+    let tool = variants!(ToolCall: Edit, Shell, Other);
+    let verdict = variants!(ToolVerdict: Allow, Deny);
     for (sampled, declared) in [
         wire_coverage(&requests(), request),
         wire_coverage(&responses(), response),
         wire_coverage(&refusals(), refusal),
         wire_coverage(&sources(), source),
+        wire_coverage(&agent_kinds(), agent),
+        wire_coverage(&tool_calls(), tool),
+        wire_coverage(&tool_verdicts(), verdict),
     ] {
         assert_eq!(sampled, declared);
     }
@@ -326,8 +412,8 @@ async fn a_hello_round_trip_returns_each_sides_version() {
     let (mut client, mut daemon) = tokio::io::duplex(64);
     let (from_daemon, from_client) =
         tokio::join!(hello_as_client(&mut client), hello_as_daemon(&mut daemon));
-    assert_eq!(from_daemon.unwrap(), 1);
-    assert_eq!(from_client.unwrap(), 1);
+    assert_eq!(from_daemon.unwrap(), PROTOCOL_VERSION);
+    assert_eq!(from_client.unwrap(), PROTOCOL_VERSION);
 }
 
 #[tokio::test]

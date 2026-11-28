@@ -32,6 +32,16 @@ pub enum Request {
         reason: String,
         phrase: String,
     },
+    AgentSessionStarted(AgentSession),
+    AgentSessionEnded {
+        agent: AgentKind,
+        id: String,
+    },
+    AgentPrompt(AgentSession),
+    AgentTool {
+        session: AgentSession,
+        tool: ToolCall,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +84,38 @@ pub enum Response {
     },
     ExceptionRefused(RefusalView),
     Error(MessageView),
+    AgentNoted,
+    AgentContext {
+        text: Option<String>,
+    },
+    AgentVerdict(ToolVerdict),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AgentKind {
+    ClaudeCode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentSession {
+    pub agent: AgentKind,
+    pub id: String,
+    pub cwd: String,
+    pub inbox: Option<String>,
+    pub attended: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ToolCall {
+    Edit,
+    Shell { command: String },
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ToolVerdict {
+    Allow,
+    Deny { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
