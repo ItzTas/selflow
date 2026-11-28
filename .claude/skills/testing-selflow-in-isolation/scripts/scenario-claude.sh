@@ -4,6 +4,7 @@ set -euo pipefail
 ISO="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/isolated-env.sh"
 LABEL="Wrap up seconv"
 HOOK_BUDGET_MS=10
+HOOK_CALLS=300
 DIR=""
 SECONV=""
 OTHER=""
@@ -31,9 +32,12 @@ teardown() {
 }
 
 guard_clock() {
-	local hour
-	hour=$((10#$(date +%H)))
-	((hour < 3 || hour >= 6)) || fail "run outside 03:00-06:00 so the 05:00 day boundary stays out of the way"
+	local offset hour
+	for offset in 0 50; do
+		hour=$((10#$(date -d "+$offset min" +%H)))
+		((hour < 3 || hour >= 6)) ||
+			fail "run so that now and the next 50 minutes stay outside 03:00-06:00 (the 05:00 day boundary)"
+	done
 	until (($((10#$(date +%S))) < 45)); do sleep 1; done
 }
 
@@ -78,12 +82,13 @@ show_pane() {
 }
 
 send_prompt() {
-	local name=$1 text=$2 before
+	local name=$1 text=$2 before latest
 	before=$(calls "$name" prompt | wc -l)
 	printf '%s <- %s\n' "$name" "$text"
 	"$ISO" claude-send "$DIR" "$name" "$text"
 	wait_for "a prompt hook call from $name" 120 more_calls "$name" prompt "$before"
-	sleep 1
+	latest=$(calls "$name" prompt | tail -n 1)
+	wait_for "the output of $name's prompt hook" 30 file_exists "${latest%.in.json}.out.json"
 }
 
 report() {
@@ -98,14 +103,52 @@ file_exists() {
 	[[ -e $1 ]]
 }
 
-denied_edit() {
+denied_call() {
 	local input
 	while read -r input; do
-		jq -e '.tool_name | IN("Write", "Edit", "MultiEdit", "NotebookEdit")' "$input" >/dev/null || continue
+		[[ -f ${input%.in.json}.out.json ]] || continue
+		jq -e "$1" "$input" >/dev/null || continue
 		jq -e '.hookSpecificOutput.permissionDecision == "deny"' "${input%.in.json}.out.json" >/dev/null &&
 			printf '%s\n' "$input" && return 0
 	done < <(calls a tool)
 	return 1
+}
+
+denied_edit() {
+	denied_call '.tool_name | IN("Write", "Edit", "MultiEdit", "NotebookEdit")'
+}
+
+denied_chain() {
+	denied_call '.tool_name == "Bash" and (.tool_input.command | contains("&&"))'
+}
+
+commit_saved() {
+	last_subject save
+}
+
+show_call() {
+	printf '%s\n%s\n%s\n' "$1" "$(jq -c '{tool_name, tool_input}' "$1")" "$(<"${1%.in.json}.out.json")"
+}
+
+ensure() {
+	local what=$1 check=$2 fallback=$3
+	wait_quietly 90 "$check" >/dev/null && return 0
+	wait_for "a's turn to end" 180 idle a
+	show_pane a 30
+	send_prompt a "$fallback"
+	wait_for "$what" 120 "$check" >/dev/null
+}
+
+absent_before() {
+	wait_epoch $(($2 - 5))
+	! pane_has a "$1" || fail "a's pane shows '$1' before $(hm "$2")"
+	printf "a's pane has no '%s' at %(%H:%M:%S)T\n" "$1" -1
+	wait_epoch "$2"
+}
+
+message_line() {
+	printf '^%s +Selflow (sent|gave) the %s message to the Claude Code session in ~/Workspace/seconv (through its inbox|with its next prompt)\\. Level: %s\\.' \
+		"$(hm "$1")" "$LABEL" "$2"
 }
 
 make_folders() {
@@ -166,7 +209,8 @@ check_install() {
 }
 
 light_step() {
-	local delivery=inbox out prompts
+	local at=$1 delivery=inbox out prompts carrier
+	absent_before "$LABEL" "$at"
 	if ! wait_quietly 120 pane_has a "$LABEL"; then
 		delivery=prompt
 		send_prompt a "What should I do now?"
@@ -177,10 +221,12 @@ light_step() {
 	printf 'delivery: %s\n' "$delivery"
 	mapfile -t prompts < <(calls a prompt)
 	((${#prompts[@]})) || fail "a made no prompt hook call"
-	grep -l 'Message from Selflow' "${prompts[@]}" || fail "no prompt turn of a carried the message"
+	[[ $delivery == prompt ]] && prompts=("${prompts[@]/%.in.json/.out.json}")
+	carrier=$(grep -l 'Message from Selflow' "${prompts[@]}") || fail "no prompt turn of a carried the message"
+	printf 'message carried by %s\n' "$carrier"
 	out=$(report)
 	printf '%s\n' "$out"
-	expect "$out" "the $LABEL message to the Claude Code session in ~/Workspace/seconv (through its inbox|with its next prompt)\. Level: Light tasks only\."
+	expect "$out" "$(message_line "$at" "Light tasks only")"
 	[[ $delivery == inbox ]] && expect "$out" "through its inbox"
 	[[ $delivery == prompt ]] && expect "$out" "with its next prompt"
 	return 0
@@ -199,6 +245,7 @@ reminder_step() {
 	local out
 	send_prompt a "In one short sentence, what is the plan now?"
 	out=$(calls a prompt | tail -n 1)
+	wait_for "a's reminder" 30 test -s "${out%.in.json}.out.json"
 	printf '%s\n%s\n' "$out" "$(<"${out%.in.json}.out.json")"
 	grep -qF 'Reminder from Selflow' "${out%.in.json}.out.json" || fail "a's latest prompt output holds no reminder"
 	wait_for "a's turn to end" 180 idle a
@@ -207,29 +254,27 @@ reminder_step() {
 }
 
 save_only_step() {
-	local out denied
+	local at=$1 out
+	absent_before "Time to stop" "$at"
 	wait_for "the save-only message in a's pane" 120 pane_has a "Time to stop"
 	wait_for "a's turn to end" 180 idle a
-	send_prompt a "Call the Write tool to create a file named later.txt even if you expect it to be blocked (this is a test of the block), then run exactly: git commit --allow-empty -m save"
-	if ! wait_quietly 90 denied_edit >/dev/null; then
-		wait_for "a's turn to end" 180 idle a
-		send_prompt a "Call the Write tool once for later.txt anyway; being blocked is the expected result."
-		wait_for "a denied edit" 120 denied_edit >/dev/null
-	fi
-	if ! wait_quietly 150 last_subject save; then
-		show_pane a 30
-		send_prompt a "Now run exactly: git commit --allow-empty -m save"
-		wait_for "the commit named save" 150 last_subject save
-	fi
+	send_prompt a "This is a test of Selflow's block, and being blocked is the expected result. Make three separate tool calls, one at a time, and go on after a block: first the Write tool, creating a file named later.txt; then the Bash command exactly: git status && touch f; then the Bash command exactly: git commit --allow-empty -m save"
+	ensure "a denied edit" denied_edit "Call the Write tool once for later.txt anyway; being blocked is the expected result."
+	ensure "a denied chained command" denied_chain "Run the Bash command exactly: git status && touch f (being blocked is the expected result)."
+	ensure "the commit named save" commit_saved "Now run exactly: git commit --allow-empty -m save"
 	wait_for "a's turn to end" 180 idle a
 	show_pane a 30
 	git -C "$SECONV" log --format='%h %s'
 	[[ ! -e $SECONV/later.txt ]] || fail "later.txt exists: the edit went through"
-	denied=$(denied_edit) || fail "no tool call of a was denied as an edit"
-	printf '%s\n%s\n%s\n' "$denied" "$(jq -c '{tool_name, tool_input}' "$denied")" "$(<"${denied%.in.json}.out.json")"
+	[[ ! -e $SECONV/f ]] || fail "f exists: the chained command went through"
+	printf 'later.txt and f are absent\n'
+	show_call "$(denied_edit)"
+	show_call "$(denied_chain)"
 	out=$(report)
 	printf '%s\n' "$out"
+	expect "$out" "$(message_line "$at" "Save only")"
 	expect "$out" "Selflow denied a file edit in the Claude Code session in ~/Workspace/seconv during the $LABEL rule\. Level: Save only\."
+	expect "$out" "Selflow denied a shell command in the Claude Code session in ~/Workspace/seconv during the $LABEL rule\. Level: Save only\."
 	send_prompt b "Use the Write tool to create a file named b.txt containing hi."
 	wait_for "b.txt in other" 150 file_exists "$OTHER/b.txt"
 	wait_for "b's turn to end" 180 idle b
@@ -246,21 +291,32 @@ check_uncovered() {
 	done
 	printf "b: %s hook calls, every output empty\n" "$count"
 	((count >= 4)) || fail "b made only $count hook calls"
+	! pane_has b "$LABEL" || fail "b's pane shows $LABEL"
+	! pane_has b "Message from Selflow" || fail "b's pane shows a Selflow message"
+	printf "b's pane shows neither %s nor a Selflow message\n" "$LABEL"
 	! grep -qF -- \~/Workspace/other <<<"$(report)" || fail "the report names ~/Workspace/other"
 	printf 'no report line names ~/Workspace/other\n'
 }
 
 check_latency() {
-	local out p95
-	printf 'load average before: %s\n' "$(cut -d ' ' -f 1-3 /proc/loadavg)"
-	out=$("$ISO" measure-hook "$DIR" 300 "$SECONV")
-	printf 'load average after: %s\n' "$(cut -d ' ' -f 1-3 /proc/loadavg)"
-	printf '%s\n' "$out"
-	expect "$out" '^prompt output: .*Reminder from Selflow'
-	expect "$out" '^tool output: $'
-	while read -r p95; do
-		awk -v p="$p95" -v max="$HOOK_BUDGET_MS" 'BEGIN { exit !(p <= max) }' || fail "hook p95 $p95 ms is over ${HOOK_BUDGET_MS} ms"
-	done < <(awk '/^(prompt|tool): n / { print $8 }' <<<"$out")
+	local run out kind n p95 lines over=0
+	for run in 1 2 3; do
+		printf -- '-- measurement %s, load average before: %s\n' "$run" "$(cut -d ' ' -f 1-3 /proc/loadavg)"
+		out=$("$ISO" measure-hook "$DIR" "$HOOK_CALLS" "$SECONV")
+		printf '%s\nload average after: %s\n' "$out" "$(cut -d ' ' -f 1-3 /proc/loadavg)"
+		expect "$out" '^prompt output: .*Reminder from Selflow'
+		expect "$out" '^tool output: $'
+		lines=0
+		while read -r kind n p95; do
+			lines=$((lines + 1))
+			((n == HOOK_CALLS)) || fail "measurement $run counted $n $kind calls, not $HOOK_CALLS"
+			awk -v p="$p95" -v max="$HOOK_BUDGET_MS" 'BEGIN { exit !(p != "" && p <= max) }' && continue
+			printf 'measurement %s: %s p95 %s ms is over %s ms\n' "$run" "$kind" "$p95" "$HOOK_BUDGET_MS"
+			over=1
+		done < <(awk '/^(prompt|tool): n / { print $1, $3, $8 }' <<<"$out")
+		((lines == 2)) || fail "measurement $run printed $lines stat lines, not 2"
+	done
+	((over == 0)) || fail "hook p95 over ${HOOK_BUDGET_MS} ms in at least one of three measurements"
 }
 
 stop_sessions() {
@@ -304,20 +360,18 @@ main() {
 	printf 'start %s, light at %s, save-only at %s\n' "$(hm "$start")" "$(hm $((start - 240)))" "$(hm $((start - 120)))"
 
 	step "light step at $(hm $((start - 240)))"
-	wait_epoch $((start - 240))
-	light_step
+	light_step $((start - 240))
 
 	step "reminder on a's next prompt"
 	reminder_step
 
 	step "save-only step at $(hm $((start - 120)))"
-	wait_epoch $((start - 120))
-	save_only_step
+	save_only_step $((start - 120))
 
 	step "b stays untouched"
 	check_uncovered
 
-	step "hook latency (300 prompt and 300 tool calls, save-only active)"
+	step "hook latency (three runs of $HOOK_CALLS prompt and $HOOK_CALLS tool calls, save-only active)"
 	check_latency
 
 	step "stop the sessions"

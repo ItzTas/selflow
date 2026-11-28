@@ -24,7 +24,9 @@ CLAUDE_HOOKS=(
 	"PreToolUse tool"
 )
 CLAUDE_TOOL_MATCHER="Edit|Write|MultiEdit|NotebookEdit|Bash"
-CLAUDE_ALLOWED=("Write" "Edit" "Bash(git status:*)" "Bash(git commit:*)")
+CLAUDE_ALLOWED_COMMANDS=("Bash(git status:*)" "Bash(git commit:*)")
+CLAUDE_FILE_TOOLS=(Read Edit Write)
+CLAUDE_PERMISSION_PROMPT='Esc to cancel|Do you want to |❯ [0-9]+\. Yes'
 CLAUDE_START_TIMEOUT=90
 CLAUDE_STOP_TIMEOUT=20
 
@@ -689,9 +691,18 @@ press() {
 }
 
 type_line() {
+	refuse_permission "$1" && return 1
 	env_tmux send-keys -t "=$1:" -l -- "$2"
 	sleep 0.5
+	refuse_permission "$1" && return 1
 	env_tmux send-keys -t "=$1:" Enter
+}
+
+refuse_permission() {
+	grep -qE "$CLAUDE_PERMISSION_PROMPT" <<<"$(claude_screen "$1")" || return 1
+	note "session $1 shows a permission prompt; refusing it with Escape"
+	press "$1" Escape
+	sleep 1
 }
 
 clear_dialogs() {
@@ -726,8 +737,21 @@ write_claude_settings() {
 		[[ $event == PreToolUse ]] && entry=$(jq --arg matcher "$CLAUDE_TOOL_MATCHER" '{matcher: $matcher} + .' <<<"$entry")
 		hooks=$(jq --arg event "$event" --argjson entry "$entry" '.[$event] = [$entry]' <<<"$hooks")
 	done
-	jq -n --argjson hooks "$hooks" '{permissions: {allow: $ARGS.positional}, hooks: $hooks}' \
-		--args "${CLAUDE_ALLOWED[@]}" >"$file"
+	jq -n --argjson hooks "$hooks" --argjson permissions "$(claude_permissions)" \
+		'{permissions: $permissions, hooks: $hooks}' >"$file"
+}
+
+claude_permissions() {
+	local tool allow=("${CLAUDE_ALLOWED_COMMANDS[@]}") deny=()
+	for tool in Edit Write; do
+		allow+=("$tool(/$DIR/**)")
+	done
+	for tool in "${CLAUDE_FILE_TOOLS[@]}"; do
+		deny+=("$tool(~/.claude/**)" "$tool(~/.claude.json)" "$tool(/$HOME/.claude/**)" "$tool(/$HOME/.claude.json)")
+	done
+	jq -n --args '{defaultMode: "default", allow: $ARGS.positional[:$n], deny: $ARGS.positional[$n:]}' \
+		--argjson n "${#allow[@]}" \
+		"${allow[@]}" "${deny[@]}"
 }
 
 claude_ready() {
@@ -750,7 +774,7 @@ cmd_claude_start() {
 	printf '%s\n' "$id" >"$DIR/claude/$name.id"
 	env_tmux new-session -d -s "$name" -x 200 -y 50 -c "$cwd" -- env -i "HOME=$HOME" "USER=$(id -un)" \
 		"PATH=/usr/bin:/bin" "SHELL=/usr/bin/bash" "LANG=C.UTF-8" "TERM=xterm-256color" \
-		"XDG_RUNTIME_DIR=$RUNTIME" "$claude" --setting-sources project \
+		"XDG_RUNTIME_DIR=$RUNTIME" "$claude" --setting-sources project --strict-mcp-config \
 		--settings "$DIR/claude/settings.json" --session-id "$id" --model haiku
 	deadline=$((SECONDS + CLAUDE_START_TIMEOUT))
 	until claude_ready "$name" "$id"; do
@@ -773,7 +797,8 @@ cmd_claude_send() {
 	name=$(claude_name "${2:-}")
 	claude_alive "$name" || die "session $name is not running"
 	clear_dialogs "$name"
-	type_line "$name" "${3:?claude-send needs a text}"
+	type_line "$name" "${3:?claude-send needs a text}" ||
+		die "session $name showed a permission prompt; it was refused and the text was not sent"
 }
 
 cmd_claude_deny() {
@@ -781,9 +806,7 @@ cmd_claude_deny() {
 	load_env "${1:-}"
 	name=$(claude_name "${2:-}")
 	claude_alive "$name" || return 0
-	grep -q 'Do you want to proceed?' <<<"$(claude_screen "$name")" || return 0
-	note "session $name asks for a permission; refusing it with Escape"
-	press "$name" Escape
+	refuse_permission "$name" || true
 }
 
 cmd_claude_pane() {
@@ -800,7 +823,7 @@ cmd_claude_stop() {
 	name=$(claude_name "${2:-}")
 	claude_alive "$name" || return 0
 	clear_dialogs "$name"
-	type_line "$name" /exit
+	type_line "$name" /exit || type_line "$name" /exit || note "session $name keeps showing a permission prompt"
 	deadline=$((SECONDS + CLAUDE_STOP_TIMEOUT))
 	while claude_alive "$name"; do
 		if ((SECONDS >= deadline)); then
@@ -841,7 +864,8 @@ cmd_hook() {
 		vars+=("CLAUDE_CODE_MESSAGING_SOCKET=$CLAUDE_CODE_MESSAGING_SOCKET")
 	printf '%s\n' "${vars[@]}" >"$base.env"
 	env -i "${ISO_ENV[@]}" "${vars[@]}" "${SANDBOX[@]}" selflow claude hook "$event" \
-		<"$base.in.json" >"$base.out.json"
+		<"$base.in.json" >"$base.out.part"
+	mv "$base.out.part" "$base.out.json"
 	cat "$base.out.json"
 }
 
@@ -877,6 +901,10 @@ cmd_measure_hook() {
 		bash -c "$(measure_script)" measure "$count" "$work" >"$work/times.txt"
 	for kind in prompt tool; do
 		printf '%s first output: %s\n%s output: %s\n' "$kind" "$(<"$work/$kind.first")" "$kind" "$(<"$work/$kind.out")"
+	done
+	for kind in prompt tool; do
+		(($(awk -v kind="$kind" '$1 == kind' "$work/times.txt" | wc -l) == count)) ||
+			die "measure-hook recorded fewer than $count $kind calls (see $work/times.txt)"
 	done
 	for kind in prompt tool; do
 		awk -v kind="$kind" '$1 == kind { printf "%.3f\n", ($3 - $2) * 1000 }' "$work/times.txt" | sort -n |

@@ -42,7 +42,7 @@ bash $ISO down "$D"
 
 ## Claude Code sessions
 
-Claude Code is not a Selflow binary and needs the owner's login, so it runs outside the sandbox, in a tmux server private to the env (`tmux -L sfe-<runtime suffix>`), under `env -i` (none of your own session's `CLAUDE_*` variables reach it) with `XDG_RUNTIME_DIR` set to the env's runtime dir, so its inbox socket lands there. It starts with `--setting-sources project --settings $D/claude/settings.json --model haiku`: the owner's user settings, hooks and plugins don't load. That settings file registers `bash isolated-env.sh hook $D <event>` for `SessionStart`, `SessionEnd`, `UserPromptSubmit` and `PreToolUse`, and allows `Write`, `Edit`, `Bash(git status:*)` and `Bash(git commit:*)`; anything else asks for a permission.
+Claude Code is not a Selflow binary and needs the owner's login, so it runs outside the sandbox, in a tmux server private to the env (`tmux -L sfe-<runtime suffix>`), under `env -i` (none of your own session's `CLAUDE_*` variables reach it) with `XDG_RUNTIME_DIR` set to the env's runtime dir, so its inbox socket lands there. It starts with `--setting-sources project --strict-mcp-config --settings $D/claude/settings.json --model haiku`: the owner's user settings, hooks, plugins and MCP servers don't load. That settings file registers `bash isolated-env.sh hook $D <event>` for `SessionStart`, `SessionEnd`, `UserPromptSubmit` and `PreToolUse`; it sets `defaultMode` to `"default"` (otherwise Claude Code's auto mode approves writes anywhere on its own), allows `Edit` and `Write` only under `$D`, plus `Bash(git status:*)` and `Bash(git commit:*)`, and denies `Read`, `Edit` and `Write` on `~/.claude/**` and `~/.claude.json`. Anything else asks for a permission, and the harness never approves one: `claude-send` and `claude-stop` refuse a pending permission prompt (Escape) instead of typing, and `claude-send` then fails without sending its text.
 
 ```sh
 D=$(bash $ISO up --level 1 --release)
@@ -52,7 +52,7 @@ bash $ISO claude-send "$D" a "Use the Write tool to create a file named x.txt"
 bash $ISO claude-pane "$D" a                           # screen and scrollback
 bash $ISO claude-calls "$D" a tool                     # kept hook inputs; outputs sit next to them as .out.json
 bash $ISO claude-deny "$D" a                           # refuses a pending permission prompt (Escape); never approves
-bash $ISO measure-hook "$D" 300 "$D/home/Workspace/seconv"  # p50/p95 of the hook from the Claude fixtures
+bash $ISO measure-hook "$D" 300 "$D/home/Workspace/seconv"  # p50/p95 of the hook from the Claude fixtures; fails unless all N calls were timed
 bash $ISO claude-stop "$D" a                           # /exit, then waits
 bash $ISO down "$D"                                    # also kills the tmux server and removes the sessions' ~/.claude/projects/ folders
 ```
