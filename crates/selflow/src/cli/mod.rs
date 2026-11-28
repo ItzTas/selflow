@@ -37,7 +37,7 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn error_text(localizer: &Localizer, error: &CliError) -> String {
+pub fn error_text(localizer: &Localizer, error: &CliError) -> String {
     let id = match error {
         CliError::DaemonUnreachable => "cli-daemon-unreachable",
         CliError::NoRuntimeDir => "cli-no-runtime-dir",
@@ -63,7 +63,7 @@ fn version_text(version: Option<u32>) -> String {
     version.map_or_else(|| "?".to_owned(), |version| version.to_string())
 }
 
-fn error_code(error: &CliError) -> u8 {
+pub fn error_code(error: &CliError) -> u8 {
     match error {
         CliError::DaemonUnreachable | CliError::NoRuntimeDir | CliError::VersionMismatch { .. } => {
             2
