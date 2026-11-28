@@ -17,19 +17,32 @@ BACKEND_FUNCTIONS=(
 	backend_ctl
 	backend_keep_logs
 )
+CLAUDE_HOOKS=(
+	"SessionStart session-start"
+	"SessionEnd session-end"
+	"UserPromptSubmit prompt"
+	"PreToolUse tool"
+)
+CLAUDE_TOOL_MATCHER="Edit|Write|MultiEdit|NotebookEdit|Bash"
+CLAUDE_ALLOWED=("Write" "Edit" "Bash(git status:*)" "Bash(git commit:*)")
+CLAUDE_START_TIMEOUT=90
+CLAUDE_STOP_TIMEOUT=20
 
 usage() {
 	cat <<'EOF'
 Usage: isolated-env.sh <command> [args]
 
-  up [--level 1|2] [--compositor NAME] [--base DIR] [--ttl SECONDS] [--no-build]
+  up [--level 1|2] [--compositor NAME] [--base DIR] [--ttl SECONDS] [--no-build] [--release]
       Build, copy the binaries into a fresh dir under the base, start a detached
       supervisor that runs selflowd (and, at level 2, the invisible compositor
       from backends/NAME.sh; hyprland runs a nested Hyprland inside a headless
       mutter), wait until it is ready, and print the env dir on stdout. Defaults:
       level 1, compositor hyprland, base $SELFLOW_ISO_BASE or $TMPDIR or /tmp,
-      ttl 3600. The runtime dir (sockets) is a short /tmp/sfe.XXXXXX.
-  down DIR                  Stop everything the supervisor started.
+      ttl 3600, debug build (--release builds and copies target/release). The
+      runtime dir (sockets) is a short /tmp/sfe.XXXXXX.
+  down DIR                  Stop the env's Claude Code sessions and everything the
+                            supervisor started, and remove the sessions'
+                            ~/.claude/projects/ folders.
   run DIR CMD [ARGS...]     Run CMD with the isolated environment (env -i + bwrap).
   config-edit DIR FILE      Run `selflow config edit`, saving FILE as the new text.
   restart-daemon DIR        Stop selflowd and start it again on the same store.
@@ -42,6 +55,28 @@ Usage: isolated-env.sh <command> [args]
                             for hyprland). `hyprctl` is an alias for now.
   measure-idle DIR [SECS]   RSS and CPU of selflowd over a window (default 10s).
   env DIR                   Print the isolated variables as export lines.
+
+Claude Code (runs outside the sandbox with the owner's login, in a tmux server
+private to the env, with only $DIR/claude/settings.json and --model haiku):
+  claude-start DIR NAME CWD Start session NAME in CWD (inside DIR), get past the
+                            first-run dialogs, wait for its SessionStart hook.
+  claude-send DIR NAME TEXT Type TEXT into session NAME and press Enter.
+  claude-pane DIR NAME      Print session NAME's screen and scrollback.
+  claude-deny DIR NAME      If session NAME shows a permission prompt, refuse it
+                            (Escape, which also ends the turn); never approves.
+  claude-stop DIR NAME      Send /exit to session NAME and wait for it to close.
+  claude-id DIR NAME        Print session NAME's session id.
+  claude-calls DIR NAME EVENT
+                            List session NAME's kept hook inputs for EVENT
+                            (session-start, session-end, prompt, tool), oldest
+                            first; the output sits next to each as .out.json.
+  hook DIR EVENT            The hook command the sessions run: `selflow claude
+                            hook EVENT` in the sandbox, stdin and stdout kept in
+                            $DIR/claude/calls/<event>-<ns>.{in,out}.json.
+  measure-hook DIR N [CWD]  Time N prompt and N tool (Bash git status) hook calls
+                            from the Claude fixtures with cwd set to CWD
+                            (default $DIR/home); prints the outputs of an untimed
+                            call before and after, then p50 and p95 in ms.
 EOF
 }
 
@@ -247,12 +282,15 @@ EOF
 }
 
 build_binaries() {
+	local flags=()
+	[[ $1 == release ]] && flags=(--release)
 	command -v proto >/dev/null || die "proto is not on PATH; it runs the pinned toolchain"
-	(cd "$REPO_ROOT" && proto exec rust -- cargo build --workspace) >&2
+	(cd "$REPO_ROOT" && proto exec rust -- cargo build --workspace "${flags[@]}") >&2
 }
 
 cmd_up() {
 	local level=1 compositor="" base=${SELFLOW_ISO_BASE:-${TMPDIR:-/tmp}} ttl=3600 build=1 waited=0 binary
+	local profile=debug
 	while (($#)); do
 		case $1 in
 		--level) level=$2 && shift ;;
@@ -260,6 +298,7 @@ cmd_up() {
 		--base) base=$2 && shift ;;
 		--ttl) ttl=$2 && shift ;;
 		--no-build) build=0 ;;
+		--release) profile=release ;;
 		*) die "unknown option $1" ;;
 		esac
 		shift
@@ -271,17 +310,18 @@ cmd_up() {
 	mkdir -p "$base"
 	base=$(readlink -f "$base")
 	[[ $base != /run/user* ]] || die "the base dir must not live under /run/user"
-	((build)) && build_binaries
+	((build)) && build_binaries "$profile"
 	DIR=$(mktemp -d "$base/selflow-iso.XXXXXX")
 	mkdir -p "$DIR"/{bin,home,state,config,cache,data,screenshots}
 	mktemp -d /tmp/sfe.XXXXXX >"$DIR/runtime"
 	printf '%s\n' "$level" >"$DIR/level"
 	printf '%s\n' "$ttl" >"$DIR/ttl"
+	printf '%s\n' "$profile" >"$DIR/profile"
 	[[ $level == 2 ]] && printf '%s\n' "$compositor" >"$DIR/compositor"
 	for binary in selflowd selflow; do
-		cp "$REPO_ROOT/target/debug/$binary" "$DIR/bin/"
+		cp "$REPO_ROOT/target/$profile/$binary" "$DIR/bin/"
 	done
-	[[ $level == 2 ]] && cp "$REPO_ROOT/target/debug/selflow-ui" "$DIR/bin/"
+	[[ $level == 2 ]] && cp "$REPO_ROOT/target/$profile/selflow-ui" "$DIR/bin/"
 	touch "$DIR/daemon.log" "$DIR/notifications.log"
 	load_env "$DIR"
 	write_stubs
@@ -477,6 +517,7 @@ cmd_daemon_inner() {
 cmd_down() {
 	local supervisor left
 	load_paths "${1:-}"
+	stop_claude_server
 	supervisor=$(read_pid supervisor.pid)
 	if pid_alive "$supervisor"; then
 		kill -TERM "$supervisor"
@@ -485,6 +526,7 @@ cmd_down() {
 	mapfile -t left < <(ours_pids)
 	((${#left[@]} == 0)) || die "processes still carry this env: ${left[*]}"
 	runtime_looks_ours "$RUNTIME" && rm -rf -- "$RUNTIME"
+	remove_claude_projects
 	printf 'stopped; logs kept in %s\n' "$DIR" >&2
 }
 
@@ -610,6 +652,262 @@ cmd_env() {
 	done
 }
 
+claude_server() {
+	printf 'sfe-%s\n' "${RUNTIME##*/sfe.}"
+}
+
+env_tmux() {
+	env -i "HOME=$HOME" "PATH=/usr/bin:/bin" "LANG=C.UTF-8" "TERM=xterm-256color" \
+		tmux -L "$(claude_server)" "$@"
+}
+
+claude_name() {
+	[[ ${1:-} =~ ^[a-z0-9-]+$ ]] || die "the session name '${1:-}' must match ^[a-z0-9-]+\$"
+	printf '%s\n' "$1"
+}
+
+claude_id() {
+	[[ -f $DIR/claude/$1.id ]] || die "this env started no Claude Code session named $1"
+	cat "$DIR/claude/$1.id"
+}
+
+claude_alive() {
+	env_tmux has-session -t "=$1" 2>/dev/null
+}
+
+claude_screen() {
+	env_tmux capture-pane -p -J -t "=$1:" 2>/dev/null || true
+}
+
+press() {
+	local name=$1 key
+	shift
+	for key in "$@"; do
+		env_tmux send-keys -t "=$name:" "$key"
+		sleep 0.3
+	done
+}
+
+type_line() {
+	env_tmux send-keys -t "=$1:" -l -- "$2"
+	sleep 0.5
+	env_tmux send-keys -t "=$1:" Enter
+}
+
+clear_dialogs() {
+	grep -q 'Teach auto mode' <<<"$(claude_screen "$1")" || return 0
+	press "$1" Down Enter
+	sleep 1
+}
+
+trust_pending() {
+	grep -qi 'trust this folder' <<<"$(claude_screen "$1")"
+}
+
+claude_calls() {
+	local id=$1 event=$2 file
+	for file in "$DIR"/claude/calls/"$event"-*.in.json; do
+		[[ -f $file ]] && grep -qF "\"session_id\":\"$id\"" "$file" && printf '%s\n' "$file"
+	done
+	return 0
+}
+
+hook_command() {
+	printf 'bash %q hook %q %q' "$SCRIPT_PATH" "$DIR" "$1"
+}
+
+write_claude_settings() {
+	local file=$DIR/claude/settings.json pair event arg entry hooks='{}'
+	[[ -f $file ]] && return 0
+	for pair in "${CLAUDE_HOOKS[@]}"; do
+		read -r event arg <<<"$pair"
+		entry=$(jq -n --arg command "$(hook_command "$arg")" \
+			'{hooks: [{type: "command", command: $command, timeout: 5}]}')
+		[[ $event == PreToolUse ]] && entry=$(jq --arg matcher "$CLAUDE_TOOL_MATCHER" '{matcher: $matcher} + .' <<<"$entry")
+		hooks=$(jq --arg event "$event" --argjson entry "$entry" '.[$event] = [$entry]' <<<"$hooks")
+	done
+	jq -n --argjson hooks "$hooks" '{permissions: {allow: $ARGS.positional}, hooks: $hooks}' \
+		--args "${CLAUDE_ALLOWED[@]}" >"$file"
+}
+
+claude_ready() {
+	[[ -n $(claude_calls "$2" session-start) ]] && ! trust_pending "$1"
+}
+
+cmd_claude_start() {
+	local name cwd claude id start deadline trusted=0
+	load_env "${1:-}"
+	name=$(claude_name "${2:-}")
+	cwd=$(readlink -f "${3:?claude-start needs a working directory}")
+	[[ -d $cwd && $cwd == "$DIR"/* ]] || die "the working directory $cwd must be a folder inside $DIR"
+	claude=$(command -v claude) || die "claude is not on PATH"
+	require_running
+	assert_isolation
+	mkdir -p "$DIR/claude/calls"
+	[[ ! -f $DIR/claude/$name.id ]] || die "this env already started a session named $name"
+	write_claude_settings
+	id=$(</proc/sys/kernel/random/uuid)
+	printf '%s\n' "$id" >"$DIR/claude/$name.id"
+	env_tmux new-session -d -s "$name" -x 200 -y 50 -c "$cwd" -- env -i "HOME=$HOME" "USER=$(id -un)" \
+		"PATH=/usr/bin:/bin" "SHELL=/usr/bin/bash" "LANG=C.UTF-8" "TERM=xterm-256color" \
+		"XDG_RUNTIME_DIR=$RUNTIME" "$claude" --setting-sources project \
+		--settings "$DIR/claude/settings.json" --session-id "$id" --model haiku
+	deadline=$((SECONDS + CLAUDE_START_TIMEOUT))
+	until claude_ready "$name" "$id"; do
+		claude_alive "$name" || die "session $name exited at start"
+		((SECONDS < deadline)) || die "session $name was not ready in ${CLAUDE_START_TIMEOUT}s: $(claude_screen "$name")"
+		if ((!trusted)) && trust_pending "$name"; then
+			trusted=1
+			press "$name" Down Enter
+		fi
+		sleep 0.5
+	done
+	sleep 2
+	start=$(claude_calls "$id" session-start | tail -n 1)
+	printf 'session %s id %s, SessionStart env: %s\n' "$name" "$id" "$(paste -sd ' ' "${start%.in.json}.env")" >&2
+}
+
+cmd_claude_send() {
+	local name
+	load_env "${1:-}"
+	name=$(claude_name "${2:-}")
+	claude_alive "$name" || die "session $name is not running"
+	clear_dialogs "$name"
+	type_line "$name" "${3:?claude-send needs a text}"
+}
+
+cmd_claude_deny() {
+	local name
+	load_env "${1:-}"
+	name=$(claude_name "${2:-}")
+	claude_alive "$name" || return 0
+	grep -q 'Do you want to proceed?' <<<"$(claude_screen "$name")" || return 0
+	note "session $name asks for a permission; refusing it with Escape"
+	press "$name" Escape
+}
+
+cmd_claude_pane() {
+	local name
+	load_env "${1:-}"
+	name=$(claude_name "${2:-}")
+	claude_alive "$name" || die "session $name is not running"
+	env_tmux capture-pane -p -J -t "=$name:" -S -
+}
+
+cmd_claude_stop() {
+	local name deadline
+	load_env "${1:-}"
+	name=$(claude_name "${2:-}")
+	claude_alive "$name" || return 0
+	clear_dialogs "$name"
+	type_line "$name" /exit
+	deadline=$((SECONDS + CLAUDE_STOP_TIMEOUT))
+	while claude_alive "$name"; do
+		if ((SECONDS >= deadline)); then
+			note "session $name did not exit in ${CLAUDE_STOP_TIMEOUT}s; killing it"
+			env_tmux kill-session -t "=$name"
+			return 0
+		fi
+		sleep 0.5
+	done
+}
+
+cmd_claude_id() {
+	load_paths "${1:-}"
+	claude_id "$(claude_name "${2:-}")"
+}
+
+cmd_claude_calls() {
+	local name
+	load_paths "${1:-}"
+	name=$(claude_name "${2:-}")
+	claude_calls "$(claude_id "$name")" "${3:?claude-calls needs an event}"
+}
+
+cmd_hook() {
+	local event base name vars=()
+	load_env "${1:-}"
+	event=${2:?hook needs an event}
+	[[ $event =~ ^[a-z-]+$ ]] || die "the event '$event' must match ^[a-z-]+\$"
+	require_running
+	assert_isolation
+	mkdir -p "$DIR/claude/calls"
+	base=$DIR/claude/calls/$event-$(date +%s%N)
+	cat >"$base.in.json"
+	for name in CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_ENTRYPOINT; do
+		[[ -v $name ]] && vars+=("$name=${!name}")
+	done
+	[[ ${CLAUDE_CODE_MESSAGING_SOCKET:-} == "$RUNTIME"/* ]] &&
+		vars+=("CLAUDE_CODE_MESSAGING_SOCKET=$CLAUDE_CODE_MESSAGING_SOCKET")
+	printf '%s\n' "${vars[@]}" >"$base.env"
+	env -i "${ISO_ENV[@]}" "${vars[@]}" "${SANDBOX[@]}" selflow claude hook "$event" \
+		<"$base.in.json" >"$base.out.json"
+	cat "$base.out.json"
+}
+
+measure_script() {
+	cat <<'EOF'
+count=$1 work=$2
+for kind in prompt tool; do
+	selflow claude hook "$kind" <"$work/$kind.json" >"$work/$kind.first"
+	for ((i = 0; i < count; i++)); do
+		start=$EPOCHREALTIME
+		selflow claude hook "$kind" <"$work/$kind.json" >/dev/null
+		end=$EPOCHREALTIME
+		printf '%s %s %s\n' "$kind" "$start" "$end"
+	done
+	selflow claude hook "$kind" <"$work/$kind.json" >"$work/$kind.out"
+done
+EOF
+}
+
+cmd_measure_hook() {
+	local count cwd work kind fixtures=$REPO_ROOT/crates/selflow/tests/fixtures/claude
+	load_env "${1:-}"
+	count=${2:-100}
+	cwd=$(readlink -f "${3:-$DIR/home}")
+	[[ $count =~ ^[1-9][0-9]*$ ]] || die "N must be a positive number"
+	require_running
+	assert_isolation
+	work=$DIR/claude/measure
+	mkdir -p "$work"
+	jq -c --arg cwd "$cwd" '.cwd = $cwd' "$fixtures/prompt.json" >"$work/prompt.json"
+	jq -c --arg cwd "$cwd" '.cwd = $cwd' "$fixtures/tool-bash.json" >"$work/tool.json"
+	env -i "${ISO_ENV[@]}" CLAUDE_CODE_SESSION_ATTENDED=1 CLAUDE_CODE_ENTRYPOINT=cli "${SANDBOX[@]}" \
+		bash -c "$(measure_script)" measure "$count" "$work" >"$work/times.txt"
+	for kind in prompt tool; do
+		printf '%s first output: %s\n%s output: %s\n' "$kind" "$(<"$work/$kind.first")" "$kind" "$(<"$work/$kind.out")"
+	done
+	for kind in prompt tool; do
+		awk -v kind="$kind" '$1 == kind { printf "%.3f\n", ($3 - $2) * 1000 }' "$work/times.txt" | sort -n |
+			awk -v kind="$kind" '{ v[NR] = $1 } END {
+				printf "%s: n %d p50 %.2f ms p95 %.2f ms max %.2f ms\n", kind, NR,
+					v[int((NR * 50 + 99) / 100)], v[int((NR * 95 + 99) / 100)], v[NR]
+			}'
+	done
+}
+
+stop_claude_server() {
+	local waited=0
+	[[ -d $DIR/claude ]] || return 0
+	env_tmux kill-server 2>/dev/null || true
+	while our_pid_named claude >/dev/null && ((waited < 100)); do
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+}
+
+remove_claude_projects() {
+	local encoded folder
+	encoded=$(basename "$DIR" | tr -c 'A-Za-z0-9\n' '-')
+	[[ $encoded =~ ^selflow-iso-[A-Za-z0-9]{6}$ ]] || return 0
+	for folder in "$HOME"/.claude/projects/*"$encoded"*; do
+		[[ -d $folder && ! -L $folder ]] || continue
+		rm -rf -- "$folder"
+		printf 'removed %s\n' "$folder" >&2
+	done
+}
+
 main() {
 	local command=${1:-}
 	(($#)) && shift
@@ -627,6 +925,15 @@ main() {
 		["hyprctl"]=cmd_ctl
 		["measure-idle"]=cmd_measure_idle
 		["env"]=cmd_env
+		["claude-start"]=cmd_claude_start
+		["claude-send"]=cmd_claude_send
+		["claude-pane"]=cmd_claude_pane
+		["claude-deny"]=cmd_claude_deny
+		["claude-stop"]=cmd_claude_stop
+		["claude-id"]=cmd_claude_id
+		["claude-calls"]=cmd_claude_calls
+		["hook"]=cmd_hook
+		["measure-hook"]=cmd_measure_hook
 		["_supervise"]=cmd_supervise
 		["_daemon-inner"]=cmd_daemon_inner
 	)

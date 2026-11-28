@@ -16,6 +16,8 @@ The owner's real `selflowd` runs as a user service and their Hyprland session is
 | 1 | isolated `selflowd`, no `selflow-ui` | config saves and clocks, `config status`, notices (recorded in `notifications.log`), lockless shutdowns (`shutdown requested` in `daemon.log`), restarts, exceptions, `report`, idle RSS/CPU |
 | 2 | level 1 + `selflow-ui` inside a compositor backend (default `hyprland`: a nested Hyprland inside a headless mutter, no window anywhere) | the lock screen (screenshots), `selflow unlock`, a frozen or killed lock client, release clients, test locks |
 
+Either level can also run Claude Code sessions against the isolated daemon (agent steps, reminders, denials, inbox messages, hook latency); see "Claude Code sessions" below.
+
 Neither level covers the owner's monitors, their Hyprland config, a TTY switch, a real power-off or their real notification daemon: those stay on the owner's checklist.
 
 ## Quick reference
@@ -36,7 +38,29 @@ bash $ISO measure-idle "$D" 600
 bash $ISO down "$D"
 ```
 
-`bash $ISO` with no arguments prints every command. `scripts/scenario-level1.sh` and `scripts/scenario-level2.sh` are full end-to-end proofs (about 5 minutes each, ending in `PASS`); read them for working examples of every step.
+`bash $ISO` with no arguments prints every command. `up --release` builds and copies the release binaries (use it for latency and idle numbers). `scripts/scenario-level1.sh` and `scripts/scenario-level2.sh` are full end-to-end proofs (about 5 minutes each, ending in `PASS`), and `scripts/scenario-claude.sh` is the Claude Code one (about 10 minutes, level 1, release build); read them for working examples of every step.
+
+## Claude Code sessions
+
+Claude Code is not a Selflow binary and needs the owner's login, so it runs outside the sandbox, in a tmux server private to the env (`tmux -L sfe-<runtime suffix>`), under `env -i` (none of your own session's `CLAUDE_*` variables reach it) with `XDG_RUNTIME_DIR` set to the env's runtime dir, so its inbox socket lands there. It starts with `--setting-sources project --settings $D/claude/settings.json --model haiku`: the owner's user settings, hooks and plugins don't load. That settings file registers `bash isolated-env.sh hook $D <event>` for `SessionStart`, `SessionEnd`, `UserPromptSubmit` and `PreToolUse`, and allows `Write`, `Edit`, `Bash(git status:*)` and `Bash(git commit:*)`; anything else asks for a permission.
+
+```sh
+D=$(bash $ISO up --level 1 --release)
+mkdir -p "$D/home/Workspace/seconv"                    # a session's folder must be inside $D
+bash $ISO claude-start "$D" a "$D/home/Workspace/seconv"   # gets past the trust dialog, waits for SessionStart
+bash $ISO claude-send "$D" a "Use the Write tool to create a file named x.txt"
+bash $ISO claude-pane "$D" a                           # screen and scrollback
+bash $ISO claude-calls "$D" a tool                     # kept hook inputs; outputs sit next to them as .out.json
+bash $ISO claude-deny "$D" a                           # refuses a pending permission prompt (Escape); never approves
+bash $ISO measure-hook "$D" 300 "$D/home/Workspace/seconv"  # p50/p95 of the hook from the Claude fixtures
+bash $ISO claude-stop "$D" a                           # /exit, then waits
+bash $ISO down "$D"                                    # also kills the tmux server and removes the sessions' ~/.claude/projects/ folders
+```
+
+- Every hook call is kept as `$D/claude/calls/<event>-<ns>.in.json`, `.out.json` and `.env`. The hook forwards `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_ENTRYPOINT`, and `CLAUDE_CODE_MESSAGING_SOCKET` only when that socket is inside the env's runtime dir, so the isolated daemon never learns about another session's inbox.
+- `selflow claude install|uninstall` runs only through `bash $ISO run "$D" env CLAUDE_CONFIG_DIR=$D/... selflow claude install`, never against `~/.claude`.
+- What a session still leaves in `~/.claude` after `down`: `session-env/<id>` and `file-history/<id>` folders named after its session id, lines in `history.jsonl` and, very probably, a project entry in `~/.claude.json`, all written by Claude Code itself. Leave them: `history.jsonl` and `~/.claude.json` are shared with the owner's live sessions, and the agent-safety rules let a run remove only its own `~/.claude/projects/` folder.
+- Claude Code's first-run dialogs: the workspace trust dialog defaults to "No, exit" (`claude-start` sends Down, Enter); the "Teach auto mode" picker gets Down, Enter before the next `claude-send`.
 
 ## Driving the CLI
 
@@ -69,4 +93,6 @@ bash $ISO down "$D"
 - About to start a Hyprland or mutter yourself, or to use `hyprctl output create` on the owner's session.
 - A runtime dir under the scratchpad (sockets are capped at 108 bytes; the harness uses `/tmp/sfe.XXXXXX`).
 - `pkill`/`killall` by a bare name, or killing a `bwrap` PID (it doesn't forward signals). Use `down`; it kills only processes carrying this env's runtime dir.
+- About to start `claude` yourself, use `tmux` without `-L` on the env's server, pass `--dangerously-skip-permissions` or `bypassPermissions`, or point a session at the owner's settings: sessions start only through `claude-start`.
+- About to connect to, list or write to a `cc-socks` socket, or to run `bash $ISO hook` from your own shell: only the env's own sessions run the hook.
 - `blocked.log` in the env dir is not empty: something tried to reach systemd or power off. Stop and tell the owner.
