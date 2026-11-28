@@ -50,6 +50,8 @@ devices, rules and data.
 - Let each user pick how strict Selflow is during onboarding (section 8.10).
 - Stay light enough for a laptop with 8 GB of RAM and a Raspberry Pi server (section 15).
 - Run self-hosted, with several users on one server.
+- Keep only the data each feature really needs, on the devices and on the server (owner,
+  2026-11-27). A feature that can work without storing something doesn't store it.
 
 ## 3. Non-goals
 
