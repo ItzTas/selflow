@@ -749,6 +749,9 @@ How the routine works in practice (Claude's call):
   daemon. The builder picks the plugin mechanism (WASM, external processes or something else)
   within the resource budget.
 - Optional two-factor login with TOTP (section 7.1).
+- Trusted contacts over WhatsApp: people the user trusts set off rules with ordinary messages,
+  inside time windows, and can grant time on the locks they caused. Designed in
+  `2026-11-27-selflow-trusted-contacts-design.md`.
 
 ## 12. Tasks and reminders (phase 5)
 
