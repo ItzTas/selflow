@@ -25,6 +25,9 @@ pub enum EventKind {
     ConfigSaved,
     RuleShutdown,
     ExceptionGranted,
+    AgentMessage,
+    AgentDenied,
+    AgentUnattended,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

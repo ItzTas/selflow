@@ -557,6 +557,15 @@ fn report_entry(event: &Event) -> ReportEntry {
         EventKind::Shutdown => ("report-shutdown".to_owned(), &["label"]),
         EventKind::RuleShutdown => ("report-rule-shutdown".to_owned(), &["label"]),
         EventKind::ExceptionGranted => exception_report(&detail),
+        EventKind::AgentMessage => (
+            format!("report-agent-message-{}", detail_text(&detail, "how")),
+            AGENT_ARGS,
+        ),
+        EventKind::AgentDenied => (
+            format!("report-agent-denied-{}", detail_text(&detail, "tool")),
+            AGENT_ARGS,
+        ),
+        EventKind::AgentUnattended => ("report-agent-unattended".to_owned(), AGENT_ARGS),
         EventKind::ConfigSaved => match &detail["kind"] {
             Value::String(kind) => (format!("report-config-saved-{kind}"), &[]),
             _ => ("report-config-saved".to_owned(), &["now", "waiting"]),
@@ -575,6 +584,12 @@ fn report_entry(event: &Event) -> ReportEntry {
                 .collect(),
         },
     }
+}
+
+const AGENT_ARGS: &[&str] = &["label", "level", "folder"];
+
+fn detail_text<'d>(detail: &'d Value, name: &str) -> &'d str {
+    detail[name].as_str().unwrap_or_default()
 }
 
 fn exception_report(detail: &Value) -> (String, &'static [&'static str]) {

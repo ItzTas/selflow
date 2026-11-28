@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use jiff::civil::date;
 use selflow::render::{render_config_status, render_errors, render_report, render_saved};
 use selflow_i18n::language::Language;
-use selflow_i18n::localizer::Localizer;
+use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::{
     ChangeView, ConfigStatusView, MessageView, PositionedMessage, ReportEntry, ReportView,
 };
@@ -143,4 +143,33 @@ fn renders_events_at_their_time_and_the_waiting_changes_on_their_dates() {
          Changes still waiting:\n\
          Fri 20 Nov, 10:00  For the rule `bedtime`, each day allows more extensions on thu: 1 → 3."
     );
+}
+
+#[test]
+fn every_agent_report_line_renders_in_both_languages() {
+    let ids = [
+        "report-agent-message-inbox",
+        "report-agent-message-prompt",
+        "report-agent-message-missed",
+        "report-agent-denied-edit",
+        "report-agent-denied-shell",
+        "report-agent-unattended",
+    ];
+    let args = [
+        ("label", "Bedtime"),
+        ("level", "save-only"),
+        ("folder", "~/w"),
+    ];
+    for (language, level) in [(Language::En, "Save only"), (Language::PtBr, "Só salvar")] {
+        let localizer = Localizer::new(language);
+        for id in ids {
+            let text = localizer.text(
+                id,
+                &args.map(|(name, value)| (name, Arg::Text(value.to_owned()))),
+            );
+            assert!(text.contains("Bedtime"), "{id}: {text}");
+            assert!(text.contains("~/w"), "{id}: {text}");
+            assert!(text.contains(level), "{id}: {text}");
+        }
+    }
 }

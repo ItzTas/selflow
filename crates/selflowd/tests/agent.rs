@@ -1,7 +1,7 @@
 mod support;
 
 use jiff::ZonedDateTime;
-use selflow_protocol::ipc::{AgentSession, Request, Response, ToolCall, ToolVerdict};
+use selflow_protocol::ipc::{AgentSession, MessageView, Request, Response, ToolCall, ToolVerdict};
 use selflowd::ipc::handle;
 use support::{AgentRig, agent_rig, agent_rig_on, at, no_jitter, session};
 
@@ -37,6 +37,38 @@ fn verdict(rig: &AgentRig, session: AgentSession, tool: ToolCall) -> ToolVerdict
     match handle(Request::AgentTool { session, tool }, &rig.shared) {
         Response::AgentVerdict(verdict) => verdict,
         other => panic!("expected a verdict, got {other:?}"),
+    }
+}
+
+fn report(rig: &AgentRig) -> Vec<MessageView> {
+    let request = Request::Report {
+        logical_date: Some(jiff::civil::date(2026, 11, 19)),
+    };
+    match handle(request, &rig.shared) {
+        Response::Report(view) => view
+            .entries
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect(),
+        other => panic!("expected a report, got {other:?}"),
+    }
+}
+
+fn agent_lines(rig: &AgentRig) -> Vec<MessageView> {
+    report(rig)
+        .into_iter()
+        .filter(|message| message.id.starts_with("report-agent-"))
+        .collect()
+}
+
+fn line(id: &str, level: &str, folder: &str) -> MessageView {
+    MessageView {
+        id: id.to_owned(),
+        args: vec![
+            ("label".to_owned(), "bedtime".to_owned()),
+            ("level".to_owned(), level.to_owned()),
+            ("folder".to_owned(), folder.to_owned()),
+        ],
     }
 }
 
@@ -261,4 +293,93 @@ fn a_session_whose_inbox_is_gone_is_dropped() {
     let other = session("2", "/home/user/b");
     handle(Request::AgentSessionStarted(other.clone()), &rig.shared);
     assert_eq!(rig.shared.agents.sessions(), vec![other]);
+}
+
+#[test]
+fn a_message_delivered_with_a_prompt_is_reported() {
+    let rig = ticked(&[LIGHT], at(19, 22, 10));
+    prompt(&rig, seconv());
+    prompt(&rig, seconv());
+    assert_eq!(
+        agent_lines(&rig),
+        vec![line(
+            "report-agent-message-prompt",
+            "light",
+            "~/Workspace/seconv"
+        )]
+    );
+}
+
+#[test]
+fn a_denial_is_reported_without_the_command() {
+    let rig = ticked(&["before = \"60m\"\nlevel = \"save-only\""], at(19, 22, 10));
+    verdict(&rig, seconv(), shell("rm -rf secret-folder"));
+    rig.clock.set(at(19, 22, 11));
+    verdict(&rig, seconv(), ToolCall::Edit);
+    let lines = agent_lines(&rig);
+    assert_eq!(
+        lines,
+        vec![
+            line(
+                "report-agent-denied-shell",
+                "save-only",
+                "~/Workspace/seconv"
+            ),
+            line(
+                "report-agent-denied-edit",
+                "save-only",
+                "~/Workspace/seconv"
+            ),
+        ]
+    );
+    assert!(!format!("{lines:?}").contains("secret-folder"));
+}
+
+#[test]
+fn a_session_that_ends_first_is_reported_as_missed() {
+    let rig = ticked(&[LIGHT], at(19, 22, 10));
+    let quiet = session("1", "/home/user/a");
+    handle(Request::AgentSessionStarted(quiet.clone()), &rig.shared);
+    handle(
+        Request::AgentSessionEnded {
+            agent: quiet.agent,
+            id: quiet.id,
+        },
+        &rig.shared,
+    );
+    let served = seconv();
+    prompt(&rig, served.clone());
+    handle(
+        Request::AgentSessionEnded {
+            agent: served.agent,
+            id: served.id,
+        },
+        &rig.shared,
+    );
+    assert_eq!(
+        agent_lines(&rig),
+        vec![
+            line("report-agent-message-missed", "light", "~/a"),
+            line("report-agent-message-prompt", "light", "~/Workspace/seconv"),
+        ]
+    );
+}
+
+#[test]
+fn an_unattended_run_during_a_level_is_reported_once() {
+    let rig = ticked(&["before = \"60m\"\nlevel = \"save-only\""], at(19, 22, 10));
+    let unattended = AgentSession {
+        attended: false,
+        ..seconv()
+    };
+    prompt(&rig, unattended.clone());
+    prompt(&rig, unattended);
+    assert_eq!(
+        agent_lines(&rig),
+        vec![line(
+            "report-agent-unattended",
+            "save-only",
+            "~/Workspace/seconv"
+        )]
+    );
 }

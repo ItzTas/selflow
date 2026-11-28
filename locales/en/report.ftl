@@ -14,3 +14,45 @@ report-config-saved-tighten = You saved a change that makes the rules firmer. It
 report-config-saved-loosen = You saved a change that loosens the rules. It waits a while before it applies.
 report-config-saved-neutral = You saved your settings.
 report-config-saved = You saved your settings (changes applied right away: { $now }, changes waiting: { $waiting }).
+report-agent-message-inbox =
+    Selflow sent the { $label } message to the Claude Code session in { $folder } through its inbox. Level: { $level ->
+        [message] Message only
+        [light] Light tasks only
+        [no-new-work] No new work
+       *[save-only] Save only
+    }.
+report-agent-message-prompt =
+    Selflow gave the { $label } message to the Claude Code session in { $folder } with its next prompt. Level: { $level ->
+        [message] Message only
+        [light] Light tasks only
+        [no-new-work] No new work
+       *[save-only] Save only
+    }.
+report-agent-message-missed =
+    The Claude Code session in { $folder } ended before it got the { $label } message. Level: { $level ->
+        [message] Message only
+        [light] Light tasks only
+        [no-new-work] No new work
+       *[save-only] Save only
+    }.
+report-agent-denied-edit =
+    Selflow denied a file edit in the Claude Code session in { $folder } during the { $label } rule. Level: { $level ->
+        [message] Message only
+        [light] Light tasks only
+        [no-new-work] No new work
+       *[save-only] Save only
+    }.
+report-agent-denied-shell =
+    Selflow denied a shell command in the Claude Code session in { $folder } during the { $label } rule. Level: { $level ->
+        [message] Message only
+        [light] Light tasks only
+        [no-new-work] No new work
+       *[save-only] Save only
+    }.
+report-agent-unattended =
+    An unattended Claude Code session started in { $folder } during the { $label } rule. Level: { $level ->
+        [message] Message only
+        [light] Light tasks only
+        [no-new-work] No new work
+       *[save-only] Save only
+    }.

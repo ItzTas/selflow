@@ -21,7 +21,7 @@ const CHANGE_KINDS: [(ChangeKind, &str); 3] = [
     (ChangeKind::Neutral, "neutral"),
 ];
 
-const EVENT_KINDS: [(EventKind, &str); 7] = [
+const EVENT_KINDS: [(EventKind, &str); 10] = [
     (EventKind::LockStarted, "lock_started"),
     (EventKind::LockEnded, "lock_ended"),
     (EventKind::ExtensionGranted, "extension_granted"),
@@ -29,6 +29,9 @@ const EVENT_KINDS: [(EventKind, &str); 7] = [
     (EventKind::ConfigSaved, "config_saved"),
     (EventKind::RuleShutdown, "rule_shutdown"),
     (EventKind::ExceptionGranted, "exception_granted"),
+    (EventKind::AgentMessage, "agent_message"),
+    (EventKind::AgentDenied, "agent_denied"),
+    (EventKind::AgentUnattended, "agent_unattended"),
 ];
 
 fn change_kind_text(kind: ChangeKind) -> &'static str {

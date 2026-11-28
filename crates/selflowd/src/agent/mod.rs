@@ -1,4 +1,5 @@
 mod constants;
+mod events;
 mod types;
 
 use std::collections::HashMap;
@@ -16,7 +17,8 @@ use tokio::sync::{Notify, watch};
 use crate::engine::clock_time;
 use crate::store::Store;
 
-use constants::{COMMAND_SEPARATOR, PARAGRAPH_BREAK, PROMPT_DELIVERY};
+use constants::{COMMAND_SEPARATOR, MISSED_DELIVERY, PARAGRAPH_BREAK, PROMPT_DELIVERY};
+use events::{Origin, record};
 pub use types::{AgentError, Directives};
 
 type SessionKey = (AgentKind, String);
@@ -46,18 +48,22 @@ impl AgentHub {
         }
     }
 
-    pub fn started(&self, session: AgentSession, _now: &ZonedDateTime) -> Response {
-        self.register(session);
+    pub fn started(&self, session: AgentSession, now: &ZonedDateTime) -> Response {
+        self.register(session, now.timestamp());
         Response::AgentNoted
     }
 
-    pub fn ended(&self, agent: AgentKind, id: &str, _now: &ZonedDateTime) -> Response {
-        guarded(&self.sessions).remove(&(agent, id.to_owned()));
+    pub fn ended(&self, agent: AgentKind, id: &str, now: &ZonedDateTime) -> Response {
+        let ended = guarded(&self.sessions).remove(&(agent, id.to_owned()));
+        if let Some(session) = ended {
+            let steps = self.directives.borrow().steps.clone();
+            self.claim_unsent(&session, &steps, MISSED_DELIVERY, now.timestamp());
+        }
         Response::AgentNoted
     }
 
     pub fn prompt(&self, session: AgentSession, now: &ZonedDateTime) -> Response {
-        self.register(session.clone());
+        self.register(session.clone(), now.timestamp());
         let directives = self.directives.borrow().clone();
         let claimed = self.claim_unsent(
             &session,
@@ -98,6 +104,15 @@ impl AgentHub {
         else {
             return Response::AgentVerdict(ToolVerdict::Allow);
         };
+        let cwd = lexically_normal(&session.cwd);
+        let origin = Origin {
+            active: step,
+            session: &session,
+            cwd: &cwd,
+            home: self.home.as_deref(),
+            at: now.timestamp(),
+        };
+        record(&guarded(&self.store), &origin.denied(tool_name(&tool)));
         let reason = self.with_texts(&directives, now.time_zone(), |texts| texts.denied(step));
         Response::AgentVerdict(ToolVerdict::Deny { reason })
     }
@@ -110,13 +125,36 @@ impl AgentHub {
         &self.changed
     }
 
-    fn register(&self, session: AgentSession) {
+    fn register(&self, session: AgentSession, at: Timestamp) {
+        self.note_unattended(&session, at);
         let key = (session.agent, session.id.clone());
         let mut sessions = guarded(&self.sessions);
         sessions.insert(key.clone(), session);
         sessions.retain(|known, session| *known == key || inbox_present(session));
         drop(sessions);
         self.changed.notify_one();
+    }
+
+    fn note_unattended(&self, session: &AgentSession, at: Timestamp) {
+        if session.attended {
+            return;
+        }
+        let steps = self.directives.borrow().steps.clone();
+        let cwd = lexically_normal(&session.cwd);
+        let store = guarded(&self.store);
+        for active in steps
+            .iter()
+            .filter(|active| covers(&active.step, &cwd, self.home.as_deref()))
+        {
+            let origin = Origin {
+                active,
+                session,
+                cwd: &cwd,
+                home: self.home.as_deref(),
+                at,
+            };
+            record(&store, &origin.unattended());
+        }
     }
 
     fn claim_unsent(
@@ -139,7 +177,20 @@ impl AgentHub {
         let store = guarded(&self.store);
         covering
             .into_iter()
-            .filter(|active| claimed_now(&store, active, &session.id, at, how))
+            .filter(|active| {
+                if !claimed_now(&store, active, &session.id, at, how) {
+                    return false;
+                }
+                let origin = Origin {
+                    active,
+                    session,
+                    cwd: &cwd,
+                    home: self.home.as_deref(),
+                    at,
+                };
+                record(&store, &origin.message(how));
+                true
+            })
             .cloned()
             .collect()
     }
@@ -184,6 +235,14 @@ fn tool_allowed(tool: &ToolCall, allowed: &[String]) -> bool {
         ToolCall::Edit => false,
         ToolCall::Shell { command } => command_allowed(command, allowed),
         ToolCall::Other => true,
+    }
+}
+
+fn tool_name(tool: &ToolCall) -> &'static str {
+    match tool {
+        ToolCall::Edit => "edit",
+        ToolCall::Shell { .. } => "shell",
+        ToolCall::Other => "other",
     }
 }
 
