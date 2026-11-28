@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 
 use selflow_platform::service::{daemon_binary, restart_daemon};
 use selflow_platform::transport::Stream;
-use selflow_protocol::ipc::{HANDSHAKE_TIMEOUT, MessageReader, PROTOCOL_VERSION};
+use selflow_protocol::ipc::{
+    HANDSHAKE_TIMEOUT, MessageReader, PROTOCOL_VERSION, PROTOCOL_VERSION_FLAG,
+};
 use tokio::time::sleep;
 
 use super::hello;
 use super::types::{ClientError, DaemonService, Hello, RestartOnce, Systemd};
 
-const PROTOCOL_VERSION_FLAG: &str = "--protocol-version";
 const EXIT_POLL: Duration = Duration::from_millis(10);
 const RECONNECT_POLL: Duration = Duration::from_millis(100);
 const RECONNECT_WAIT: Duration = Duration::from_secs(10);
