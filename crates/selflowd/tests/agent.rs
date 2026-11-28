@@ -383,3 +383,24 @@ fn an_unattended_run_during_a_level_is_reported_once() {
         )]
     );
 }
+
+#[test]
+fn an_unattended_run_a_step_governs_is_reported_as_a_message() {
+    let rig = ticked(
+        &["before = \"60m\"\nlevel = \"save-only\"\nunattended = true"],
+        at(19, 22, 10),
+    );
+    let unattended = AgentSession {
+        attended: false,
+        ..seconv()
+    };
+    prompt(&rig, unattended);
+    assert_eq!(
+        agent_lines(&rig),
+        vec![line(
+            "report-agent-message-prompt",
+            "save-only",
+            "~/Workspace/seconv"
+        )]
+    );
+}

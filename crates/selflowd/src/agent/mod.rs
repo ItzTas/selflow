@@ -144,6 +144,7 @@ impl AgentHub {
         let store = guarded(&self.store);
         for active in steps
             .iter()
+            .filter(|active| !active.step.unattended)
             .filter(|active| covers(&active.step, &cwd, self.home.as_deref()))
         {
             let origin = Origin {
