@@ -10,9 +10,10 @@
 - When the shell isn't proto-activated, run cargo through `proto exec rust -- cargo ...`; the stable rustup toolchain is older than the pinned one.
 
 <!-- prerelease:start -->
+<!-- prerelease:remove-when: first version tag or first long-lived development branch besides main -->
 ## No release or users yet
 
 Selflow has no release and no users besides the owner, who runs it on their own machine. Large rewrites and deletions are fine: delete or reshape crates, modules, CLI commands, config fields, IPC messages and the Claude Code hooks without a compatibility layer, and change the SQLite schema by editing the migration in `crates/selflowd/src/store/migrations.rs` in place instead of appending a new one; delete `$XDG_STATE_HOME/selflow/selflow.db` to start clean afterwards. The IPC version handshake still applies, since a running daemon and fresh clients can disagree after any build. Don't keep transition code, and don't drop a change because it breaks the owner's local state. Pick the best solution, not the one that breaks the least.
 
-**Remove this section at the first release.** From then on, applied migrations no longer change and every schema change goes into a new migration.
+**Remove this section with the first version tag or the first long-lived development branch besides `main`.** From then on, applied migrations no longer change and every schema change goes into a new migration.
 <!-- prerelease:end -->
