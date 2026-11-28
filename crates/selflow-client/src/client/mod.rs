@@ -1,12 +1,15 @@
 mod types;
 
+use std::io::{self, ErrorKind};
 use std::path::Path;
 
 use selflow_platform::transport::{Stream, connect};
 use selflow_protocol::ipc::{
-    MessageReader, Request, Response, message_reader, read_message, write_message,
+    HANDSHAKE_TIMEOUT, MessageReader, PROTOCOL_VERSION, Request, Response, hello_as_client,
+    message_reader, read_message, write_message,
 };
 use tokio::runtime::Builder;
+use tokio::time::timeout;
 
 pub use types::{Client, ClientError, LockFeed};
 
@@ -47,8 +50,27 @@ pub async fn exchange(path: &Path, request: &Request) -> Result<Response, Client
 }
 
 async fn open(path: &Path) -> Result<MessageReader<Stream>, ClientError> {
-    let stream = connect(path).await.map_err(|_| ClientError::Unreachable)?;
+    let mut stream = connect(path).await.map_err(|_| ClientError::Unreachable)?;
+    let running = match timeout(HANDSHAKE_TIMEOUT, hello_as_client(&mut stream)).await {
+        Ok(Ok(version)) => Some(version),
+        Ok(Err(error)) if is_not_a_hello(&error) => None,
+        Ok(Err(error)) => return Err(ClientError::Protocol(error)),
+        Err(_) => None,
+    };
+    if running != Some(PROTOCOL_VERSION) {
+        return Err(ClientError::VersionMismatch {
+            running,
+            installed: None,
+        });
+    }
     Ok(message_reader(stream))
+}
+
+fn is_not_a_hello(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::InvalidData | ErrorKind::UnexpectedEof
+    )
 }
 
 async fn ask(

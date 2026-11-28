@@ -20,4 +20,9 @@ pub enum ClientError {
     Unreachable,
     #[error("talking to the daemon failed: {0}")]
     Protocol(#[source] io::Error),
+    #[error("the daemon and this program speak different protocol versions")]
+    VersionMismatch {
+        running: Option<u32>,
+        installed: Option<u32>,
+    },
 }

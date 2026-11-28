@@ -9,6 +9,7 @@ use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
 use selflow_i18n::catalog::default_config;
 use selflow_i18n::language::Language;
+use selflow_platform::transport::Stream;
 use selflow_protocol::ipc::{
     ChallengeView, ChangeView, ExtensionSource, MessageView, RefusalView, ReportEntry, Request,
     Response,
@@ -18,10 +19,12 @@ use selflowd::ipc::handle;
 use selflowd::store::{Event, EventKind, Store};
 use serde_json::{Value, json};
 use support::{
-    Call, LIGHTS_OUT, REMINDER, TestClock, VALID, at, brt, engine_on, m1_store, no_jitter,
+    Call, LIGHTS_OUT, REMINDER, TestClock, VALID, at, brt, engine_on, launch, m1_store, no_jitter,
     sample_view, save_at, save_text, setup, shared_over, start, start_engine_with, start_over,
     start_with, start_with_config, subscribe,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::watch;
 
 fn with_weekend() -> String {
     format!(
@@ -334,6 +337,61 @@ async fn a_lock_subscriber_gets_the_view_then_the_end() {
     assert_eq!(subscriber.next().await, Some(Response::Lock(sample_view())));
     views.send(None).unwrap();
     assert_eq!(subscriber.next().await, Some(Response::LockEnded));
+}
+
+async fn raw_connection() -> (tempfile::TempDir, Stream) {
+    let (_, views) = watch::channel(None);
+    let (dir, stream, _shared, _screen) = launch(
+        Store::open_in_memory().unwrap(),
+        Arc::new(TestClock::new(at(19, 23, 0))),
+        views,
+        PowerMode::Real,
+        Language::En,
+    )
+    .await;
+    (dir, stream)
+}
+
+async fn is_closed_within(stream: &mut Stream, secs: u64) -> bool {
+    let mut buffer = [0; 8];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(secs),
+        stream.read(&mut buffer),
+    )
+    .await;
+    matches!(read, Ok(Ok(0)))
+}
+
+#[tokio::test]
+async fn a_client_on_another_version_is_answered_then_closed() {
+    let (_dir, mut stream) = raw_connection().await;
+    stream.write_all(b"SLFW\x02\0\0\0").await.unwrap();
+    let mut answer = [0; 8];
+    stream.read_exact(&mut answer).await.unwrap();
+    assert_eq!(&answer, b"SLFW\x01\0\0\0");
+    assert!(is_closed_within(&mut stream, 1).await);
+}
+
+#[tokio::test]
+async fn a_silent_connection_is_closed_after_the_handshake_timeout() {
+    let (_dir, mut stream) = raw_connection().await;
+    assert!(is_closed_within(&mut stream, 3).await);
+}
+
+#[tokio::test]
+async fn a_partial_hello_is_closed_after_the_handshake_timeout() {
+    let (_dir, mut stream) = raw_connection().await;
+    stream.write_all(b"SLF").await.unwrap();
+    assert!(is_closed_within(&mut stream, 3).await);
+}
+
+#[tokio::test]
+async fn a_subscriber_stays_open_past_the_handshake_timeout() {
+    let (mut subscriber, views) = subscribe().await;
+    assert_eq!(subscriber.next().await, Some(Response::LockEnded));
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+    views.send(Some(sample_view())).unwrap();
+    assert_eq!(subscriber.next().await, Some(Response::Lock(sample_view())));
 }
 
 #[tokio::test]

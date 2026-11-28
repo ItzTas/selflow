@@ -13,7 +13,9 @@ use selflow::editor::Editor;
 use selflow::prompt::Prompt;
 use selflow_client::client::Client;
 use selflow_platform::transport::listen;
-use selflow_protocol::ipc::{Request, Response, message_reader, read_message, write_message};
+use selflow_protocol::ipc::{
+    Request, Response, hello_as_daemon, message_reader, read_message, write_message,
+};
 use tempfile::TempDir;
 
 pub fn brt() -> TimeZone {
@@ -150,7 +152,10 @@ async fn answer(
 ) {
     let listener = listen(path).unwrap();
     listening.send(()).unwrap();
-    while let Ok(stream) = listener.accept().await {
+    while let Ok(mut stream) = listener.accept().await {
+        if hello_as_daemon(&mut stream).await.is_err() {
+            continue;
+        }
         let mut stream = message_reader(stream);
         while let Ok(Some(request)) = read_message::<Request>(&mut stream).await {
             requests.lock().unwrap().push(request);

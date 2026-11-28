@@ -4,7 +4,7 @@ use jiff::Timestamp;
 use jiff::civil::date;
 use selflow::render::{render_config_status, render_errors, render_report, render_saved};
 use selflow_i18n::language::Language;
-use selflow_i18n::localizer::Localizer;
+use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::{
     ChangeView, ConfigStatusView, MessageView, PositionedMessage, ReportEntry, ReportView,
 };
@@ -143,4 +143,19 @@ fn renders_events_at_their_time_and_the_waiting_changes_on_their_dates() {
          Changes still waiting:\n\
          Fri 20 Nov, 10:00  For the rule `bedtime`, each day allows more extensions on thu: 1 → 3."
     );
+}
+
+#[test]
+fn the_version_mismatch_message_names_each_version() {
+    let args = [
+        ("client", Arg::Text("1".into())),
+        ("running", Arg::Text("?".into())),
+        ("installed", Arg::Text("2".into())),
+    ];
+    for language in [Language::En, Language::PtBr] {
+        let out = Localizer::new(language).text("cli-version-mismatch", &args);
+        assert!(out.contains('1'), "{out}");
+        assert!(out.contains('?'), "{out}");
+        assert!(out.contains('2'), "{out}");
+    }
 }

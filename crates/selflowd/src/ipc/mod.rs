@@ -6,10 +6,12 @@ use std::sync::Arc;
 
 use selflow_platform::transport::{Listener, Stream};
 use selflow_protocol::ipc::{
-    LockView, MessageReader, Request, message_reader, read_message, write_message,
+    HANDSHAKE_TIMEOUT, LockView, MessageReader, PROTOCOL_VERSION, Request, hello_as_daemon,
+    message_reader, read_message, write_message,
 };
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
+use tokio::time::timeout;
 
 pub use handlers::handle;
 use handlers::lock_state;
@@ -18,11 +20,27 @@ pub use types::{IpcError, Shared};
 pub async fn serve(listener: Listener, shared: Arc<Shared>) -> Result<(), IpcError> {
     loop {
         let stream = listener.accept().await?;
-        tokio::spawn(converse(message_reader(stream), Arc::clone(&shared)));
+        tokio::spawn(converse(stream, Arc::clone(&shared)));
     }
 }
 
-async fn converse(mut stream: MessageReader<Stream>, shared: Arc<Shared>) {
+async fn converse(mut stream: Stream, shared: Arc<Shared>) {
+    match timeout(HANDSHAKE_TIMEOUT, hello_as_daemon(&mut stream)).await {
+        Ok(Ok(PROTOCOL_VERSION)) => {}
+        Ok(Ok(version)) => {
+            tracing::debug!(version, "closing a connection on another protocol version");
+            return;
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(%error, "closing a connection after a bad hello");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!("closing a connection that never finished its hello");
+            return;
+        }
+    }
+    let mut stream = message_reader(stream);
     loop {
         let request = match read_message::<Request>(&mut stream).await {
             Ok(Some(request)) => request,

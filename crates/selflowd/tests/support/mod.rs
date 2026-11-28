@@ -19,7 +19,8 @@ use selflow_core::versions::{plan_save, stored_changes};
 use selflow_i18n::language::Language;
 use selflow_platform::transport::{Stream, connect, listen};
 use selflow_protocol::ipc::{
-    LockView, MessageReader, Request, Response, message_reader, read_message, write_message,
+    LockView, MessageReader, PROTOCOL_VERSION, Request, Response, hello_as_client, message_reader,
+    read_message, write_message,
 };
 use selflowd::clock::Clock;
 use selflowd::enforcer::{PowerMode, ScreenControl};
@@ -419,7 +420,7 @@ pub async fn start_with(
     let (dir, stream, shared, screen) =
         launch(store, clock.clone(), views, power, Language::En).await;
     let client = TestClient {
-        stream: tokio::sync::Mutex::new(message_reader(stream)),
+        stream: tokio::sync::Mutex::new(greeted(stream).await),
         screen,
         _dir: dir,
     };
@@ -451,7 +452,7 @@ pub async fn subscribe() -> (Subscriber, watch::Sender<Option<LockView>>) {
         Language::En,
     )
     .await;
-    let mut stream = message_reader(stream);
+    let mut stream = greeted(stream).await;
     write_message(stream.get_mut(), &Request::SubscribeLock)
         .await
         .unwrap();
@@ -468,14 +469,20 @@ pub async fn start_over(
     let (dir, stream, shared, screen) =
         launch(store, clock.clone(), views, PowerMode::Real, env_language).await;
     let client = TestClient {
-        stream: tokio::sync::Mutex::new(message_reader(stream)),
+        stream: tokio::sync::Mutex::new(greeted(stream).await),
         screen,
         _dir: dir,
     };
     (client, shared, clock)
 }
 
-async fn launch(
+pub async fn greeted(mut stream: Stream) -> MessageReader<Stream> {
+    let version = hello_as_client(&mut stream).await.unwrap();
+    assert_eq!(version, PROTOCOL_VERSION);
+    message_reader(stream)
+}
+
+pub async fn launch(
     store: Store,
     clock: Arc<dyn Clock>,
     views: watch::Receiver<Option<LockView>>,

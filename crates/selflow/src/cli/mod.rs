@@ -6,7 +6,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use selflow_i18n::language::Language;
-use selflow_i18n::localizer::Localizer;
+use selflow_i18n::localizer::{Arg, Localizer};
+use selflow_protocol::ipc::PROTOCOL_VERSION;
 
 use crate::render::message_text;
 
@@ -44,13 +45,29 @@ fn error_text(localizer: &Localizer, error: &CliError) -> String {
         CliError::Editor(_) => "cli-editor-failed",
         CliError::UnexpectedResponse => "cli-unexpected-response",
         CliError::Daemon(message) => return message_text(localizer, message),
+        CliError::VersionMismatch { running, installed } => {
+            return localizer.text(
+                "cli-version-mismatch",
+                &[
+                    ("client", Arg::Text(PROTOCOL_VERSION.to_string())),
+                    ("running", Arg::Text(version_text(*running))),
+                    ("installed", Arg::Text(version_text(*installed))),
+                ],
+            );
+        }
     };
     localizer.text(id, &[])
 }
 
+fn version_text(version: Option<u32>) -> String {
+    version.map_or_else(|| "?".to_owned(), |version| version.to_string())
+}
+
 fn error_code(error: &CliError) -> u8 {
     match error {
-        CliError::DaemonUnreachable | CliError::NoRuntimeDir => 2,
+        CliError::DaemonUnreachable | CliError::NoRuntimeDir | CliError::VersionMismatch { .. } => {
+            2
+        }
         _ => 1,
     }
 }

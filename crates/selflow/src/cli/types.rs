@@ -54,6 +54,11 @@ pub enum CliError {
     UnexpectedResponse,
     #[error("the daemon reported an error")]
     Daemon(MessageView),
+    #[error("the Selflow programs don't match")]
+    VersionMismatch {
+        running: Option<u32>,
+        installed: Option<u32>,
+    },
 }
 
 impl From<ClientError> for CliError {
@@ -61,6 +66,9 @@ impl From<ClientError> for CliError {
         match error {
             ClientError::Unreachable => CliError::DaemonUnreachable,
             ClientError::Protocol(source) => CliError::Protocol(source),
+            ClientError::VersionMismatch { running, installed } => {
+                CliError::VersionMismatch { running, installed }
+            }
         }
     }
 }

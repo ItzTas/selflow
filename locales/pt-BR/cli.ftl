@@ -3,6 +3,7 @@ cli-no-runtime-dir = O Selflow não encontrou sua pasta de execução. Confira s
 cli-protocol-error = A conversa com o Selflow foi interrompida. Nada foi alterado.
 cli-editor-failed = Seu editor não terminou direito, então nada foi salvo.
 cli-unexpected-response = O Selflow respondeu de um jeito que este comando não entende.
+cli-version-mismatch = Os programas do Selflow não combinam. Este comando usa o protocolo { $client }, o daemon em execução usa { $running } e o instalado usa { $installed }. Reinstale o Selflow para corrigir: make install
 cli-error-line = linha { $line }, coluna { $column }: { $text }
 cli-edit-again = Editar de novo? [S/n]
 cli-config-unchanged = Nada mudou, então nada foi salvo.

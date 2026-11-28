@@ -3,6 +3,7 @@ cli-no-runtime-dir = Selflow couldn't find your runtime folder. Check that XDG_R
 cli-protocol-error = The conversation with Selflow was interrupted. Nothing was changed.
 cli-editor-failed = Your editor didn't finish cleanly, so nothing was saved.
 cli-unexpected-response = Selflow answered in a way this command doesn't understand.
+cli-version-mismatch = The Selflow programs don't match. This command uses protocol { $client }, the running daemon uses { $running } and the installed one uses { $installed }. Reinstall Selflow to fix it: make install
 cli-error-line = line { $line }, column { $column }: { $text }
 cli-edit-again = Edit again? [Y/n]
 cli-config-unchanged = Nothing changed, so nothing was saved.

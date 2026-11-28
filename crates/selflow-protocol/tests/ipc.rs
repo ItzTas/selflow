@@ -2,9 +2,11 @@ use jiff::civil::Date;
 use jiff::{SignedDuration, Timestamp};
 use selflow_protocol::ipc::{
     ChallengeView, ChangeView, ConfigStatusView, ExtensionSource, LockView, MAX_FRAME_BYTES,
-    MessageView, PositionedMessage, RefusalView, ReportEntry, ReportView, Request, Response,
-    StatusView, message_reader, read_message, write_message,
+    MessageView, PROTOCOL_VERSION, PositionedMessage, RefusalView, ReportEntry, ReportView,
+    Request, Response, StatusView, hello_as_client, hello_as_daemon, message_reader, read_message,
+    write_message,
 };
+use tokio::io::AsyncWriteExt;
 
 fn at(seconds: i64) -> Timestamp {
     Timestamp::from_second(seconds).unwrap()
@@ -209,5 +211,25 @@ async fn rejects_bytes_that_are_not_a_message() {
 
 #[test]
 fn changing_the_wire_format_needs_a_new_protocol_version() {
-    assert_eq!(encoded_hex(), include_str!("wire/v1.hex"));
+    assert_eq!(
+        (PROTOCOL_VERSION, encoded_hex().as_str()),
+        (1, include_str!("wire/v1.hex"))
+    );
+}
+
+#[tokio::test]
+async fn a_hello_round_trip_returns_each_sides_version() {
+    let (mut client, mut daemon) = tokio::io::duplex(64);
+    let (from_daemon, from_client) =
+        tokio::join!(hello_as_client(&mut client), hello_as_daemon(&mut daemon));
+    assert_eq!(from_daemon.unwrap(), 1);
+    assert_eq!(from_client.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_hello_with_another_magic_is_refused() {
+    let (mut client, mut daemon) = tokio::io::duplex(64);
+    client.write_all(b"JSON\x01\0\0\0").await.unwrap();
+    let error = hello_as_daemon(&mut daemon).await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
