@@ -22,6 +22,7 @@ pub use model::{ExtensionArea, FormError, LockEffect, LockEvent, LockModel, Scre
 const TICK: Duration = Duration::from_secs(1);
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+const VERSION_MISMATCH_EXIT: i32 = 3;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
@@ -184,12 +185,28 @@ fn daemon_events(socket: PathBuf) -> impl Stream<Item = Message> {
     iced::stream::channel(8, async move |mut output: mpsc::Sender<Message>| {
         loop {
             if let Err(error) = follow_lock(&socket, &mut output).await {
+                exit_on_unfixable(&error);
                 tracing::debug!(%error, "the daemon connection ended");
             }
             let _ = output.send(Message::Lock(LockEvent::Disconnected)).await;
             tokio::time::sleep(RECONNECT_DELAY).await;
         }
     })
+}
+
+pub fn lock_exit_code(error: &ClientError) -> Option<i32> {
+    matches!(error, ClientError::VersionMismatch { .. }).then_some(VERSION_MISMATCH_EXIT)
+}
+
+fn exit_on_unfixable(error: &ClientError) {
+    let Some(code) = lock_exit_code(error) else {
+        return;
+    };
+    tracing::error!(
+        ?error,
+        "the daemon speaks another protocol version and a restart can't fix it"
+    );
+    std::process::exit(code);
 }
 
 async fn follow_lock(socket: &Path, output: &mut mpsc::Sender<Message>) -> Result<(), ClientError> {

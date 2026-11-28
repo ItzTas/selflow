@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::atomic::AtomicBool;
 
 use selflow_platform::transport::Stream;
 use selflow_protocol::ipc::MessageReader;
@@ -25,4 +26,21 @@ pub enum ClientError {
         running: Option<u32>,
         installed: Option<u32>,
     },
+}
+
+pub trait DaemonService: Send + Sync {
+    fn installed_version(&self) -> Option<u32>;
+    fn restart(&self) -> bool;
+}
+
+pub struct RestartOnce<S> {
+    pub(super) inner: S,
+    pub(super) used: AtomicBool,
+}
+
+pub struct Systemd;
+
+pub(super) enum Hello {
+    Ready(MessageReader<Stream>),
+    Mismatch(Option<u32>),
 }
