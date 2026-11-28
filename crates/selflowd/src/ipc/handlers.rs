@@ -4,7 +4,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 use selflow_core::challenge::{ExtensionAnswer, Refusal, request_exception, request_extension};
 use selflow_core::config::{Action, Config, ConfigError, Rule, RuleSet, parse};
-use selflow_core::enforce::{Enforcement, GrantedException, GrantedExtension, evaluate};
+use selflow_core::enforce::{
+    Enforcement, GrantedException, GrantedExtension, evaluate, started_rule,
+};
 use selflow_core::plan::{RuleWindow, windows_around};
 use selflow_core::timing::logical_date;
 use selflow_core::versions::{TimedChange, config_at, plan_save, shown, stored_changes, waiting};
@@ -337,23 +339,16 @@ fn skippable(day: &ExceptionDay, now: &ZonedDateTime, rule_id: &str) -> Result<R
     if skipped(day, rule_id) {
         return Err(message("ipc-exception-done", &label));
     }
-    Ok(with_started_challenges(rule, day))
+    Ok(with_started_window(rule, day))
 }
 
-fn with_started_challenges(rule: &Rule, day: &ExceptionDay) -> Rule {
-    let challenges = day
+fn with_started_window(rule: &Rule, day: &ExceptionDay) -> Rule {
+    let started = day
         .log
         .started
         .iter()
-        .find(|window| window.rule_id == rule.id && window.logical_date == day.today)
-        .map_or_else(
-            || rule.challenges.clone(),
-            |started| started.challenges.stricter(&rule.challenges),
-        );
-    Rule {
-        challenges,
-        ..rule.clone()
-    }
+        .find(|window| window.rule_id == rule.id && window.logical_date == day.today);
+    started_rule(rule, started)
 }
 
 fn locked_by(day: &ExceptionDay, now: &ZonedDateTime, rule_id: &str) -> bool {

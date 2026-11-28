@@ -7,6 +7,6 @@ ipc-test-lock-no-rule = Não há regra de bloqueio para hoje. Escolha uma com --
 ipc-test-lock-unknown-rule = Não há regra chamada { $rule }. As regras que você tem são: { $rules }
 ipc-release-locked = Há um bloqueio na tela agora, então ele continua. Para pedir mais tempo, rode selflow unlock de novo.
 ipc-exception-unknown-rule = Não há regra chamada { $rule } hoje. As regras de hoje são: { $rules }
-ipc-exception-locked = O bloqueio { $label } está na tela agora, então não dá para pulá-lo. Para pedir mais tempo, rode selflow unlock.
+ipc-exception-locked = O bloqueio { $label } está em andamento esta noite, então não dá para pulá-lo.
 ipc-exception-done = A regra { $label } já está de fora pelo resto do dia.
 ipc-exception-not-started = Não há pedido para pular esta regra hoje. Rode selflow exception de novo para começar um.

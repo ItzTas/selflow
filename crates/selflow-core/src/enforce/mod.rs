@@ -5,7 +5,7 @@ use std::cmp;
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 
 use crate::agent::ActiveAgentStep;
-use crate::config::{Action, AgentStep, Config};
+use crate::config::{Action, AgentStep, Config, Rule};
 use crate::plan::{RuleWindow, windows_around};
 use crate::timing::{Seed, fnv1a64};
 
@@ -128,24 +128,34 @@ fn merged(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> RuleWi
         notices: computed.notices.clone(),
         message: computed.message.clone(),
         action: stricter_action(started.action, computed.action),
-        agent: merged_steps(started, computed),
+        agent: merged_steps(&started.agent, &computed.agent),
         challenges: started.challenges.stricter(&computed.challenges),
         ..started.clone()
     }
 }
 
-fn merged_steps(started: &RuleWindow, computed: &RuleWindow) -> Vec<AgentStep> {
-    let kept = started.agent.iter().map(|kept| {
+pub fn started_rule(rule: &Rule, started: Option<&RuleWindow>) -> Rule {
+    let Some(started) = started else {
+        return rule.clone();
+    };
+    Rule {
+        action: stricter_action(started.action, rule.action),
+        agent: merged_steps(&started.agent, &rule.agent),
+        challenges: started.challenges.stricter(&rule.challenges),
+        ..rule.clone()
+    }
+}
+
+fn merged_steps(started: &[AgentStep], computed: &[AgentStep]) -> Vec<AgentStep> {
+    let kept = started.iter().map(|kept| {
         computed
-            .agent
             .iter()
             .find(|step| same_step(kept, step))
             .map_or_else(|| kept.clone(), |step| stricter_step(kept, step))
     });
     let added = computed
-        .agent
         .iter()
-        .filter(|step| !started.agent.iter().any(|kept| same_step(kept, step)))
+        .filter(|step| !started.iter().any(|kept| same_step(kept, step)))
         .cloned();
     kept.chain(added).collect()
 }

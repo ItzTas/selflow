@@ -4,9 +4,10 @@ use std::path::Path;
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil::date};
 use selflow_core::agent::governing;
-use selflow_core::config::{Action, Challenges, Config, parse};
+use selflow_core::config::{Action, AgentLevel, Challenges, Config, parse};
 use selflow_core::enforce::{
     DayLog, Enforcement, GrantedException, GrantedExtension, NoticeKind, ShutdownDone, evaluate,
+    started_rule,
 };
 use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
@@ -518,4 +519,19 @@ fn narrowing_the_folders_of_a_started_step_keeps_the_started_folders() {
         "/home/u/notes",
         true
     ));
+}
+
+#[test]
+fn a_started_window_keeps_its_action_and_steps_in_the_rule() {
+    let locking = parse(&with_save_only_step("")).unwrap();
+    let started = windows_for(&locking, Seed(7), date(2026, 11, 19), &brt()).remove(0);
+    let plain = parse(&no_jitter().replace("lock = true\nshutdown_after = \"30m\"\n", "")).unwrap();
+    let rule = plain.rule_sets[0].rules[0].clone();
+    assert!(!rule.enforces());
+    let judged = started_rule(&rule, Some(&started));
+    assert!(judged.enforces());
+    assert_eq!(judged.action, started.action);
+    assert_eq!(judged.agent.len(), 1);
+    assert_eq!(judged.agent[0].level, AgentLevel::SaveOnly);
+    assert_eq!(started_rule(&rule, None), rule);
 }
