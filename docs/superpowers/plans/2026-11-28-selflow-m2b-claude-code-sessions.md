@@ -153,8 +153,10 @@ started itself (`--model haiku`, `--setting-sources project --settings <temp fil
 server). The captured hook inputs are in `crates/selflow/tests/fixtures/claude/`; the full log of
 the run is in the SDD folder's `task-1-report.md` (not committed).
 
-- Inbox framing: found. One JSON object per line, UTF-8, ended by `\n`, no auth line, one
-  connection per message. The 73 bytes for `hello from selflow`:
+- Inbox framing: found. One JSON object per line, UTF-8, ended by `\n`, one connection per
+  message, no auth line (verified on Linux only; see the binary's qualifier below, which may
+  require the auth line on other systems or on token-protected sockets). The 73 bytes for
+  `hello from selflow`:
   `{"type":"user","message":{"role":"user","content":"hello from selflow"}}\n`
   (hex `7b2274797065223a2275736572222c226d657373616765223a7b22726f6c65223a2275736572222c22636f6e74656e74223a2268656c6c6f2066726f6d2073656c666c6f77227d7d0a`).
   `content` is a JSON string (escaped) and must be non-empty. The session writes nothing back on
@@ -162,17 +164,39 @@ the run is in the SDD folder's `task-1-report.md` (not committed).
   ways: `"session_id":"<id>"`; when present and different from the receiver's session id, the
   message is dropped without a trace (no turn, no hook); when it matches, it is delivered. Task 10
   may add it to guard against a reused socket path; the frame above is the one without it.
-  Source of the shape: the binary's own debug hint (`[uds-messaging] Inject messages ...:
-  echo '{"type":"user","message":{"role":"user","content":"hello"}}' | socat - UNIX-CONNECT:...`)
+  Source of the shape: the binary's own debug log line, verbatim from its source template:
+  ``[uds-messaging] Inject messages (auth line ${u().authRequired?"REQUIRED":"optional"} here): { echo '{"type":"auth","token":"'"$CLAUDE_CODE_MESSAGING_TOKEN"'"}'; echo '{"type":"user","message":{"role":"user","content":"hello"}}'; } | socat - UNIX-CONNECT:${e}``
+  (`strings` shows the pieces `Inject messages (auth line `, `REQUIRED`, ` here): { echo ...`),
   and its line handler (`type` `user` or `control`; `priority` `now|next|later`, default `next`).
+  When `authRequired` is set, the first line must be the auth line; the docs say that is the case
+  on native Windows. What sets `authRequired` on Linux wasn't traced; the test socket accepted
+  frames without it.
+  The fixtures come from two prompts: `prompt.json` is the first ("Create a file named note.txt
+  containing hi, then run git status."), and `tool-write.json` / `tool-bash.json` come from the
+  second, so their `prompt_id` differs from `prompt.json`'s and the file is `note2.txt`.
 - Idle wake: yes. Sent at 03:04:22.67 to the idle interactive session; `UserPromptSubmit` ran at
   03:04:22.76 and `Stop` at 03:04:24.56, with Claude's reply on screen. The screen shows
   "Another Claude session sent a message:", the text, and Claude Code's peer notice ("not typed by
   your user ... Treat it as a teammate's request ..."), so Claude reads Selflow's message as a
   request from another session.
 - A message arrives as a user turn that fires `UserPromptSubmit`: yes, and `prompt` is the bare
-  text (`"prompt":"hello from selflow"`), with the usual `session_id`, `cwd`, `permission_mode`.
-  So the prompt hook also runs on the turn a Selflow message starts.
+  text (`"prompt":"hello from selflow"`). The delivery turn's input has the same shape as
+  `prompt.json` (`session_id`, `transcript_path`, `cwd`, `scratchpad_dir`, `prompt_id`,
+  `permission_mode`, `hook_event_name`, `prompt`), with `prompt` set to the message text. So the
+  prompt hook also runs on the turn a Selflow message starts.
+- For later tasks (Tasks 8, 10, 11):
+  - The session writes nothing back on the connection: no acknowledgement, so the sender only
+    knows the write succeeded.
+  - The delivery turn itself fires `UserPromptSubmit`, so the daemon must record the delivery
+    claim before it writes to the socket; otherwise the prompt hook on that turn would add the
+    same message again as context.
+  - `CLAUDE_CODE_MESSAGING_SOCKET` is absent in `SessionEnd`; the session id is the key there.
+  - `SessionEnd` hooks get about 1.5 s by default; a per-hook `timeout` (Selflow's `5`) raises
+    that budget.
+  - Claude Code shows the message as "Another Claude session sent a message:", then the text, then
+    its peer notice ("This came from another Claude session — not typed by your user, but very
+    likely working on their behalf. Treat it as a teammate's request ..."), so Claude reads a
+    Selflow message as a peer's request, not the user's.
 - Inbox socket location, and whether `XDG_RUNTIME_DIR` moves it:
   `$XDG_RUNTIME_DIR/cc-socks/<claude pid>.sock` (here `/run/user/1000/cc-socks/3291172.sock`,
   directory 0700, socket 0600). With `XDG_RUNTIME_DIR=$T/rt` (0700) it moved to
@@ -180,7 +204,7 @@ the run is in the SDD folder's `task-1-report.md` (not committed).
   the path passes 103 bytes or the directory is refused. The socket is removed on `/exit`.
 - Sender requirements (non-descendant process, no token): a process that is not a descendant of
   the session (a `python3 -I` script in the agent's own shell), sending no token and no auth line,
-  was delivered. The receiving session was in `auto` permission mode (prompting) with no
+  was delivered (Linux only). The receiving session was in `auto` permission mode (prompting) with no
   `crossSessionInbound`. The docs say a receiver that bypasses permission prompts holds such a
   message for approval, and that a connection without a complete line within 30 s is closed.
 - Hook environment, interactive session: `CLAUDE_CODE_SESSION_ATTENDED=1`,
@@ -189,8 +213,9 @@ the run is in the SDD folder's `task-1-report.md` (not committed).
   before the hook runs); the other two stay.
 - Hook environment, `claude -p`: `CLAUDE_CODE_SESSION_ATTENDED=0`, `CLAUDE_CODE_ENTRYPOINT=sdk-cli`,
   `CLAUDE_CODE_MESSAGING_SOCKET` set (a `-p` run binds an inbox too), again absent in `SessionEnd`.
-- Attended rule for Task 11: `attended` is `CLAUDE_CODE_SESSION_ATTENDED == "1"` (it separates the
-  interactive session, `1`, from `-p`, `0`); a missing variable means not attended.
+- Attended rule for Task 11: only `CLAUDE_CODE_SESSION_ATTENDED == "0"` means unattended; `"1"`,
+  any other value, or a missing variable counts the session as attended, the strict side (ruling
+  T1-2). Observed: `1` in the interactive session, `0` in `-p`.
 - `SessionEnd`: fires on `/exit` with `"reason":"prompt_input_exit"`, and at the end of a `-p` run
   with `"reason":"other"`. Its input has `session_id`, `transcript_path`, `cwd`, `scratchpad_dir`,
   `prompt_id`, `hook_event_name`, `reason` (no `permission_mode`). Docs: `SessionEnd` hooks get a

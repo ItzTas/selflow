@@ -578,8 +578,10 @@ What Claude Code offers, checked against the official documentation on 2026-11-1
   Code closes a connection that hasn't sent a complete line within 30 seconds, so the daemon opens
   it only when the message is ready. The documentation doesn't describe the framing of a message,
   so the M2b plan tested it against a live session on 2026-11-28 (Claude Code 2.1.332). A message
-  is one line of JSON ending in a newline, sent with no auth line:
-  `{"type":"user","message":{"role":"user","content":"<text>"}}`. It woke an idle session.
+  is one line of JSON ending in a newline:
+  `{"type":"user","message":{"role":"user","content":"<text>"}}`. On Linux it went through with
+  no auth line; Claude Code's own log hint marks the auth line as required on some sockets, so
+  that part holds for Linux only. It woke an idle session.
   Claude Code showed it as a message from another session and ran the `UserPromptSubmit` hook
   with the text as the prompt. The socket lives at `$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`.
 - Claude Code also exports a per-session token, `CLAUDE_CODE_MESSAGING_TOKEN`. Selflow doesn't use
@@ -606,7 +608,8 @@ lives in the user's configuration file, so the loosening rule (section 8.9) cove
 Each Claude step has:
 
 - a time, placed like any other step, for example 60 minutes before the rule's lock or 30 minutes
-  before its shutdown (section 8.3);
+  before its shutdown (section 8.3); in M2b only before the rule's start, see the paragraph
+  below;
 - a message, with default texts in the user's language that the user can replace (owner);
 - a level, which sets what Claude takes on from that step on (owner);
 - optionally, a list of folders. A folder covers every session whose working directory is inside
@@ -615,10 +618,11 @@ Each Claude step has:
 - optionally, a switch that makes it cover runs nobody is watching too. It is off by default
   (owner, 2026-11-20).
 
-For M2b, a Claude step's time counts back only from the rule's start, the way notices do, not
-from its lock or its shutdown. Its message isn't sent again before the lock returns at the end of
-an extension; the level just holds through the extension. This narrows section 8.3, which allows
-steps placed before the lock or the shutdown and repeats them before the lock returns. Holding the
+For M2b, a Claude step's time counts back only from the rule's start, not from its lock or its
+shutdown. Unlike a notice, which section 8.3 repeats before the lock returns at the end of an
+extension, a Claude step's message isn't sent again then; the level just holds through the
+extension. This narrows section 8.3, which allows steps placed before the lock or the shutdown and
+repeats them before the lock returns. Holding the
 level through the extension keeps enforcement at least as strict, and tying steps to the start
 keeps M2b smaller. If the owner wants the section 8.3 behavior, a later change adds times counted
 from the lock or the shutdown and the repeat. (Claude's call, pending the owner's confirmation)
@@ -644,7 +648,8 @@ Claude's call:
 How levels behave (Claude's call):
 
 - A level holds from its step until the rule ends: the end of its lock, the end the rule sets, or
-  otherwise the next day boundary (the `day_starts_at` the lock uses).
+  otherwise the next day boundary (the `day_starts_at` the lock uses). It also holds through an
+  extension, while the lock is away.
 - When several levels cover one session, the firmest wins. For example, an end-of-work rule can
   put the work repositories at "Light tasks only" at 17:30, and the bedtime rule can put every
   session at "No new work" later that night.
@@ -1045,14 +1050,17 @@ Conventions inside every crate:
   before the deploy work in phase 1.
 - Answered on 2026-11-28: the message framing on the Claude Code inbox socket (section 8.12). An
   experiment against a live session (Claude Code 2.1.332) found it: one JSON line,
-  `{"type":"user","message":{"role":"user","content":"<text>"}}` and a newline, with no auth line
-  or token. Sent from a process outside the session, it woke the idle session. Messages therefore
+  `{"type":"user","message":{"role":"user","content":"<text>"}}` and a newline. On Linux it needed
+  no auth line or token; Claude Code's log hint marks the auth line as required on some sockets,
+  so that part was verified on Linux only. Sent from a process outside the session, it woke the
+  idle session. Messages therefore
   travel through the inbox, and the hooks remain for reminders, denials and sessions the daemon
   didn't know about.
 - Answered on 2026-11-28: how a hook tells a session someone is typing in from a run nobody is
   watching (section 8.12). Inside hooks, `CLAUDE_CODE_SESSION_ATTENDED` is `1` and
   `CLAUDE_CODE_ENTRYPOINT` is `cli` in an interactive session; in a `claude -p` run they are `0`
-  and `sdk-cli`. Selflow counts a session as attended when `CLAUDE_CODE_SESSION_ATTENDED` is `1`.
+  and `sdk-cli`. Selflow counts a session as unattended only when `CLAUDE_CODE_SESSION_ATTENDED`
+  is `0`; a missing variable counts as attended, the strict side.
 - Profiles (phase 7). Before they are designed, settle how switching to a profile relates to
   skipping a rule on purpose, so that a profile switch never becomes the easy bypass section 4
   rules out.
