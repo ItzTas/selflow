@@ -1,9 +1,10 @@
 use super::constants::{FRAME_END, INBOX_FRAME_TYPE, INBOX_ROLE};
 use super::types::{InboxFrame, InboxMessage};
 
-pub fn inbox_frame(text: &str) -> Vec<u8> {
+pub fn inbox_frame(session_id: &str, text: &str) -> Vec<u8> {
     let frame = InboxFrame {
         kind: INBOX_FRAME_TYPE,
+        session_id,
         message: InboxMessage {
             role: INBOX_ROLE,
             content: text,

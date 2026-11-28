@@ -503,14 +503,15 @@ fn an_unattended_run_one_covering_step_governs_is_not_reported_as_ungoverned() {
 }
 
 #[test]
-fn the_frame_matches_the_recorded_sample() {
+fn the_frame_follows_the_recorded_framing_with_the_session_id() {
     assert_eq!(
-        inbox_frame("hello from selflow"),
-        b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hello from selflow\"}}\n"
+        inbox_frame("3f6c1d52", "hello from selflow"),
+        b"{\"type\":\"user\",\"session_id\":\"3f6c1d52\",\"message\":{\"role\":\"user\",\"content\":\"hello from selflow\"}}\n"
     );
     let quoted = "say \"stop\"\nnow";
-    let frame = inbox_frame(quoted);
+    let frame = inbox_frame("3f6c1d52", quoted);
     let parsed: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+    assert_eq!(parsed["session_id"], "3f6c1d52");
     assert_eq!(parsed["message"]["content"], quoted);
     assert_eq!(frame.iter().filter(|byte| **byte == b'\n').count(), 1);
 }
@@ -526,7 +527,10 @@ async fn an_idle_session_gets_the_message_through_its_inbox() {
         Request::AgentSessionStarted(with_inbox(&inbox)),
         &rig.shared,
     );
-    assert_eq!(received(&listener).await, inbox_frame(WIND_DOWN));
+    let frame = received(&listener).await;
+    let parsed: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+    assert_eq!(parsed["session_id"], with_inbox(&inbox).id);
+    assert_eq!(frame, inbox_frame(&with_inbox(&inbox).id, WIND_DOWN));
     assert_eq!(
         prompt(&rig, with_inbox(&inbox)).as_deref(),
         Some(LIGHT_REMINDER)

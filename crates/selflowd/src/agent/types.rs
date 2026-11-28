@@ -36,6 +36,7 @@ pub enum AgentError {
 pub(super) struct InboxFrame<'a> {
     #[serde(rename = "type")]
     pub(super) kind: &'static str,
+    pub(super) session_id: &'a str,
     pub(super) message: InboxMessage<'a>,
 }
 

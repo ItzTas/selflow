@@ -79,7 +79,7 @@ async fn deliver_to(
             .join(PARAGRAPH_BREAK)
     });
     let frame = match session.agent {
-        AgentKind::ClaudeCode => inbox_frame(&text),
+        AgentKind::ClaudeCode => inbox_frame(&session.id, &text),
     };
     let Err(error) = deliver(Path::new(&inbox), &frame).await else {
         hub.record_sent(&session, &claimed, INBOX_DELIVERY, at);
