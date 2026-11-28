@@ -2,7 +2,7 @@ use std::fs::{self, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -18,18 +18,24 @@ use selflow_protocol::ipc::{
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+const RECONNECT_WAIT: Duration = Duration::from_secs(1);
+
+type Hellos = Arc<Mutex<Vec<u32>>>;
+
 struct FakeService {
     installed: Option<u32>,
     restarts: Arc<AtomicU32>,
-    daemon: Arc<AtomicU32>,
+    hellos: Hellos,
+    after_restart: Vec<u32>,
 }
 
 impl FakeService {
-    fn new(installed: Option<u32>, daemon: Arc<AtomicU32>) -> FakeService {
+    fn new(installed: Option<u32>, hellos: Hellos, after_restart: &[u32]) -> FakeService {
         FakeService {
             installed,
             restarts: Arc::default(),
-            daemon,
+            hellos,
+            after_restart: after_restart.to_vec(),
         }
     }
 
@@ -45,18 +51,22 @@ impl DaemonService for FakeService {
 
     fn restart(&self) -> bool {
         self.restarts.fetch_add(1, Ordering::SeqCst);
-        self.daemon.store(PROTOCOL_VERSION, Ordering::SeqCst);
+        *self.hellos.lock().unwrap() = self.after_restart.clone();
         true
+    }
+
+    fn reconnect_wait(&self) -> Duration {
+        RECONNECT_WAIT
     }
 }
 
 fn no_daemon_service() -> FakeService {
-    FakeService::new(None, Arc::default())
+    FakeService::new(None, Arc::default(), &[])
 }
 
 struct VersionedDaemon {
     path: PathBuf,
-    version: Arc<AtomicU32>,
+    hellos: Hellos,
     _dir: TempDir,
 }
 
@@ -64,27 +74,35 @@ impl VersionedDaemon {
     fn start(version: u32) -> VersionedDaemon {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("selflow/daemon.sock");
-        let version = Arc::new(AtomicU32::new(version));
-        tokio::spawn(answer_hellos(listen(&path).unwrap(), Arc::clone(&version)));
+        let hellos = Arc::new(Mutex::new(vec![version]));
+        tokio::spawn(answer_hellos(listen(&path).unwrap(), Arc::clone(&hellos)));
         VersionedDaemon {
             path,
-            version,
+            hellos,
             _dir: dir,
         }
     }
 
-    fn service(&self, installed: Option<u32>) -> FakeService {
-        FakeService::new(installed, Arc::clone(&self.version))
+    fn service(&self, installed: Option<u32>, after_restart: &[u32]) -> FakeService {
+        FakeService::new(installed, Arc::clone(&self.hellos), after_restart)
     }
 }
 
-async fn answer_hellos(listener: Listener, version: Arc<AtomicU32>) {
+fn next_hello(hellos: &Mutex<Vec<u32>>) -> u32 {
+    let mut hellos = hellos.lock().unwrap();
+    if hellos.len() > 1 {
+        return hellos.remove(0);
+    }
+    hellos[0]
+}
+
+async fn answer_hellos(listener: Listener, hellos: Hellos) {
     while let Ok(mut stream) = listener.accept().await {
         let mut hello = [0; 8];
         if stream.read_exact(&mut hello).await.is_err() {
             continue;
         }
-        let advertised = version.load(Ordering::SeqCst);
+        let advertised = next_hello(&hellos);
         let mut answer = HELLO_MAGIC.to_vec();
         answer.extend_from_slice(&advertised.to_le_bytes());
         if stream.write_all(&answer).await.is_err() || advertised != PROTOCOL_VERSION {
@@ -195,10 +213,10 @@ async fn a_daemon_that_never_answers_the_hello_is_a_mismatch() {
 }
 
 #[tokio::test]
-async fn an_outdated_daemon_is_restarted_when_the_installed_one_matches() -> Result<(), ClientError>
-{
+async fn an_outdated_daemon_is_restarted_and_the_request_waits_for_the_new_one()
+-> Result<(), ClientError> {
     let daemon = VersionedDaemon::start(999);
-    let service = daemon.service(Some(PROTOCOL_VERSION));
+    let service = daemon.service(Some(PROTOCOL_VERSION), &[999, 999, 999, PROTOCOL_VERSION]);
     let response = exchange_with(&daemon.path, &Request::Status, &service).await?;
     assert_eq!(response, Response::LockEnded);
     assert_eq!(service.restarts(), 1);
@@ -206,9 +224,26 @@ async fn an_outdated_daemon_is_restarted_when_the_installed_one_matches() -> Res
 }
 
 #[tokio::test]
+async fn a_restarted_daemon_that_stays_outdated_is_a_mismatch_after_the_wait() {
+    let daemon = VersionedDaemon::start(999);
+    let service = daemon.service(Some(PROTOCOL_VERSION), &[999]);
+    let started = tokio::time::Instant::now();
+    let outcome = exchange_with(&daemon.path, &Request::Status, &service).await;
+    assert!(started.elapsed() >= RECONNECT_WAIT);
+    assert!(matches!(
+        outcome,
+        Err(ClientError::VersionMismatch {
+            running: Some(999),
+            installed: Some(PROTOCOL_VERSION)
+        })
+    ));
+    assert_eq!(service.restarts(), 1);
+}
+
+#[tokio::test]
 async fn no_restart_when_the_installed_daemon_does_not_match() {
     let daemon = VersionedDaemon::start(999);
-    let service = daemon.service(Some(999));
+    let service = daemon.service(Some(999), &[PROTOCOL_VERSION]);
     let outcome = exchange_with(&daemon.path, &Request::Status, &service).await;
     assert!(matches!(
         outcome,
@@ -223,7 +258,7 @@ async fn no_restart_when_the_installed_daemon_does_not_match() {
 #[tokio::test]
 async fn no_restart_when_the_installed_version_is_unknown() {
     let daemon = VersionedDaemon::start(999);
-    let service = daemon.service(None);
+    let service = daemon.service(None, &[PROTOCOL_VERSION]);
     let outcome = exchange_with(&daemon.path, &Request::Status, &service).await;
     assert!(matches!(
         outcome,
@@ -237,7 +272,7 @@ async fn no_restart_when_the_installed_version_is_unknown() {
 
 #[test]
 fn a_process_restarts_the_daemon_at_most_once() {
-    let inner = FakeService::new(Some(PROTOCOL_VERSION), Arc::default());
+    let inner = FakeService::new(Some(PROTOCOL_VERSION), Arc::default(), &[PROTOCOL_VERSION]);
     let restarts = Arc::clone(&inner.restarts);
     let service = RestartOnce::new(inner);
     assert!(service.restart());

@@ -17,7 +17,7 @@ use super::types::{ClientError, DaemonService, Hello, RestartOnce, Systemd};
 
 const EXIT_POLL: Duration = Duration::from_millis(10);
 const RECONNECT_POLL: Duration = Duration::from_millis(100);
-const RECONNECT_WAIT: Duration = Duration::from_secs(10);
+pub(super) const RECONNECT_WAIT: Duration = Duration::from_secs(10);
 
 pub static SYSTEM_SERVICE: RestartOnce<Systemd> = RestartOnce::new(Systemd);
 
@@ -40,6 +40,10 @@ impl<S: DaemonService> DaemonService for RestartOnce<S> {
             return false;
         }
         self.inner.restart()
+    }
+
+    fn reconnect_wait(&self) -> Duration {
+        self.inner.reconnect_wait()
     }
 }
 
@@ -82,7 +86,7 @@ pub(super) async fn open(
     if !restarted {
         return Err(ClientError::VersionMismatch { running, installed });
     }
-    let deadline = Instant::now() + RECONNECT_WAIT;
+    let deadline = Instant::now() + service.reconnect_wait();
     loop {
         sleep(RECONNECT_POLL).await;
         let outcome = ready(path, installed).await;

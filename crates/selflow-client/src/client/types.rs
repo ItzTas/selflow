@@ -1,10 +1,13 @@
 use std::io;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use selflow_platform::transport::Stream;
 use selflow_protocol::ipc::MessageReader;
 use thiserror::Error;
 use tokio::runtime::Runtime;
+
+use super::restart::RECONNECT_WAIT;
 
 pub struct Client {
     pub(super) runtime: Runtime,
@@ -31,6 +34,10 @@ pub enum ClientError {
 pub trait DaemonService: Send + Sync {
     fn installed_version(&self) -> Option<u32>;
     fn restart(&self) -> bool;
+
+    fn reconnect_wait(&self) -> Duration {
+        RECONNECT_WAIT
+    }
 }
 
 pub struct RestartOnce<S> {
