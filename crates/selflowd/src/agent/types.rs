@@ -1,6 +1,8 @@
+use jiff::Timestamp;
 use selflow_core::agent::ActiveAgentStep;
 use selflow_core::config::DEFAULT_ALLOWED_COMMANDS;
 use selflow_i18n::language::Language;
+use selflow_protocol::ipc::{AgentSession, Response};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -24,6 +26,14 @@ impl Default for Directives {
             language: Language::En,
         }
     }
+}
+
+#[derive(Debug)]
+pub struct PromptAnswer {
+    pub response: Response,
+    pub(super) session: AgentSession,
+    pub(super) claimed: Vec<ActiveAgentStep>,
+    pub(super) at: Timestamp,
 }
 
 #[derive(Debug, Error)]

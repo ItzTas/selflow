@@ -23,7 +23,7 @@ use constants::{
     COMMAND_SEPARATOR, INBOX_DELIVERY, MISSED_DELIVERY, PARAGRAPH_BREAK, PROMPT_DELIVERY,
 };
 use events::{Origin, record};
-pub use types::{AgentError, Directives};
+pub use types::{AgentError, Directives, PromptAnswer};
 
 type SessionKey = (AgentKind, String);
 
@@ -73,11 +73,16 @@ impl AgentHub {
     }
 
     pub fn prompt(&self, session: AgentSession, now: &ZonedDateTime) -> Response {
+        let answer = self.answer_prompt(session, now);
+        self.delivered(&answer);
+        answer.response
+    }
+
+    pub fn answer_prompt(&self, session: AgentSession, now: &ZonedDateTime) -> PromptAnswer {
         let directives = self.directives.borrow().clone();
         let at = now.timestamp();
         let claimed = self.claim_unsent(&session, &directives.steps, PROMPT_DELIVERY, at);
         self.register(session.clone(), at);
-        self.record_sent(&session, &claimed, PROMPT_DELIVERY, at);
         let reminded = governing(
             &directives.steps,
             &lexically_normal(&session.cwd),
@@ -93,9 +98,22 @@ impl AgentHub {
                 .chain(reminded.map(|step| texts.reminder(step)))
                 .collect::<Vec<String>>()
         });
-        Response::AgentContext {
-            text: (!texts.is_empty()).then(|| texts.join(PARAGRAPH_BREAK)),
+        PromptAnswer {
+            response: Response::AgentContext {
+                text: (!texts.is_empty()).then(|| texts.join(PARAGRAPH_BREAK)),
+            },
+            session,
+            claimed,
+            at,
         }
+    }
+
+    pub fn delivered(&self, answer: &PromptAnswer) {
+        self.record_sent(&answer.session, &answer.claimed, PROMPT_DELIVERY, answer.at);
+    }
+
+    pub fn undelivered(&self, answer: &PromptAnswer) {
+        self.release(&answer.session, &answer.claimed);
     }
 
     pub fn tool(&self, session: AgentSession, tool: ToolCall, now: &ZonedDateTime) -> Response {

@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use selflow_platform::transport::{AcceptError, Listener, Stream};
 use selflow_protocol::ipc::{
-    HANDSHAKE_TIMEOUT, LockView, MessageReader, PROTOCOL_VERSION, Request, hello_as_daemon,
-    message_reader, read_message, write_message,
+    AgentSession, HANDSHAKE_TIMEOUT, LockView, MessageReader, PROTOCOL_VERSION, Request, Response,
+    hello_as_daemon, message_reader, read_message, write_message,
 };
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
@@ -61,12 +61,36 @@ async fn converse(mut stream: Stream, shared: Arc<Shared>) {
             follow(stream, shared.views.clone()).await;
             return;
         }
-        let response = handle(request, &shared);
-        if let Err(error) = write_message(stream.get_mut(), &response).await {
-            tracing::debug!(%error, "couldn't answer a client");
+        let answered = match request {
+            Request::AgentPrompt(session) => answer_prompt(&mut stream, session, &shared).await,
+            request => answer(&mut stream, &handle(request, &shared)).await,
+        };
+        if !answered {
             return;
         }
     }
+}
+
+async fn answer(stream: &mut MessageReader<Stream>, response: &Response) -> bool {
+    let Err(error) = write_message(stream.get_mut(), response).await else {
+        return true;
+    };
+    tracing::debug!(%error, "couldn't answer a client");
+    false
+}
+
+async fn answer_prompt(
+    stream: &mut MessageReader<Stream>,
+    session: AgentSession,
+    shared: &Shared,
+) -> bool {
+    let prompt = shared.agents.answer_prompt(session, &shared.clock.now());
+    if answer(stream, &prompt.response).await {
+        shared.agents.delivered(&prompt);
+        return true;
+    }
+    shared.agents.undelivered(&prompt);
+    false
 }
 
 async fn follow(mut stream: MessageReader<Stream>, mut views: watch::Receiver<Option<LockView>>) {

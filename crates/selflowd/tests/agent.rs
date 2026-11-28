@@ -7,12 +7,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use jiff::ZonedDateTime;
-use selflow_protocol::ipc::{AgentSession, MessageView, Request, Response, ToolCall, ToolVerdict};
+use selflow_platform::transport::{connect, listen};
+use selflow_protocol::ipc::{
+    AgentSession, MessageView, Request, Response, ToolCall, ToolVerdict, write_message,
+};
 use selflowd::agent::claude_code::inbox_frame;
 use selflowd::agent::courier::{restarting, run_courier};
-use selflowd::ipc::handle;
+use selflowd::ipc::{Shared, handle, serve};
 use selflowd::store::{Event, EventKind};
-use support::{AgentRig, agent_rig, agent_rig_on, at, no_jitter, session};
+use support::{AgentRig, agent_rig, agent_rig_on, at, greeted, no_jitter, session};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
 use tokio::task::JoinHandle;
@@ -40,7 +43,11 @@ fn ticked(steps: &[&str], now: ZonedDateTime) -> AgentRig {
 }
 
 fn prompt(rig: &AgentRig, session: AgentSession) -> Option<String> {
-    match handle(Request::AgentPrompt(session), &rig.shared) {
+    prompt_on(&rig.shared, session)
+}
+
+fn prompt_on(shared: &Shared, session: AgentSession) -> Option<String> {
+    match handle(Request::AgentPrompt(session), shared) {
         Response::AgentContext { text } => text,
         other => panic!("expected agent context, got {other:?}"),
     }
@@ -301,6 +308,37 @@ fn an_inbox_claim_without_its_message_is_released_when_the_daemon_starts() {
     restarted.engine.tick().unwrap();
     assert_eq!(prompt(&restarted, lost).as_deref(), Some(WIND_DOWN));
     assert_eq!(prompt(&restarted, sent).as_deref(), Some(LIGHT_REMINDER));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_answer_the_hook_never_reads_comes_with_a_later_prompt() {
+    let AgentRig {
+        engine: _engine,
+        store,
+        shared,
+        ..
+    } = ticked(&[LIGHT], at(19, 22, 10));
+    let shared = Arc::new(shared);
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("daemon.sock");
+    tokio::spawn(serve(listen(&socket).unwrap(), Arc::clone(&shared)));
+    let (locked, held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let _store = store.lock().unwrap();
+        locked.send(()).unwrap();
+        let _ = released.recv();
+    });
+    held.recv().unwrap();
+    let mut hook = greeted(connect(&socket).await.unwrap()).await;
+    write_message(hook.get_mut(), &Request::AgentPrompt(seconv()))
+        .await
+        .unwrap();
+    drop(hook);
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    eventually(|| shared.agents.sessions(), vec![seconv()]).await;
+    eventually(|| prompt_on(&shared, seconv()), Some(WIND_DOWN.to_owned())).await;
 }
 
 #[test]
