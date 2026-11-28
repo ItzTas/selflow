@@ -3,7 +3,7 @@ use jiff::{
     civil::{Time, Weekday, time},
 };
 
-use super::types::Challenges;
+use super::types::{AgentLevel, Challenges};
 
 pub const SUPPORTED_LANGUAGES: [&str; 2] = ["en", "pt-BR"];
 
@@ -24,6 +24,21 @@ pub const DEFAULT_NOTICES: [SignedDuration; 3] = [
     SignedDuration::from_mins(1),
 ];
 pub const DEFAULT_NOTICE_AT_START: [SignedDuration; 1] = [SignedDuration::ZERO];
+
+pub const DEFAULT_ALLOWED_COMMANDS: [&str; 5] = [
+    "git status",
+    "git diff",
+    "git add",
+    "git commit",
+    "git stash",
+];
+
+pub const AGENT_LEVELS: [(&str, AgentLevel); 4] = [
+    ("message", AgentLevel::Message),
+    ("light", AgentLevel::Light),
+    ("no-new-work", AgentLevel::NoNewWork),
+    ("save-only", AgentLevel::SaveOnly),
+];
 
 pub const SHUTDOWN_REPEATS: [(&str, bool); 2] = [("once", false), ("repeat", true)];
 

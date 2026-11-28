@@ -12,7 +12,7 @@ config-empty-window = The rule `{ $id }` starts and ends at the same time.
 config-jitter-too-long = The start_jitter of the rule `{ $id }` needs to be shorter than the rule itself.
 config-too-long = The rule `{ $id }` needs to last less than a day, counting its length and any start_jitter.
 config-locks-overlap = In the rule set `{ $set }`, the locks of the rules `{ $first }` and `{ $second }` overlap.
-config-negative-offset = The notice time `{ $value }` can't be negative. Use 0m for a notice right at the start.
+config-negative-offset = The time `{ $value }` can't be negative. Use 0m for right at the start.
 config-end-and-length = The rule `{ $id }` has both end and length. Keep the one you mean.
 config-lock-needs-end = The rule `{ $id }` locks the screen, so it needs an end or a length to say when the lock lifts.
 config-shutdown-after-needs-lock = The rule `{ $id }` has shutdown_after but no lock. Add lock = true, or use shutdown to shut down at the start.
@@ -23,4 +23,8 @@ config-empty-message = The message of the rule `{ $id }` has an empty text.
 config-bad-date = The value `{ $value }` isn't a date like 2026-12-25.
 config-duplicate-exception = There's already an exception for { $date }.
 config-exception-unknown-rule = The exception for { $date } names `{ $rule }`, but the rule set for that day has no rule with that id.
+config-agent-bad-level = The level `{ $value }` in a Claude step of the rule `{ $id }` isn't one Selflow knows. The levels are message, light, no-new-work and save-only.
+config-agent-bad-folder = The folder `{ $value }` in a Claude step of the rule `{ $id }` needs to be `~`, start with `~/`, or be an absolute path.
+config-agent-too-early = A Claude step of the rule `{ $id }` has before = `{ $value }`. It needs to be under 24h.
+config-agent-empty-command = An entry of allowed_commands under [agent] is empty. Write a command like "git status", or remove the entry.
 config-before-update = Your settings from before this Selflow update, kept here for reference. Selflow no longer reads them, so copy what you want to keep into the file above.

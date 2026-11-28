@@ -4,7 +4,9 @@ use jiff::{
     SignedDuration,
     civil::{Weekday, date, time},
 };
-use selflow_core::config::{Action, Challenges, Config, Exception, Rule, RuleEnd, parse};
+use selflow_core::config::{
+    Action, AgentLevel, AgentStep, Challenges, Config, Exception, Rule, RuleEnd, parse,
+};
 use selflow_i18n::{catalog::default_config, language::Language};
 use support::{VALID, no_jitter};
 
@@ -32,6 +34,24 @@ fn error_ids(text: &str) -> Vec<&'static str> {
 }
 
 const NO_LOCK: (&str, &str) = ("lock = true\nshutdown_after = \"30m\"\n", "");
+
+const STEPS: &str = "[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\n\n[[rule_set.rule.agent]]\nbefore = \"15m\"\nlevel = \"save-only\"\nmessage = [\"a\", \"b\"]\nfolders = [\"~/Workspace/work\"]\nunattended = true\n";
+
+fn with_steps(text: &str) -> String {
+    format!("{text}\n{STEPS}")
+}
+
+fn light_step() -> AgentStep {
+    AgentStep {
+        before: mins(60),
+        level: AgentLevel::Light,
+        message: Vec::new(),
+        folders: Vec::new(),
+        unattended: false,
+    }
+}
+
+const NO_NOTICES: (&str, &str) = ("notices = [\"5m\", \"15m\", \"1m\"]\n", "");
 
 #[test]
 fn parses_a_rule_with_a_lock_and_a_shutdown() {
@@ -116,6 +136,92 @@ fn notices_default_by_action() {
     assert!(!reminder.enforces());
     assert_eq!(reminder.notices, None);
     assert_eq!(reminder.notice_offsets(), [SignedDuration::ZERO]);
+    let steps_only = first_rule(&with_steps(&edited(&[NO_NOTICES, NO_LOCK])));
+    assert_eq!(steps_only.notices, None);
+    assert!(steps_only.notice_offsets().is_empty());
+    let with_notice = first_rule(&with_steps(&edited(&[
+        ("notices = [\"5m\", \"15m\", \"1m\"]", "notices = [\"5m\"]"),
+        NO_LOCK,
+    ])));
+    assert_eq!(with_notice.notice_offsets(), [mins(5)]);
+}
+
+#[test]
+fn parses_agent_steps() {
+    let rule = first_rule(&with_steps(VALID));
+    assert_eq!(
+        rule.agent,
+        vec![
+            light_step(),
+            AgentStep {
+                before: mins(15),
+                level: AgentLevel::SaveOnly,
+                message: vec!["a".to_owned(), "b".to_owned()],
+                folders: vec!["~/Workspace/work".to_owned()],
+                unattended: true,
+            },
+        ]
+    );
+    assert!(first_rule(VALID).agent.is_empty());
+    let steps_only = first_rule(&with_steps(&edited(&[NO_LOCK])));
+    assert_eq!(steps_only.action, Action::Nothing);
+    assert!(steps_only.enforces());
+}
+
+#[test]
+fn an_agent_step_can_be_a_single_message_text_and_absolute_folders() {
+    let text = format!(
+        "{VALID}\n[[rule_set.rule.agent]]\nbefore = \"0m\"\nlevel = \"message\"\nmessage = \"Wrap up\"\nfolders = [\"~\", \"/srv/work\"]\n"
+    );
+    let step = first_rule(&text).agent.remove(0);
+    assert_eq!(
+        step,
+        AgentStep {
+            before: SignedDuration::ZERO,
+            level: AgentLevel::Message,
+            message: vec!["Wrap up".to_owned()],
+            folders: vec!["~".to_owned(), "/srv/work".to_owned()],
+            unattended: false,
+        }
+    );
+}
+
+#[test]
+fn the_levels_run_from_lightest_to_firmest_and_have_names() {
+    let levels = [
+        AgentLevel::Message,
+        AgentLevel::Light,
+        AgentLevel::NoNewWork,
+        AgentLevel::SaveOnly,
+    ];
+    assert!(levels.is_sorted());
+    let names: Vec<_> = levels.iter().map(|level| level.name()).collect();
+    assert_eq!(names, ["message", "light", "no-new-work", "save-only"]);
+}
+
+#[test]
+fn the_allowed_commands_default_to_the_git_save_commands() {
+    assert_eq!(
+        parse(VALID).unwrap().agent_allowed_commands,
+        [
+            "git status",
+            "git diff",
+            "git add",
+            "git commit",
+            "git stash"
+        ]
+    );
+}
+
+#[test]
+fn the_allowed_commands_come_from_the_agent_table_in_order() {
+    let text = format!("{VALID}\n[agent]\nallowed_commands = [\"cargo fmt\", \"git status\"]\n");
+    assert_eq!(
+        parse(&text).unwrap().agent_allowed_commands,
+        ["cargo fmt", "git status"]
+    );
+    let none = format!("{VALID}\n[agent]\nallowed_commands = []\n");
+    assert!(parse(&none).unwrap().agent_allowed_commands.is_empty());
 }
 
 #[test]
@@ -293,6 +399,48 @@ fn reports_each_error_with_its_line() {
             "config-too-long",
             24,
         ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"loud\"\n",
+            "config-agent-bad-level",
+            31,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\nfolders = [\"~/ok\", \"Workspace/x\"]\n",
+            "config-agent-bad-folder",
+            32,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"24h\"\nlevel = \"light\"\n",
+            "config-agent-too-early",
+            30,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[agent]\nallowed_commands = [\" \"]\n",
+            "config-agent-empty-command",
+            30,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"-5m\"\nlevel = \"light\"\n",
+            "config-negative-offset",
+            30,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\nmessage = 3\n",
+            "config-bad-message",
+            32,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\nmessage = [\"\"]\n",
+            "config-empty-message",
+            32,
+        ),
     ];
     for &(from, to, id, line) in cases {
         let found: Vec<_> = parse(&edited(&[(from, to)]))
@@ -326,6 +474,11 @@ fn rejects_unknown_keys_and_the_m1_lock_table() {
     let m1 = VALID.replace("[[rule_set.rule]]", "[[rule_set.lock]]");
     let errors = parse(&m1).unwrap_err();
     assert_eq!((errors[0].id, errors[0].line), ("config-syntax", 20));
+    let step = format!(
+        "{VALID}\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\ncolour = \"red\"\n"
+    );
+    let errors = parse(&step).unwrap_err();
+    assert_eq!((errors[0].id, errors[0].line), ("config-syntax", 32));
 }
 
 #[test]
@@ -439,6 +592,23 @@ fn the_default_files_parse_in_both_languages() {
         Action::Lock {
             shutdown_after: Some(mins(30))
         }
+    );
+    let wrap_up = AgentStep {
+        before: mins(15),
+        level: AgentLevel::NoNewWork,
+        ..light_step()
+    };
+    assert_eq!(bedtime.agent, vec![light_step(), wrap_up]);
+    assert_eq!(pt.rule_sets[0].rules[0].agent, bedtime.agent);
+    assert_eq!(
+        en.agent_allowed_commands,
+        [
+            "git status",
+            "git diff",
+            "git add",
+            "git commit",
+            "git stash"
+        ]
     );
     assert!(en.exceptions.is_empty());
     assert_eq!(without_labels(en), without_labels(pt));

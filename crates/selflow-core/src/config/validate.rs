@@ -1,5 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use jiff::{
     SignedDuration,
@@ -8,13 +9,17 @@ use jiff::{
 use toml::Spanned;
 
 use super::constants::{
-    DAYS, DEFAULT_CHALLENGES, DEFAULT_DAY_STARTS_AT, DEFAULT_LANGUAGE, DEFAULT_LOOSENING_DELAY,
-    LONGEST_RULE, SHUTDOWN_REPEATS, SUPPORTED_LANGUAGES,
+    AGENT_LEVELS, DAYS, DEFAULT_ALLOWED_COMMANDS, DEFAULT_CHALLENGES, DEFAULT_DAY_STARTS_AT,
+    DEFAULT_LANGUAGE, DEFAULT_LOOSENING_DELAY, LONGEST_RULE, SHUTDOWN_REPEATS, SUPPORTED_LANGUAGES,
 };
 use super::day_tag;
 use super::error::ConfigError;
-use super::raw::{RawChallenges, RawConfig, RawException, RawRule, RawRuleSet};
-use super::types::{Action, Challenges, Config, Exception, Rule, RuleEnd, RuleSet};
+use super::raw::{
+    RawAgent, RawAgentStep, RawChallenges, RawConfig, RawException, RawRule, RawRuleSet,
+};
+use super::types::{
+    Action, AgentLevel, AgentStep, Challenges, Config, Exception, Rule, RuleEnd, RuleSet,
+};
 use crate::timing::{TimingError, parse_clock, parse_duration, parse_offset};
 
 type Args = Vec<(&'static str, String)>;
@@ -70,12 +75,14 @@ impl Check<'_> {
         };
         let rule_sets = self.rule_sets(&raw.rule_set, &context);
         let exceptions = self.exceptions(&raw.exception, &raw.rule_set);
+        let allowed_commands = self.allowed_commands(raw.agent.as_ref());
         Some(Config {
             language: language?,
             day_starts_at: day_starts_at?,
             loosening_delay: loosening_delay?,
             rule_sets: rule_sets?,
             exceptions: exceptions?,
+            agent_allowed_commands: allowed_commands?,
         })
     }
 
@@ -229,9 +236,10 @@ impl Check<'_> {
         end: Option<RuleEnd>,
     ) -> Option<Rule> {
         let notices = self.notices(raw.notices.as_deref());
-        let message = self.message(raw);
+        let message = self.message(raw, raw.message.as_ref());
         let action = self.action(raw);
         let challenges = self.challenges(&raw.challenges, inherited);
+        let agent = self.agent_steps(raw);
         Some(Rule {
             id: raw.id.get_ref().clone(),
             label: raw.label.as_ref().unwrap_or(&raw.id).get_ref().clone(),
@@ -242,6 +250,7 @@ impl Check<'_> {
             message: message?,
             action: action?,
             challenges: challenges?,
+            agent: agent?,
         })
     }
 
@@ -351,8 +360,99 @@ impl Check<'_> {
         Some(Some(notices))
     }
 
-    fn message(&mut self, raw: &RawRule) -> Option<Vec<String>> {
-        let Some(value) = &raw.message else {
+    fn agent_steps(&mut self, raw: &RawRule) -> Option<Vec<AgentStep>> {
+        let steps: Vec<_> = raw
+            .agent
+            .iter()
+            .map(|step| self.agent_step(raw, step))
+            .collect();
+        steps.into_iter().collect()
+    }
+
+    fn agent_step(&mut self, raw: &RawRule, step: &RawAgentStep) -> Option<AgentStep> {
+        let before = self.before(raw, &step.before);
+        let level = self.level(raw, &step.level);
+        let message = self.message(raw, step.message.as_ref());
+        let folders = self.folders(raw, step.folders.as_deref());
+        Some(AgentStep {
+            before: before?,
+            level: level?,
+            message: message?,
+            folders: folders?,
+            unattended: step
+                .unattended
+                .as_ref()
+                .is_some_and(|unattended| *unattended.get_ref()),
+        })
+    }
+
+    fn before(&mut self, raw: &RawRule, value: &Spanned<String>) -> Option<SignedDuration> {
+        let before = self.offset(value)?;
+        if before < LONGEST_RULE {
+            return Some(before);
+        }
+        self.report(value, "config-agent-too-early", id_value_args(raw, value));
+        None
+    }
+
+    fn level(&mut self, raw: &RawRule, value: &Spanned<String>) -> Option<AgentLevel> {
+        let level = AGENT_LEVELS
+            .iter()
+            .find(|(name, _)| *name == value.get_ref().as_str())
+            .map(|(_, level)| *level);
+        if level.is_none() {
+            self.report(value, "config-agent-bad-level", id_value_args(raw, value));
+        }
+        level
+    }
+
+    fn folders(
+        &mut self,
+        raw: &RawRule,
+        values: Option<&[Spanned<String>]>,
+    ) -> Option<Vec<String>> {
+        let values = values.unwrap_or_default();
+        let checked: Vec<_> = values.iter().map(|value| self.folder(raw, value)).collect();
+        checked.into_iter().collect()
+    }
+
+    fn folder(&mut self, raw: &RawRule, value: &Spanned<String>) -> Option<String> {
+        let folder = value.get_ref();
+        if folder == "~" || folder.starts_with("~/") || Path::new(folder).is_absolute() {
+            return Some(folder.clone());
+        }
+        self.report(value, "config-agent-bad-folder", id_value_args(raw, value));
+        None
+    }
+
+    fn allowed_commands(&mut self, raw: Option<&RawAgent>) -> Option<Vec<String>> {
+        let Some(values) = raw.and_then(|agent| agent.allowed_commands.as_ref()) else {
+            return Some(
+                DEFAULT_ALLOWED_COMMANDS
+                    .iter()
+                    .map(|command| (*command).to_owned())
+                    .collect(),
+            );
+        };
+        let checked: Vec<_> = values.iter().map(|value| self.command(value)).collect();
+        checked.into_iter().collect()
+    }
+
+    fn command(&mut self, value: &Spanned<String>) -> Option<String> {
+        let command = value.get_ref().trim();
+        if command.is_empty() {
+            self.report(value, "config-agent-empty-command", Vec::new());
+            return None;
+        }
+        Some(command.to_owned())
+    }
+
+    fn message(
+        &mut self,
+        raw: &RawRule,
+        value: Option<&Spanned<toml::Value>>,
+    ) -> Option<Vec<String>> {
+        let Some(value) = value else {
             return Some(Vec::new());
         };
         let Some(texts) = texts(value.get_ref()) else {
@@ -605,6 +705,13 @@ fn minutes_after(from: Time, to: Time) -> SignedDuration {
 
 fn id_arg(raw: &RawRule) -> Args {
     vec![("id", raw.id.get_ref().clone())]
+}
+
+fn id_value_args(raw: &RawRule, value: &Spanned<String>) -> Args {
+    vec![
+        ("id", raw.id.get_ref().clone()),
+        ("value", value.get_ref().clone()),
+    ]
 }
 
 fn value_arg(value: &Spanned<String>) -> Args {

@@ -5,9 +5,11 @@ mod types;
 mod validate;
 
 pub(crate) use constants::DAYS;
-pub use constants::SUPPORTED_LANGUAGES;
+pub use constants::{AGENT_LEVELS, DEFAULT_ALLOWED_COMMANDS, SUPPORTED_LANGUAGES};
 pub use error::ConfigError;
-pub use types::{Action, Challenges, Config, Exception, Rule, RuleEnd, RuleSet};
+pub use types::{
+    Action, AgentLevel, AgentStep, Challenges, Config, Exception, Rule, RuleEnd, RuleSet,
+};
 
 use jiff::civil::Weekday;
 use raw::RawConfig;

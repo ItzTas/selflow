@@ -8,8 +8,8 @@ use jiff::{
 use serde::{Deserialize, Serialize};
 
 use super::constants::{
-    DEFAULT_DAY_STARTS_AT, DEFAULT_LANGUAGE, DEFAULT_LOOSENING_DELAY, DEFAULT_NOTICE_AT_START,
-    DEFAULT_NOTICES,
+    AGENT_LEVELS, DEFAULT_ALLOWED_COMMANDS, DEFAULT_DAY_STARTS_AT, DEFAULT_LANGUAGE,
+    DEFAULT_LOOSENING_DELAY, DEFAULT_NOTICE_AT_START, DEFAULT_NOTICES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +19,7 @@ pub struct Config {
     pub loosening_delay: SignedDuration,
     pub rule_sets: Vec<RuleSet>,
     pub exceptions: Vec<Exception>,
+    pub agent_allowed_commands: Vec<String>,
 }
 
 impl Config {
@@ -29,6 +30,10 @@ impl Config {
             loosening_delay: DEFAULT_LOOSENING_DELAY,
             rule_sets: Vec::new(),
             exceptions: Vec::new(),
+            agent_allowed_commands: DEFAULT_ALLOWED_COMMANDS
+                .iter()
+                .map(|command| (*command).to_owned())
+                .collect(),
         }
     }
 
@@ -86,11 +91,12 @@ pub struct Rule {
     pub message: Vec<String>,
     pub action: Action,
     pub challenges: Challenges,
+    pub agent: Vec<AgentStep>,
 }
 
 impl Rule {
     pub fn enforces(&self) -> bool {
-        self.action != Action::Nothing
+        self.action != Action::Nothing || !self.agent.is_empty()
     }
 
     pub fn locks(&self) -> bool {
@@ -107,11 +113,40 @@ impl Rule {
     }
 
     fn default_notices(&self) -> Vec<SignedDuration> {
-        if self.enforces() {
+        if self.action != Action::Nothing {
             return DEFAULT_NOTICES.to_vec();
+        }
+        if !self.agent.is_empty() {
+            return Vec::new();
         }
         DEFAULT_NOTICE_AT_START.to_vec()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum AgentLevel {
+    Message,
+    Light,
+    NoNewWork,
+    SaveOnly,
+}
+
+impl AgentLevel {
+    pub fn name(self) -> &'static str {
+        AGENT_LEVELS
+            .iter()
+            .find(|(_, level)| *level == self)
+            .map_or("", |(name, _)| name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStep {
+    pub before: SignedDuration,
+    pub level: AgentLevel,
+    pub message: Vec<String>,
+    pub folders: Vec<String>,
+    pub unattended: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

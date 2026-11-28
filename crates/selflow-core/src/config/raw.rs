@@ -15,6 +15,23 @@ pub struct RawConfig {
     pub rule_set: Vec<RawRuleSet>,
     #[serde(default)]
     pub exception: Vec<RawException>,
+    pub agent: Option<RawAgent>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawAgent {
+    pub allowed_commands: Option<Vec<Spanned<String>>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawAgentStep {
+    pub before: Spanned<String>,
+    pub level: Spanned<String>,
+    pub message: Option<Spanned<toml::Value>>,
+    pub folders: Option<Vec<Spanned<String>>>,
+    pub unattended: Option<Spanned<bool>>,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +71,8 @@ pub struct RawRule {
     pub shutdown: Option<Spanned<String>>,
     #[serde(default)]
     pub challenges: RawChallenges,
+    #[serde(default)]
+    pub agent: Vec<RawAgentStep>,
 }
 
 #[derive(Deserialize)]

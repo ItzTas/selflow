@@ -59,6 +59,26 @@ shutdown_after = "30m"
 # [rule_set.rule.challenges]
 # extensions = 0
 
+# Passos do Claude Code: enquanto a regra se aproxima, o Selflow manda uma mensagem às sessões do Claude Code que ela cobre e mantém um nível até a regra terminar.
+# De message (só repassa o texto) passando por light e no-new-work até save-only (também nega edições de arquivos e a maioria dos comandos de shell).
+# Aqui, 60 minutos antes do início, pede-se ao Claude que aceite só tarefas leves.
+[[rule_set.rule.agent]]
+# Quanto tempo antes do início o passo acontece.
+before = "60m"
+# O que o Claude assume a partir daí: "message", "light", "no-new-work" ou "save-only".
+level = "light"
+# Suas próprias palavras para o Claude; deixe a linha de fora para usar o texto do Selflow.
+# message = "Hora de desacelerar: termine o que está fazendo e mantenha as tarefas novas pequenas."
+# Só as sessões que trabalham dentro destas pastas; "~" é a sua pasta pessoal, e sem a linha vale para toda sessão.
+# folders = ["~/Workspace/work"]
+# Com true, cobre também execuções que ninguém acompanha, como claude -p; por padrão elas ficam de fora.
+# unattended = true
+
+# 15 minutos antes do início, pede-se ao Claude que não assuma nada novo.
+[[rule_set.rule.agent]]
+before = "15m"
+level = "no-new-work"
+
 # Um lembrete: uma regra só com início e mensagem manda um aviso quando começa.
 # [[rule_set.rule]]
 # id = "stretch"
@@ -70,3 +90,7 @@ shutdown_after = "30m"
 # [[exception]]
 # date = "2026-12-25"
 # rules = ["bedtime"]
+
+# Comandos que o Claude ainda pode rodar quando o nível de um passo é "save-only", para poder salvar o trabalho. Um comando passa só se não tiver operador de shell e começar com um destes.
+# [agent]
+# allowed_commands = ["git status", "git diff", "git add", "git commit", "git stash"]
