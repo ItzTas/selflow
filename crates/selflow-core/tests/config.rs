@@ -208,7 +208,7 @@ fn the_allowed_commands_default_to_the_git_save_commands() {
             "git diff",
             "git add",
             "git commit",
-            "git stash"
+            "git stash push"
         ]
     );
 }
@@ -413,6 +413,24 @@ fn reports_each_error_with_its_line() {
         ),
         (
             "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\nfolders = [\"~/Workspace/seconv/../other\"]\n",
+            "config-agent-bad-folder",
+            32,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\nfolders = [\"/srv/./code\"]\n",
+            "config-agent-bad-folder",
+            32,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\n\n[[rule_set.rule.agent]]\nbefore = \"1h\"\nlevel = \"light\"\nmessage = \"Wind down.\"\n",
+            "config-agent-duplicate-step",
+            34,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
             "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"24h\"\nlevel = \"light\"\n",
             "config-agent-too-early",
             30,
@@ -607,7 +625,7 @@ fn the_default_files_parse_in_both_languages() {
             "git diff",
             "git add",
             "git commit",
-            "git stash"
+            "git stash push"
         ]
     );
     assert!(en.exceptions.is_empty());

@@ -643,7 +643,7 @@ Claude's call:
 | Message only | Pass the message on. Nothing else changes. | The message. |
 | Light tasks only | Finish what is underway and take on only small tasks. | The message, and from then on every prompt carries a reminder of the time and the level. |
 | No new work | Take on nothing new. Help save the work, write down where it stopped and what the next step is, and tell the user to go rest. | The message and the reminder on every prompt. |
-| Save only | Everything in No new work. | Also a `PreToolUse` hook that denies file edits and shell commands. A configurable list of commands stays allowed so the work can be saved, by default `git status`, `git diff`, `git add`, `git commit` and `git stash`. |
+| Save only | Everything in No new work. | Also a `PreToolUse` hook that denies file edits and shell commands. A configurable list of commands stays allowed so the work can be saved, by default `git status`, `git diff`, `git add`, `git commit` and `git stash push`. |
 
 How levels behave (Claude's call):
 

@@ -135,10 +135,12 @@ fn merged(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> RuleWi
 }
 
 fn merged_steps(started: &RuleWindow, computed: &RuleWindow) -> Vec<AgentStep> {
-    let added = computed
-        .agent
-        .iter()
-        .filter(|step| !started.agent.contains(step));
+    let added = computed.agent.iter().filter(|step| {
+        !started
+            .agent
+            .iter()
+            .any(|kept| kept.before == step.before && kept.level == step.level)
+    });
     started.agent.iter().chain(added).cloned().collect()
 }
 

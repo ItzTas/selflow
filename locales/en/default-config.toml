@@ -91,6 +91,6 @@ level = "no-new-work"
 # date = "2026-12-25"
 # rules = ["bedtime"]
 
-# Commands Claude may still run at the save-only level, so it can save the work. A command passes only when it has no shell operator and starts with one of these.
+# Commands Claude may still run at the save-only level, so it can save the work. A command passes only when it starts with one of these and has no shell operator (`$` counts as one). Arguments starting with --output are blocked too.
 # [agent]
-# allowed_commands = ["git status", "git diff", "git add", "git commit", "git stash"]
+# allowed_commands = ["git status", "git diff", "git add", "git commit", "git stash push"]

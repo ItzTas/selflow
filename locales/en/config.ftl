@@ -24,7 +24,8 @@ config-bad-date = The value `{ $value }` isn't a date like 2026-12-25.
 config-duplicate-exception = There's already an exception for { $date }.
 config-exception-unknown-rule = The exception for { $date } names `{ $rule }`, but the rule set for that day has no rule with that id.
 config-agent-bad-level = The level `{ $value }` in a Claude step of the rule `{ $id }` isn't one Selflow knows. The levels are message, light, no-new-work and save-only.
-config-agent-bad-folder = The folder `{ $value }` in a Claude step of the rule `{ $id }` needs to be `~`, start with `~/`, or be an absolute path.
+config-agent-bad-folder = The folder `{ $value }` in a Claude step of the rule `{ $id }` needs to be `~`, start with `~/`, or be an absolute path. None of its parts can be `.` or `..`.
+config-agent-duplicate-step = The rule `{ $id }` has two Claude steps with before = `{ $before }` and level `{ $level }`. Remove one of them, or change its before or its level.
 config-agent-too-early = A Claude step of the rule `{ $id }` has before = `{ $value }`. It needs to be under 24h.
 config-agent-empty-command = An entry of allowed_commands under [agent] is empty. Write a command like "git status", or remove the entry.
 config-before-update = Your settings from before this Selflow update, kept here for reference. Selflow no longer reads them, so copy what you want to keep into the file above.

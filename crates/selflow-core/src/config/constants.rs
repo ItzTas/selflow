@@ -30,7 +30,7 @@ pub const DEFAULT_ALLOWED_COMMANDS: [&str; 5] = [
     "git diff",
     "git add",
     "git commit",
-    "git stash",
+    "git stash push",
 ];
 
 pub const AGENT_LEVELS: [(&str, AgentLevel); 4] = [

@@ -149,6 +149,14 @@ fn a_started_level_holds_after_its_loosening_applies() {
             .collect::<Vec<_>>(),
         ["bedtime/2026-11-19/60m/light"]
     );
+    let reworded = parse(&format!(
+        "{}{LIGHT_STEP}message = \"Wind down.\"\n",
+        no_jitter()
+    ))
+    .unwrap();
+    let agent = evaluate(&at(19, 23, 30), &reworded, Seed(7), &log).agent;
+    assert_eq!(agent.len(), 1);
+    assert_eq!(agent[0].step, log.started[0].agent[0]);
 }
 
 #[test]
@@ -267,7 +275,9 @@ fn only_plain_allowed_commands_pass() {
         "git status",
         "  git diff --stat",
         "git commit -m \"save work\"",
+        "git commit -m \"x\"",
         "git add -A",
+        "git stash push -m wip",
         "git stash\tpush",
     ] {
         assert!(command_allowed(command, &allowed), "{command:?}");
@@ -280,6 +290,10 @@ fn only_plain_allowed_commands_pass() {
         "git statusx",
         "git\u{a0}status",
         "GIT_DIR=x git status",
+        "git stash",
+        "git stash pop",
+        "git stash apply",
+        "git stash drop",
         "git commit -m x && rm -rf src",
         "git status || rm f",
         "git status & rm f",
@@ -289,9 +303,31 @@ fn only_plain_allowed_commands_pass() {
         "git diff < in.txt",
         "git status | sh",
         "echo `id`",
-        "git stash\nrm f",
+        "git stash push\nrm f",
         "git add (rm f)",
         "git diff <(rm f)",
+        "git commit -m $HOME",
+        r"git status ${x:=$'\x24\x28touch PWNED_P\x29'} ${x@P}",
+        r"git status ${y:=$'a[\x24\x28touch PWNED_ARITH\x29]'} ${HOME:y}",
+        r"git status ${y:=$'a[\x24\x28touch PWNED_Z3\x29]'} $[y]",
+        "git diff {--output=src/main.rs,}",
+    ] {
+        assert!(!command_allowed(command, &allowed), "{command:?}");
+    }
+}
+
+#[test]
+fn arguments_that_make_git_write_files_are_denied() {
+    let allowed = Config::empty().agent_allowed_commands;
+    for command in [
+        "git diff --output=f",
+        "git diff --output f",
+        "git diff --output-indicator-new=x",
+        "git diff --stat --output=src/main.rs",
+        "git diff \"--output=f\"",
+        "git diff '--output'=f",
+        "git diff --o\"\"utput=f",
+        r"git diff --outp\ut=f",
     ] {
         assert!(!command_allowed(command, &allowed), "{command:?}");
     }

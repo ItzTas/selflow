@@ -1,6 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{self, Path};
 
 use jiff::{
     SignedDuration,
@@ -366,7 +366,28 @@ impl Check<'_> {
             .iter()
             .map(|step| self.agent_step(raw, step))
             .collect();
+        self.duplicate_steps(raw, &steps);
         steps.into_iter().collect()
+    }
+
+    fn duplicate_steps(&mut self, raw: &RawRule, steps: &[Option<AgentStep>]) {
+        let mut seen = Vec::new();
+        for (written, step) in raw.agent.iter().zip(steps) {
+            let Some(step) = step else {
+                continue;
+            };
+            let moment = (step.before, step.level);
+            if !seen.contains(&moment) {
+                seen.push(moment);
+                continue;
+            }
+            let args = vec![
+                ("id", raw.id.get_ref().clone()),
+                ("before", written.before.get_ref().clone()),
+                ("level", written.level.get_ref().clone()),
+            ];
+            self.report(&written.before, "config-agent-duplicate-step", args);
+        }
     }
 
     fn agent_step(&mut self, raw: &RawRule, step: &RawAgentStep) -> Option<AgentStep> {
@@ -418,7 +439,11 @@ impl Check<'_> {
 
     fn folder(&mut self, raw: &RawRule, value: &Spanned<String>) -> Option<String> {
         let folder = value.get_ref();
-        if folder == "~" || folder.starts_with("~/") || Path::new(folder).is_absolute() {
+        let rooted = folder == "~" || folder.starts_with("~/") || Path::new(folder).is_absolute();
+        let plain = !folder
+            .split(path::is_separator)
+            .any(|part| part == "." || part == "..");
+        if rooted && plain {
             return Some(folder.clone());
         }
         self.report(value, "config-agent-bad-folder", id_value_args(raw, value));

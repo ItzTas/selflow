@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::config::AgentStep;
 
-use constants::{HOME_FOLDER, SHELL_OPERATORS, WORD_SEPARATORS};
+use constants::{DENIED_ARGUMENT_PREFIXES, HOME_FOLDER, QUOTING, SHELL_OPERATORS, WORD_SEPARATORS};
 
 pub use types::ActiveAgentStep;
 
@@ -48,10 +48,20 @@ pub fn command_allowed(command: &str, allowed: &[String]) -> bool {
         return false;
     }
     let given = words(command);
+    if given.iter().any(|word| denied_argument(word)) {
+        return false;
+    }
     allowed.iter().any(|entry| {
         let entry = words(entry);
         !entry.is_empty() && given.starts_with(&entry)
     })
+}
+
+fn denied_argument(word: &str) -> bool {
+    let unquoted: String = word.chars().filter(|c| !QUOTING.contains(c)).collect();
+    DENIED_ARGUMENT_PREFIXES
+        .iter()
+        .any(|prefix| unquoted.starts_with(prefix))
 }
 
 fn words(command: &str) -> Vec<&str> {

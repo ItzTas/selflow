@@ -49,7 +49,7 @@ are relative to it.
   `message` (text or list), `folders` (list) and `unattended` (bool); the levels are `message`,
   `light`, `no-new-work`, `save-only`, lightest to firmest. The allowed commands are a top-level
   `[agent]` table: `allowed_commands`, default
-  `["git status", "git diff", "git add", "git commit", "git stash"]`.
+  `["git status", "git diff", "git add", "git commit", "git stash push"]`.
 - A level holds from `starts_at - before` until the rule window's `ends_at` (spec §8.12). The
   firmest active level that covers a session governs it; on a tie, the later step. Steps are tied
   to the rule's start only, like `notices` today, not to a lock's shutdown, and a message is not
@@ -59,7 +59,8 @@ are relative to it.
   with its next prompt. A session that registers while a step is active (opened later, or known
   again after a daemon restart) gets it too (planner's call).
 - Save only lets a shell command through only when it holds no shell operator and its leading
-  words equal one allowed entry (planner's call). More allowed commands loosens, fewer tightens.
+  words equal one allowed entry, and no argument starts with a denied prefix (`--output`); `$`
+  counts as a shell operator (planner's call). More allowed commands loosens, fewer tightens.
 - A folder is `~`, `~/...` or absolute; it covers a working directory inside it, compared by path
   components. No folders means every session. `~` expands to the daemon's `HOME`.
 - Hooks never block Claude Code: any error, an unreachable daemon, another protocol version or
@@ -574,7 +575,7 @@ In `tests/versions.rs`, `diff` cases with `config(&[..])` edits that add one ste
   level firmer with `before` later (`changed`, Loosen); message text only (`change-agent-message`,
   Neutral).
 - `removing_a_rule_with_only_steps_loosens`: `change-rule-removed`, Loosen.
-- `allowed_command_changes_are_judged`: dropping `git stash` Tighten, adding `git push` Loosen,
+- `allowed_command_changes_are_judged`: dropping `git stash push` Tighten, adding `git push` Loosen,
   replacing one entry Loosen.
 
 In `tests/clocks.rs`, through `plan_save`:
@@ -810,7 +811,7 @@ Behavior:
 - `a_session_outside_the_folders_gets_nothing`: folders `["~/Workspace/seconv"]`, session in
   `/home/user/notes`: `None`.
 - `save_only_denies_edits_and_other_commands`: `Edit` → `Deny` whose reason contains
-  `git status, git diff, git add, git commit, git stash`; `Shell { "git commit -m save" }` →
+  `git status, git diff, git add, git commit, git stash push`; `Shell { "git commit -m save" }` →
   `Allow`; `Shell { "rm -rf src" }` → `Deny`; `Other` → `Allow`.
 - `the_firmest_level_wins`: light for all, save-only for `~/Workspace/work`: `Edit` denied in
   `/home/user/Workspace/work`, allowed in `/home/user/notes`.
