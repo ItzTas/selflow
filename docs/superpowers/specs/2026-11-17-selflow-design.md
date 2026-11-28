@@ -163,6 +163,13 @@ instead of the machine.
   devices overspend, the server reconciles the log once they reconnect, and the next-day report
   shows the overspend.
 
+Rules that belong to one device (owner, 2026-11-28). A rule can name the devices it applies to, for
+example the laptop the owner works on. Its notices and locks happen only on those devices, and its
+locks don't follow the user to the others, because the rule is about that machine: leaving the work
+laptop for another machine is what such a rule asks for. A rule that names no device applies to all
+of them and follows the user as above. Until the server holds the configuration (M3), each machine
+keeps its own, so every rule already belongs to the machine it was saved on.
+
 ### 6.6 Server and transport
 
 - `axum`, with PostgreSQL as the server database. Selflow uses its own database and role on the

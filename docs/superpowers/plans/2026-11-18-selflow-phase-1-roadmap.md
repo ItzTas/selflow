@@ -5,7 +5,9 @@
   need no lock, Claude Code steps inside rules, modes as defaults and limits, the terminal unlock,
   the split between `selflow` and `selflow-ui`, and the operating system layer. Later that day the
   M2 plan split M2 into M2.1 and M2.2, and the owner set the order after M1: M2.1, the lock screen
-  themes, M2b, M2.2.
+  themes, M2b, M2.2. **Updated:** 2026-11-28, when the owner reordered what follows M2.1 so the
+  features that hold them back come first: M2b, M3, M4, M5, M2.2, then the lock screen themes with
+  the hard-to-miss notices. M3 also gained rules that belong to one device.
 
 Phase 1 ("Stop", spec §17) is too big for a single plan, so it is split into milestones. Each
 milestone ends with something the owner uses every day, and each gets its own detailed plan. The
@@ -17,12 +19,12 @@ working night lock on one machine first, then the server and the multi-device pi
 |---|---|---|
 | M1. Night lock | Bedtime warnings, a real lock screen with extensions, shutdown, and config changes that wait 24 hours to loosen. One machine, no server. | `2026-11-18-selflow-m1-night-lock.md` |
 | M2.1. Rules and steps | Rules with any mix of notices, a lock and a shutdown (with or without a lock, once or on every boot), custom messages, challenges and a budget per rule, each change on its own clock, exception days, the terminal unlock, and the command line split from the graphical binary. Still one machine. | `2026-11-20-selflow-m2-1-rules-and-steps.md` |
-| Lock screen themes | A lock screen as configurable as hyprlock's, from `~/.config/selflow/lock.toml`, that can't hide the challenge form or a coming shutdown. Still one machine. | not written yet |
 | M2b. Claude Code sessions | Claude steps in any rule: messages to open Claude Code sessions, with a level that narrows what the agent takes on, reminders on every prompt, and edits and shell commands denied at the firmest level. Still one machine. | not written yet |
-| M2.2. Watching apps | Rules about windows and processes, the local workday, app blocking, inhibit, and the tray and the small window. Still one machine. | not written yet |
 | M3. Server and accounts | The server with accounts and devices, onboarding with modes, the configuration kept on the server, sync with an offline queue. | not written yet |
 | M4. Deploy on the Pi | The server running on the Pi behind HTTPS, used by the laptop and the work PC. | not written yet |
 | M5. One user, many devices | Locks and blocks that follow the user across machines, the shared budget, the cross-device workday and the morning report. | not written yet |
+| M2.2. Watching apps | Rules about windows and processes, the local workday, app blocking, inhibit, and the tray and the small window. Still one machine. | not written yet |
+| Lock screen themes | A lock screen as configurable as hyprlock's, from `~/.config/selflow/lock.toml`, that can't hide the challenge form or a coming shutdown. Still one machine. | not written yet |
 
 ## Where each phase 1 item lands
 
@@ -100,8 +102,8 @@ daemon stays within budget.
 
 ## Lock screen themes
 
-Added on 2026-11-20 (§8.5.1). A small milestone right after M2.1, because it needs only
-`selflow-ui`.
+Added on 2026-11-20 (§8.5.1). A small milestone that needs only `selflow-ui`. On 2026-11-28 the
+owner moved it to the end of phase 1, after M2.2, because it adds comfort rather than enforcement.
 
 - The theme file `~/.config/selflow/lock.toml`, outside the configuration versions: a theme change
   skips the loosening delay, and the next lock uses the saved file. `selflow-platform`'s paths
@@ -127,8 +129,8 @@ popup window.
 
 ## M2b. Claude Code sessions
 
-Added on 2026-11-18 and reworked on 2026-11-20. It comes after M2.1 and the lock screen themes, in
-the owner's order, and uses M2.1's rule steps. Its steps cover sessions by folder (§8.12), so it
+Added on 2026-11-18 and reworked on 2026-11-20. It comes right after M2.1 and the versioned IPC
+plan, in the owner's order of 2026-11-28, and uses M2.1's rule steps. Its steps cover sessions by folder (§8.12), so it
 doesn't need M2.2's work classification. It needs nothing from the server either, so it runs on one
 machine like M1 and M2.1.
 
@@ -164,7 +166,9 @@ percentile on the owner's laptop, measured with the daemon running (§15).
 
 ## M2.2 Watching apps
 
-The second half of M2, planned once M2b is built, on the code then in place.
+The second half of M2, planned once M5 is built (the owner's order of 2026-11-28), on the code then
+in place. Its work classification also feeds the cross-device workday: until it lands, M5's workday
+uses the schedule fallback (§6.3).
 
 - Hyprland adapter: the event socket, open windows and closing a window (§6.4, §15).
 - Process detector reading `/proc` every 30 to 60 s, only when a rule uses processes (§15).
@@ -195,6 +199,8 @@ hours triggers its rule, the tray shows the state, and the daemon stays within b
 - The PIN held by someone else (§8.5).
 - Daemon sync: configuration pull, event upload with the offline queue, and the push channel
   (§6.2, §6.6).
+- Rules that belong to one device (§6.5, owner, 2026-11-28): a rule names the devices it applies
+  to, its steps run only there, and its locks stay on those devices instead of following the user.
 
 Done when the owner logs in from the laptop, edits the configuration through the server, and the
 daemon keeps enforcing while the server is down.
