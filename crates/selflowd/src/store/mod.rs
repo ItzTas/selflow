@@ -13,7 +13,7 @@ use selflow_platform::secure_fs::{private_dir, private_file};
 
 use migrations::MIGRATIONS;
 use types::ShutdownDetail;
-pub use types::{Event, EventKind, StoreError};
+pub use types::{Announcement, BootState, Event, EventKind, StoreError, StoredLock};
 
 const CHANGE_KINDS: [(ChangeKind, &str); 3] = [
     (ChangeKind::Tighten, "tighten"),
@@ -393,6 +393,174 @@ impl Store {
                 rule_id: detail.rule,
                 logical_date: date,
                 at: at.parse()?,
+            })
+        })
+        .collect()
+    }
+
+    pub fn boot_state(&self, boot_id: &str, since: civil::Date) -> Result<BootState, StoreError> {
+        Ok(BootState {
+            announced: self.announcements_of(boot_id)?,
+            sent: self.notices_of(boot_id)?,
+            shut_down: self.shutdowns_of(boot_id)?,
+            locks: self.locks_of(boot_id, since)?,
+        })
+    }
+
+    pub fn forget_other_boots(&self, boot_id: &str, since: civil::Date) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        for table in ["boot_announcements", "boot_notices", "boot_shutdowns"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE boot_id <> ?1"),
+                params![boot_id],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM shown_locks WHERE ended = 1 AND logical_date < ?1",
+            params![since.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn record_announcement(
+        &self,
+        boot_id: &str,
+        announcement: &Announcement,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO boot_announcements (boot_id, rule_key, starts_at, announced_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                boot_id,
+                announcement.rule_key,
+                timestamp_text(announcement.starts_at),
+                timestamp_text(announcement.announced_at)
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_notice_sent(
+        &self,
+        boot_id: &str,
+        key: &str,
+        at: Timestamp,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO boot_notices (boot_id, key, at) VALUES (?1, ?2, ?3)",
+            params![boot_id, key, timestamp_text(at)],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_shutdown_done(&self, boot_id: &str, key: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO boot_shutdowns (boot_id, key) VALUES (?1, ?2)",
+            params![boot_id, key],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_lock(&self, boot_id: &str, lock: &StoredLock) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO shown_locks
+               (identity, label, logical_date, test, ended, boot_id, shutdown_on_screen, shut_down)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT (identity) DO UPDATE SET
+               label = excluded.label, logical_date = excluded.logical_date, test = excluded.test,
+               ended = excluded.ended, boot_id = excluded.boot_id,
+               shutdown_on_screen = excluded.shutdown_on_screen, shut_down = excluded.shut_down",
+            params![
+                lock.identity,
+                lock.label,
+                lock.logical_date.to_string(),
+                lock.test,
+                lock.ended,
+                boot_id,
+                lock.shutdown_on_screen.map(timestamp_text),
+                lock.shut_down
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn announcements_of(&self, boot_id: &str) -> Result<Vec<Announcement>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT rule_key, starts_at, announced_at FROM boot_announcements
+             WHERE boot_id = ?1 ORDER BY rowid",
+        )?;
+        let rows = statement.query_map(params![boot_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (rule_key, starts_at, announced_at) = row?;
+            Ok(Announcement {
+                rule_key,
+                starts_at: starts_at.parse()?,
+                announced_at: announced_at.parse()?,
+            })
+        })
+        .collect()
+    }
+
+    fn notices_of(&self, boot_id: &str) -> Result<Vec<(String, Timestamp)>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT key, at FROM boot_notices WHERE boot_id = ?1 ORDER BY rowid")?;
+        let rows = statement.query_map(params![boot_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.map(|row| {
+            let (key, at) = row?;
+            Ok((key, at.parse()?))
+        })
+        .collect()
+    }
+
+    fn shutdowns_of(&self, boot_id: &str) -> Result<Vec<String>, StoreError> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT key FROM boot_shutdowns WHERE boot_id = ?1 ORDER BY rowid")?;
+        let rows = statement.query_map(params![boot_id], |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn locks_of(&self, boot_id: &str, since: civil::Date) -> Result<Vec<StoredLock>, StoreError> {
+        let mut statement = self.conn.prepare(
+            "SELECT identity, label, logical_date, test, ended, boot_id, shutdown_on_screen, shut_down
+             FROM shown_locks WHERE ended = 0 OR logical_date >= ?1 ORDER BY rowid",
+        )?;
+        let rows = statement.query_map(params![since.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, bool>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, bool>(7)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (identity, label, logical_date, test, ended, owner, on_screen, shut_down) = row?;
+            let this_boot = owner == boot_id;
+            Ok(StoredLock {
+                identity,
+                label,
+                logical_date: logical_date.parse()?,
+                test,
+                ended,
+                shutdown_on_screen: on_screen
+                    .filter(|_| this_boot)
+                    .map(|text| text.parse())
+                    .transpose()?,
+                shut_down: shut_down && this_boot,
             })
         })
         .collect()

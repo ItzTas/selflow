@@ -9,7 +9,7 @@ use selflow_core::enforce::DayLog;
 use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
-use selflowd::store::{Event, EventKind, Store};
+use selflowd::store::{Announcement, BootState, Event, EventKind, Store, StoredLock};
 use support::{M1_TEXT, at, brt, extension, m1_store, no_jitter};
 
 #[test]
@@ -203,4 +203,140 @@ fn orders_events_by_time_across_fractions() {
         .map(|e| e.key)
         .collect();
     assert_eq!(keys, vec!["a", "b", "c"]);
+}
+
+fn announcement(
+    rule_key: &str,
+    starts_at: jiff::Timestamp,
+    announced_at: jiff::Timestamp,
+) -> Announcement {
+    Announcement {
+        rule_key: rule_key.to_owned(),
+        starts_at,
+        announced_at,
+    }
+}
+
+fn lock(identity: &str) -> StoredLock {
+    StoredLock {
+        identity: identity.to_owned(),
+        label: "Bedtime".to_owned(),
+        logical_date: date(2026, 11, 18),
+        test: false,
+        ended: false,
+        shutdown_on_screen: None,
+        shut_down: false,
+    }
+}
+
+fn empty_boot(state: &BootState) -> bool {
+    state.announced.is_empty() && state.sent.is_empty() && state.shut_down.is_empty()
+}
+
+#[test]
+fn an_announcement_keeps_its_first_instant_within_a_boot() {
+    let store = Store::open_in_memory().unwrap();
+    let starts_at = at(18, 2, 30).timestamp();
+    let first = at(18, 2, 0).timestamp();
+    let second = first + jiff::SignedDuration::from_secs(30);
+    store
+        .record_announcement("b1", &announcement("rule", starts_at, first))
+        .unwrap();
+    store
+        .record_announcement("b1", &announcement("rule", starts_at, second))
+        .unwrap();
+    let state = store.boot_state("b1", date(2026, 11, 17)).unwrap();
+    assert_eq!(
+        state.announced,
+        vec![announcement("rule", starts_at, first)]
+    );
+}
+
+#[test]
+fn per_boot_rows_stay_with_their_boot() {
+    let store = Store::open_in_memory().unwrap();
+    let instant = at(18, 2, 0).timestamp();
+    store
+        .record_announcement("b1", &announcement("rule", instant, instant))
+        .unwrap();
+    store.record_notice_sent("b1", "notice", instant).unwrap();
+    store.record_shutdown_done("b1", "rule").unwrap();
+    let same = store.boot_state("b1", date(2026, 11, 17)).unwrap();
+    assert_eq!(same.announced.len(), 1);
+    assert_eq!(same.sent, vec![("notice".to_owned(), instant)]);
+    assert_eq!(same.shut_down, vec!["rule".to_owned()]);
+    assert!(empty_boot(
+        &store.boot_state("b2", date(2026, 11, 17)).unwrap()
+    ));
+}
+
+#[test]
+fn a_lock_keeps_its_end_state_across_boots_but_not_its_shutdown() {
+    let store = Store::open_in_memory().unwrap();
+    let saved = StoredLock {
+        shutdown_on_screen: Some(at(18, 23, 30).timestamp()),
+        shut_down: true,
+        ..lock("lock")
+    };
+    store.save_lock("b1", &saved).unwrap();
+    let next = store.boot_state("b2", date(2026, 11, 17)).unwrap();
+    assert_eq!(
+        next.locks,
+        vec![StoredLock {
+            shutdown_on_screen: None,
+            shut_down: false,
+            ..saved.clone()
+        }]
+    );
+    let same = store.boot_state("b1", date(2026, 11, 17)).unwrap();
+    assert_eq!(same.locks, vec![saved]);
+}
+
+#[test]
+fn saving_a_lock_again_updates_it() {
+    let store = Store::open_in_memory().unwrap();
+    let first = StoredLock {
+        shutdown_on_screen: Some(at(18, 23, 30).timestamp()),
+        ..lock("lock")
+    };
+    let second = StoredLock {
+        shutdown_on_screen: Some(at(18, 23, 31).timestamp()),
+        ..lock("lock")
+    };
+    store.save_lock("b1", &first).unwrap();
+    store.save_lock("b1", &second).unwrap();
+    let state = store.boot_state("b1", date(2026, 11, 17)).unwrap();
+    assert_eq!(state.locks, vec![second]);
+}
+
+#[test]
+fn forgetting_other_boots_keeps_open_locks() {
+    let store = Store::open_in_memory().unwrap();
+    let instant = at(18, 2, 0).timestamp();
+    for boot in ["b1", "b2"] {
+        store
+            .record_announcement(boot, &announcement("rule", instant, instant))
+            .unwrap();
+        store.record_notice_sent(boot, "notice", instant).unwrap();
+        store.record_shutdown_done(boot, "rule").unwrap();
+    }
+    let open = lock("open");
+    let old_ended = StoredLock {
+        ended: true,
+        logical_date: date(2026, 11, 10),
+        ..lock("old")
+    };
+    store.save_lock("b1", &open).unwrap();
+    store.save_lock("b1", &old_ended).unwrap();
+    store.forget_other_boots("b2", date(2026, 11, 17)).unwrap();
+    assert!(empty_boot(
+        &store.boot_state("b1", date(2026, 11, 17)).unwrap()
+    ));
+    let kept = store.boot_state("b2", date(2026, 11, 17)).unwrap();
+    assert_eq!(kept.announced.len(), 1);
+    assert_eq!(kept.sent.len(), 1);
+    assert_eq!(kept.shut_down.len(), 1);
+    assert_eq!(kept.locks, vec![open]);
+    let everything = store.boot_state("b2", date(2026, 11, 1)).unwrap();
+    assert_eq!(everything.locks.len(), 1);
 }

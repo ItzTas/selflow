@@ -15,4 +15,12 @@ pub const MIGRATIONS: &[&str] = &[
      DELETE FROM started_windows;",
     "CREATE TABLE exceptions (rule_id TEXT NOT NULL, logical_date TEXT NOT NULL, requested_at TEXT NOT NULL,
        granted_at TEXT, reason TEXT, PRIMARY KEY (rule_id, logical_date)) STRICT;",
+    "CREATE TABLE boot_announcements (boot_id TEXT NOT NULL, rule_key TEXT NOT NULL, starts_at TEXT NOT NULL,
+       announced_at TEXT NOT NULL, PRIMARY KEY (boot_id, rule_key, starts_at)) STRICT;
+     CREATE TABLE boot_notices (boot_id TEXT NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL,
+       PRIMARY KEY (boot_id, key, at)) STRICT;
+     CREATE TABLE boot_shutdowns (boot_id TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY (boot_id, key)) STRICT;
+     CREATE TABLE shown_locks (identity TEXT PRIMARY KEY, label TEXT NOT NULL, logical_date TEXT NOT NULL,
+       test INTEGER NOT NULL, ended INTEGER NOT NULL, boot_id TEXT NOT NULL, shutdown_on_screen TEXT,
+       shut_down INTEGER NOT NULL) STRICT;",
 ];

@@ -40,3 +40,29 @@ pub struct Event {
 pub(super) struct ShutdownDetail {
     pub(super) rule: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Announcement {
+    pub rule_key: String,
+    pub starts_at: Timestamp,
+    pub announced_at: Timestamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredLock {
+    pub identity: String,
+    pub label: String,
+    pub logical_date: civil::Date,
+    pub test: bool,
+    pub ended: bool,
+    pub shutdown_on_screen: Option<Timestamp>,
+    pub shut_down: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BootState {
+    pub announced: Vec<Announcement>,
+    pub sent: Vec<(String, Timestamp)>,
+    pub shut_down: Vec<String>,
+    pub locks: Vec<StoredLock>,
+}
