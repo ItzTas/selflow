@@ -546,6 +546,11 @@ The owner's example: they are about to leave work, don't notice the time, and as
 something that takes an hour. A first message limits Claude to light tasks, and a later one asks it
 to refuse new work, so the session winds down with the workday instead of running past it.
 
+Agent steps go through adapters, one per agent tool (owner, 2026-11-27). The owner works in Claude
+Code most of the time and switches to another agent, such as opencode, when the usage limit runs
+out. Claude Code is the first adapter, and the M2b plan shapes the integration so that another
+agent can be added without touching the rules. A rule only says "send this to the agent".
+
 What Claude Code offers, checked against the official documentation on 2026-11-18 (Claude Code
 2.1.327 on the owner's laptop):
 

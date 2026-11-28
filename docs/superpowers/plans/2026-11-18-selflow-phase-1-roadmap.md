@@ -126,6 +126,9 @@ the owner's order, and uses M2.1's rule steps. Its steps cover sessions by folde
 doesn't need M2.2's work classification. It needs nothing from the server either, so it runs on one
 machine like M1 and M2.1.
 
+- Agent steps go through adapters, one per agent tool, with Claude Code as the first (§8.12, owner,
+  2026-11-27). The plan shapes the hooks, the session registry and the delivery so that another
+  agent, such as opencode, can be added later without touching the rules.
 - First, an experiment against a live session to find the message framing on the inbox socket
   (§8.12, §21). Its result decides whether messages wake idle sessions or wait
   for the next prompt.
