@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use support::ScriptedPrompt;
 
 const SELFLOW: &str = "/usr/bin/selflow";
-const MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash";
+const MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor";
 const EVENTS: [(&str, &str); 4] = [
     ("SessionStart", "session-start"),
     ("SessionEnd", "session-end"),

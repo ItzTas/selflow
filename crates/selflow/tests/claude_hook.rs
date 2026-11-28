@@ -104,6 +104,36 @@ fn each_fixture_becomes_its_request() {
 }
 
 #[test]
+fn any_tool_with_a_command_becomes_a_shell_call() {
+    let env = interactive();
+    let cases = [
+        ("Monitor", "touch f"),
+        ("PowerShell", "Remove-Item -Recurse src"),
+        ("Monitor", "git status"),
+        ("FutureShell", "rm -rf src"),
+    ];
+    for (tool, command) in cases {
+        let mut call = input("tool-bash.json");
+        call["tool_name"] = json!(tool);
+        call["tool_input"] = json!({"command": command, "description": "watch"});
+        assert_eq!(
+            hook_request(HookEvent::Tool, &call, &env),
+            Some(tool_request(ToolCall::Shell {
+                command: command.to_owned()
+            })),
+            "{tool}"
+        );
+    }
+    let mut edit = input("tool-write.json");
+    edit["tool_name"] = json!("NotebookEdit");
+    edit["tool_input"]["command"] = json!("insert");
+    assert_eq!(
+        hook_request(HookEvent::Tool, &edit, &env),
+        Some(tool_request(ToolCall::Edit))
+    );
+}
+
+#[test]
 fn attended_follows_the_recorded_signal() {
     assert!(attended(&interactive()));
     let print_mode = hook_env(Some("0"), Some("sdk-cli"));

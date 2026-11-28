@@ -23,7 +23,7 @@ CLAUDE_HOOKS=(
 	"UserPromptSubmit prompt"
 	"PreToolUse tool"
 )
-CLAUDE_TOOL_MATCHER="Edit|Write|MultiEdit|NotebookEdit|Bash"
+CLAUDE_TOOL_MATCHER="Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor"
 CLAUDE_ALLOWED_COMMANDS=("Bash(git status:*)" "Bash(git commit:*)")
 CLAUDE_FILE_TOOLS=(Read Edit Write)
 CLAUDE_PERMISSION_PROMPT='Esc to cancel|Do you want to |❯ [0-9]+\. Yes'

@@ -11,9 +11,8 @@ pub(super) const HOOK_EVENTS: [HookEvent; 4] = [
     HookEvent::Tool,
 ];
 pub(super) const HOOK_TIMEOUT_SECONDS: u64 = 5;
-pub(super) const TOOL_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash";
+pub(super) const TOOL_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor";
 pub(super) const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
-pub(super) const SHELL_TOOL: &str = "Bash";
 pub(super) const PROGRAM_NAME: &str = "selflow";
 pub(super) const PLAIN_PATH_CHARS: &str = "/._+@%,:=-";
 pub(super) const MAX_LINKS: usize = 40;

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 
-use super::constants::{EDIT_TOOLS, HOOK_DEADLINE, SHELL_TOOL};
+use super::constants::{EDIT_TOOLS, HOOK_DEADLINE};
 use super::types::{HookEnv, HookEvent};
 
 pub fn hook_env() -> HookEnv {
@@ -64,14 +64,15 @@ fn session(id: String, input: &Value, env: &HookEnv) -> Option<AgentSession> {
 
 fn tool_call(input: &Value) -> Option<ToolCall> {
     let name = input["tool_name"].as_str()?;
-    if name == SHELL_TOOL {
-        let command = input["tool_input"]["command"].as_str()?.to_owned();
-        return Some(ToolCall::Shell { command });
-    }
     if EDIT_TOOLS.contains(&name) {
         return Some(ToolCall::Edit);
     }
-    Some(ToolCall::Other)
+    let Some(command) = input["tool_input"]["command"].as_str() else {
+        return Some(ToolCall::Other);
+    };
+    Some(ToolCall::Shell {
+        command: command.to_owned(),
+    })
 }
 
 pub fn hook_output(event: HookEvent, response: &Response) -> Option<String> {
