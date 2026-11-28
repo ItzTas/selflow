@@ -1,4 +1,5 @@
 use std::io::{self, ErrorKind};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -6,11 +7,12 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{UnixListener, UnixStream};
 
-use super::ListenError;
+use super::{AcceptError, ListenError};
 use crate::secure_fs::private_dir;
 
 pub struct Listener {
     inner: UnixListener,
+    owner: u32,
 }
 
 pub struct Stream {
@@ -18,10 +20,18 @@ pub struct Stream {
 }
 
 impl Listener {
-    pub async fn accept(&self) -> io::Result<Stream> {
+    pub async fn accept(&self) -> Result<Stream, AcceptError> {
         let (inner, _) = self.inner.accept().await?;
+        check_peer(self.owner, inner.peer_cred()?.uid())?;
         Ok(Stream { inner })
     }
+}
+
+pub fn check_peer(owner: u32, peer: u32) -> Result<(), AcceptError> {
+    if owner == peer {
+        return Ok(());
+    }
+    Err(AcceptError::ForeignPeer { uid: peer })
 }
 
 impl AsyncRead for Stream {
@@ -64,11 +74,15 @@ pub fn listen(path: &Path) -> Result<Listener, ListenError> {
     {
         return Err(error.into());
     }
-    match UnixListener::bind(path) {
-        Ok(inner) => Ok(Listener { inner }),
-        Err(error) if error.kind() == ErrorKind::AddrInUse => Err(ListenError::AlreadyRunning),
-        Err(error) => Err(error.into()),
-    }
+    let inner = match UnixListener::bind(path) {
+        Ok(inner) => inner,
+        Err(error) if error.kind() == ErrorKind::AddrInUse => {
+            return Err(ListenError::AlreadyRunning);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let owner = std::fs::metadata(path)?.uid();
+    Ok(Listener { inner, owner })
 }
 
 pub async fn connect(path: &Path) -> io::Result<Stream> {

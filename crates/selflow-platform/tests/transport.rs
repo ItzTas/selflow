@@ -1,4 +1,4 @@
-use selflow_platform::transport::{ListenError, connect, listen};
+use selflow_platform::transport::{AcceptError, ListenError, check_peer, connect, listen};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 #[tokio::test]
@@ -36,4 +36,26 @@ async fn a_leftover_socket_file_is_replaced() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "").unwrap();
     assert!(listen(&path).is_ok());
+}
+
+#[tokio::test]
+async fn a_peer_of_the_same_user_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selflow/daemon.sock");
+    let listener = listen(&path).unwrap();
+    let _client = connect(&path).await.unwrap();
+    assert!(listener.accept().await.is_ok());
+}
+
+#[test]
+fn a_peer_with_the_owner_uid_passes_the_check() {
+    assert!(check_peer(1000, 1000).is_ok());
+}
+
+#[test]
+fn a_peer_with_another_uid_is_refused() {
+    assert!(matches!(
+        check_peer(1000, 1001),
+        Err(AcceptError::ForeignPeer { uid: 1001 })
+    ));
 }

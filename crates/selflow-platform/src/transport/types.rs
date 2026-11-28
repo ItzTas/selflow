@@ -9,3 +9,11 @@ pub enum ListenError {
     #[error("socket error: {0}")]
     Io(#[from] io::Error),
 }
+
+#[derive(Debug, Error)]
+pub enum AcceptError {
+    #[error("socket error: {0}")]
+    Io(#[from] io::Error),
+    #[error("a connection came from another user (uid {uid})")]
+    ForeignPeer { uid: u32 },
+}

@@ -4,7 +4,7 @@ mod types;
 
 use std::sync::Arc;
 
-use selflow_platform::transport::{Listener, Stream};
+use selflow_platform::transport::{AcceptError, Listener, Stream};
 use selflow_protocol::ipc::{
     HANDSHAKE_TIMEOUT, LockView, MessageReader, PROTOCOL_VERSION, Request, hello_as_daemon,
     message_reader, read_message, write_message,
@@ -19,8 +19,15 @@ pub use types::{IpcError, Shared};
 
 pub async fn serve(listener: Listener, shared: Arc<Shared>) -> Result<(), IpcError> {
     loop {
-        let stream = listener.accept().await?;
-        tokio::spawn(converse(stream, Arc::clone(&shared)));
+        match listener.accept().await {
+            Ok(stream) => {
+                tokio::spawn(converse(stream, Arc::clone(&shared)));
+            }
+            Err(AcceptError::ForeignPeer { uid }) => {
+                tracing::warn!(uid, "refused a connection from another user");
+            }
+            Err(AcceptError::Io(error)) => return Err(error.into()),
+        }
     }
 }
 
