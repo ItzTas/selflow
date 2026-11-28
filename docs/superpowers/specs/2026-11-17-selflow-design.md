@@ -577,7 +577,11 @@ What Claude Code offers, checked against the official documentation on 2026-11-1
   (on the owner's laptop, `/run/user/1000/cc-socks/` has mode 0700 and each socket 0600). Claude
   Code closes a connection that hasn't sent a complete line within 30 seconds, so the daemon opens
   it only when the message is ready. The documentation doesn't describe the framing of a message,
-  so the builder settles it with an experiment before anything else (section 21).
+  so the M2b plan tested it against a live session on 2026-11-28 (Claude Code 2.1.332). A message
+  is one line of JSON ending in a newline, sent with no auth line:
+  `{"type":"user","message":{"role":"user","content":"<text>"}}`. It woke an idle session.
+  Claude Code showed it as a message from another session and ran the `UserPromptSubmit` hook
+  with the text as the prompt. The socket lives at `$XDG_RUNTIME_DIR/cc-socks/<pid>.sock`.
 - Claude Code also exports a per-session token, `CLAUDE_CODE_MESSAGING_TOKEN`. Selflow doesn't use
   it. The token has two jobs: access control on native Windows, where the socket can't be limited
   to the user's account, and proving that a message came from one of the session's own child
@@ -611,11 +615,21 @@ Each Claude step has:
 - optionally, a switch that makes it cover runs nobody is watching too. It is off by default
   (owner, 2026-11-20).
 
+For M2b, a Claude step's time counts back only from the rule's start, the way notices do, not
+from its lock or its shutdown. Its message isn't sent again before the lock returns at the end of
+an extension; the level just holds through the extension. This narrows section 8.3, which allows
+steps placed before the lock or the shutdown and repeats them before the lock returns. Holding the
+level through the extension keeps enforcement at least as strict, and tying steps to the start
+keeps M2b smaller. If the owner wants the section 8.3 behavior, a later change adds times counted
+from the lock or the shutdown and the repeat. (Claude's call, pending the owner's confirmation)
+
 Claude steps cover the sessions someone is typing in (owner, 2026-11-20). Runs nobody is watching,
 such as `claude -p` in a script, an Agent SDK program or a scheduled run, carry on as normal unless
 the step turns that switch on. The next-day report lists the ones that ran while a level was
 active, so using them to get around "No new work" shows up the next day. An interactive session
 left running on its own still counts as attended, and a step's folder list can leave it out.
+A hook tells the two apart by `CLAUDE_CODE_SESSION_ATTENDED`: `1` in an interactive session and
+`0` in a `claude -p` run (checked on 2026-11-28, section 21).
 
 The levels go from lightest to firmest. The owner described the middle two, and the rest is
 Claude's call:
@@ -1029,14 +1043,16 @@ Conventions inside every crate:
   ideally with mockups.
 - The Pi's architecture and operating system, and how it is reached from the internet. To check
   before the deploy work in phase 1.
-- The message framing on the Claude Code inbox socket (section 8.12). It isn't
-  documented, so the first task of that milestone is an experiment against a live session. If no
-  stable format turns up, the integration ships with the hooks alone, and messages reach Claude on
-  the user's next prompt instead of waking an idle session.
-- How a hook tells a session someone is typing in from a run nobody is watching (section 8.12).
-  Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED` and `CLAUDE_CODE_ENTRYPOINT`, which were `1` and
-  `cli` in an interactive session on 2026-11-20. What they say in a `claude -p` run and inside a
-  hook hasn't been checked, so the M2b plan checks it before relying on them.
+- Answered on 2026-11-28: the message framing on the Claude Code inbox socket (section 8.12). An
+  experiment against a live session (Claude Code 2.1.332) found it: one JSON line,
+  `{"type":"user","message":{"role":"user","content":"<text>"}}` and a newline, with no auth line
+  or token. Sent from a process outside the session, it woke the idle session. Messages therefore
+  travel through the inbox, and the hooks remain for reminders, denials and sessions the daemon
+  didn't know about.
+- Answered on 2026-11-28: how a hook tells a session someone is typing in from a run nobody is
+  watching (section 8.12). Inside hooks, `CLAUDE_CODE_SESSION_ATTENDED` is `1` and
+  `CLAUDE_CODE_ENTRYPOINT` is `cli` in an interactive session; in a `claude -p` run they are `0`
+  and `sdk-cli`. Selflow counts a session as attended when `CLAUDE_CODE_SESSION_ATTENDED` is `1`.
 - Profiles (phase 7). Before they are designed, settle how switching to a profile relates to
   skipping a rule on purpose, so that a profile switch never becomes the easy bypass section 4
   rules out.

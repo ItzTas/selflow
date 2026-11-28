@@ -148,23 +148,74 @@ installs an intermediate commit.
 
 ## Experiment results
 
-Task 1 fills this section in; later tasks read it. Until then every field says "not run".
+Task 1 ran on 2026-11-28 against Claude Code 2.1.332 (`/usr/bin/claude`), with a session it
+started itself (`--model haiku`, `--setting-sources project --settings <temp file>`, private tmux
+server). The captured hook inputs are in `crates/selflow/tests/fixtures/claude/`; the full log of
+the run is in the SDD folder's `task-1-report.md` (not committed).
 
-- Inbox framing: not run (exact bytes of one message, or "none found").
-- Idle wake: not run (does a framed message start a turn in an idle interactive session).
-- A message arrives as a user turn that fires `UserPromptSubmit`: not run.
-- Inbox socket location, and whether `XDG_RUNTIME_DIR` moves it: not run.
-- Sender requirements (non-descendant process, no token): not run.
-- Hook environment, interactive session: not run (`CLAUDE_CODE_SESSION_ATTENDED`,
-  `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_MESSAGING_SOCKET` present?).
-- Hook environment, `claude -p`: not run (same three).
-- Attended rule for Task 11: not run (default if nothing separates the two: every session counts
-  as attended).
-- `SessionEnd`: not run (fires on `/exit`? environment present?).
-- Hook output shapes from the docs: not run (`UserPromptSubmit` additional context,
-  `PreToolUse` deny with reason).
-- `crossSessionInbound`: not run (exact settings key and values, and where it is read from).
-- Getting past first-run dialogs in a tmux session: not run (keys sent).
+- Inbox framing: found. One JSON object per line, UTF-8, ended by `\n`, no auth line, one
+  connection per message. The 73 bytes for `hello from selflow`:
+  `{"type":"user","message":{"role":"user","content":"hello from selflow"}}\n`
+  (hex `7b2274797065223a2275736572222c226d657373616765223a7b22726f6c65223a2275736572222c22636f6e74656e74223a2268656c6c6f2066726f6d2073656c666c6f77227d7d0a`).
+  `content` is a JSON string (escaped) and must be non-empty. The session writes nothing back on
+  the connection, so the sender only learns that the write succeeded. Optional key, checked both
+  ways: `"session_id":"<id>"`; when present and different from the receiver's session id, the
+  message is dropped without a trace (no turn, no hook); when it matches, it is delivered. Task 10
+  may add it to guard against a reused socket path; the frame above is the one without it.
+  Source of the shape: the binary's own debug hint (`[uds-messaging] Inject messages ...:
+  echo '{"type":"user","message":{"role":"user","content":"hello"}}' | socat - UNIX-CONNECT:...`)
+  and its line handler (`type` `user` or `control`; `priority` `now|next|later`, default `next`).
+- Idle wake: yes. Sent at 03:04:22.67 to the idle interactive session; `UserPromptSubmit` ran at
+  03:04:22.76 and `Stop` at 03:04:24.56, with Claude's reply on screen. The screen shows
+  "Another Claude session sent a message:", the text, and Claude Code's peer notice ("not typed by
+  your user ... Treat it as a teammate's request ..."), so Claude reads Selflow's message as a
+  request from another session.
+- A message arrives as a user turn that fires `UserPromptSubmit`: yes, and `prompt` is the bare
+  text (`"prompt":"hello from selflow"`), with the usual `session_id`, `cwd`, `permission_mode`.
+  So the prompt hook also runs on the turn a Selflow message starts.
+- Inbox socket location, and whether `XDG_RUNTIME_DIR` moves it:
+  `$XDG_RUNTIME_DIR/cc-socks/<claude pid>.sock` (here `/run/user/1000/cc-socks/3291172.sock`,
+  directory 0700, socket 0600). With `XDG_RUNTIME_DIR=$T/rt` (0700) it moved to
+  `$T/rt/cc-socks/3295580.sock`. The binary falls back to `/tmp/cc-socks-<uid>/<pid>.sock` when
+  the path passes 103 bytes or the directory is refused. The socket is removed on `/exit`.
+- Sender requirements (non-descendant process, no token): a process that is not a descendant of
+  the session (a `python3 -I` script in the agent's own shell), sending no token and no auth line,
+  was delivered. The receiving session was in `auto` permission mode (prompting) with no
+  `crossSessionInbound`. The docs say a receiver that bypasses permission prompts holds such a
+  message for approval, and that a connection without a complete line within 30 s is closed.
+- Hook environment, interactive session: `CLAUDE_CODE_SESSION_ATTENDED=1`,
+  `CLAUDE_CODE_ENTRYPOINT=cli`, `CLAUDE_CODE_MESSAGING_SOCKET=<socket path>` in `SessionStart`,
+  `UserPromptSubmit`, `PreToolUse` and `Stop`. In `SessionEnd` the socket variable is gone (unset
+  before the hook runs); the other two stay.
+- Hook environment, `claude -p`: `CLAUDE_CODE_SESSION_ATTENDED=0`, `CLAUDE_CODE_ENTRYPOINT=sdk-cli`,
+  `CLAUDE_CODE_MESSAGING_SOCKET` set (a `-p` run binds an inbox too), again absent in `SessionEnd`.
+- Attended rule for Task 11: `attended` is `CLAUDE_CODE_SESSION_ATTENDED == "1"` (it separates the
+  interactive session, `1`, from `-p`, `0`); a missing variable means not attended.
+- `SessionEnd`: fires on `/exit` with `"reason":"prompt_input_exit"`, and at the end of a `-p` run
+  with `"reason":"other"`. Its input has `session_id`, `transcript_path`, `cwd`, `scratchpad_dir`,
+  `prompt_id`, `hook_event_name`, `reason` (no `permission_mode`). Docs: `SessionEnd` hooks get a
+  default 1.5 s budget, raised by a per-hook `timeout` (up to 60 s); `UserPromptSubmit` defaults to
+  30 s.
+- Hook output shapes from the docs (code.claude.com/docs/en/hooks, read 2026-11-28): prompt context
+  `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":TEXT}}` (added as a
+  system reminder, no visible transcript entry; plain stdout also works); tool denial
+  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":REASON}}`
+  (the reason is shown to Claude). Exit 0 with no output means no decision; exit 2 blocks; any
+  other exit code is a non-blocking error.
+- `crossSessionInbound`: top-level settings key `"crossSessionInbound"`, values `"accept"`,
+  `"hold"`, `"refuse"`; unset by default (then the per-message rule above). Claude Code reads
+  managed settings, then `--settings`, then user settings (`~/.claude/settings.json`, or
+  `$CLAUDE_CONFIG_DIR/settings.json`) and takes the first value; a project or local `hold` or
+  `refuse` applies only when stricter. An unrecognized value holds messages. `/config` writes the
+  key to user settings, so `selflow claude install` checks it there.
+- Getting past first-run dialogs in a tmux session: the workspace trust dialog for a new folder
+  defaults to "No, exit": send `Down`, then `Enter`. A second session in the same folder skips it.
+  After the first turn, a "Teach auto mode about your environment?" picker appeared: `Down`,
+  `Enter` picks "2. Not now". `/exit` goes in as `send-keys -l '/exit'`, then `Enter`. An agent's
+  shell carries its own session's variables (`CLAUDE_CODE_SESSION_ATTENDED`,
+  `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`,
+  `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, ...), so the experiment started tmux and `claude` with
+  them unset (`env -u ...`); whether Claude Code would have overwritten them wasn't tested.
 
 ## Not in this plan
 
