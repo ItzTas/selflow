@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jiff::{
-    ZonedDateTime,
+    SignedDuration, ZonedDateTime,
     civil::date,
     tz::{self, TimeZone},
 };
@@ -154,10 +154,32 @@ pub fn start_engine_with(
     setup_over(store, now)
 }
 
+pub const BOOT: &str = "boot-1";
+
 pub fn engine_on(store: Arc<Mutex<Store>>, clock: Arc<TestClock>) -> (TestEngine, Calls) {
+    engine_on_boot(store, clock, BOOT)
+}
+
+pub fn engine_on_boot(
+    store: Arc<Mutex<Store>>,
+    clock: Arc<TestClock>,
+    boot: &str,
+) -> (TestEngine, Calls) {
     let calls = Calls::default();
-    let engine = Engine::new(clock, FakeEnforcer(calls.clone()), store).unwrap();
+    let engine = Engine::new(clock, FakeEnforcer(calls.clone()), store, boot.to_owned()).unwrap();
     (engine, calls)
+}
+
+pub fn steps(calls: &Calls) -> Vec<&'static str> {
+    calls
+        .take()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Warn(_) => Some("warn"),
+            Call::ShutDown => Some("shut down"),
+            _ => None,
+        })
+        .collect()
 }
 
 pub fn save_no_jitter(store: &Store) {
@@ -188,6 +210,12 @@ pub fn at(day: i8, hour: i8, minute: i8) -> ZonedDateTime {
     date(2026, 11, day)
         .at(hour, minute, 0, 0)
         .to_zoned_datetime(brt())
+        .unwrap()
+}
+
+pub fn second(day: i8, hour: i8, minute: i8, second: i64) -> ZonedDateTime {
+    at(day, hour, minute)
+        .checked_add(SignedDuration::from_secs(second))
         .unwrap()
 }
 

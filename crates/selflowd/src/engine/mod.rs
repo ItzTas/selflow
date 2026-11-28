@@ -4,7 +4,7 @@ mod types;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use jiff::{SignedDuration, Timestamp, Unit, ZonedDateTime, civil, tz::TimeZone};
+use jiff::{SignedDuration, Timestamp, ToSpan, Unit, ZonedDateTime, civil, tz::TimeZone};
 use selflow_core::config::{Action, Config, parse};
 use selflow_core::enforce::{
     ActiveLock, DayLog, Enforcement, Evaluation, Notice, NoticeKind, evaluate,
@@ -19,16 +19,17 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::Receiver;
 
 use crate::clock::Clock;
-use crate::store::{Event, EventKind, Store, StoreError};
+use crate::store::{Announcement, BootState, Event, EventKind, Store, StoreError, StoredLock};
 
 pub use constants::{MAX_SLEEP, SHUTDOWN_NOTICE, WARNING_GRACE};
 pub use types::{Enforcer, EngineError};
-use types::{Outcome, Record, ShownLock};
+use types::{Outcome, Record};
 
 pub struct Engine<C: Clock, E: Enforcer> {
     clock: Arc<C>,
     enforcer: E,
     store: Arc<Mutex<Store>>,
+    boot_id: String,
     seed: Seed,
     parsed: HashMap<i64, Config>,
     config: Config,
@@ -36,24 +37,45 @@ pub struct Engine<C: Clock, E: Enforcer> {
     sent: HashSet<(String, Timestamp)>,
     announced: HashMap<(String, Timestamp), Timestamp>,
     shut_down: HashSet<String>,
-    shown: HashMap<String, ShownLock>,
+    shown: HashMap<String, StoredLock>,
 }
 
 impl<C: Clock, E: Enforcer> Engine<C, E> {
-    pub fn new(clock: Arc<C>, enforcer: E, store: Arc<Mutex<Store>>) -> Result<Self, EngineError> {
-        let seed = locked(&store).seed()?;
+    pub fn new(
+        clock: Arc<C>,
+        enforcer: E,
+        store: Arc<Mutex<Store>>,
+        boot_id: String,
+    ) -> Result<Self, EngineError> {
+        let since = clock.now().date().saturating_sub(2.days());
+        let (seed, state) = {
+            let store = locked(&store);
+            (store.seed()?, restored(&store, &boot_id, since))
+        };
         Ok(Engine {
             clock,
             enforcer,
             store,
+            boot_id,
             seed,
             parsed: HashMap::new(),
             config: Config::empty(),
             localizers: HashMap::new(),
-            sent: HashSet::new(),
-            announced: HashMap::new(),
-            shut_down: HashSet::new(),
-            shown: HashMap::new(),
+            sent: state.sent.into_iter().collect(),
+            announced: state
+                .announced
+                .into_iter()
+                .map(|announcement| {
+                    let identity = (announcement.rule_key, announcement.starts_at);
+                    (identity, announcement.announced_at)
+                })
+                .collect(),
+            shut_down: state.shut_down.into_iter().collect(),
+            shown: state
+                .locks
+                .into_iter()
+                .map(|lock| (lock.identity.clone(), lock))
+                .collect(),
         })
     }
 
@@ -102,9 +124,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
     fn record(&self, records: &[Record]) {
         let store = locked(&self.store);
         for record in records {
-            if let Err(error) = write(&store, record) {
-                tracing::error!(%error, ?record, "couldn't record an enforcement step");
-            }
+            record_on(&store, record);
         }
     }
 
@@ -150,20 +170,33 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         if due.is_empty() {
             return Vec::new();
         }
+        let visible = matches!(evaluation.enforcement, Enforcement::Free);
+        for notice in &due {
+            let sent =
+                locked(&self.store).record_notice_sent(&self.boot_id, &notice.key, notice.at);
+            log_failed_write(sent, "a notice as sent");
+        }
+        for notice in due
+            .iter()
+            .filter(|notice| visible && notice.kind == NoticeKind::ShutDown)
+        {
+            let announcement = Announcement {
+                rule_key: notice.key.clone(),
+                starts_at: notice.moment,
+                announced_at: instant,
+            };
+            announce(
+                &self.store,
+                &self.boot_id,
+                &mut self.announced,
+                announcement,
+            );
+        }
         let localizer = localizer_for(&mut self.localizers, language);
         for notice in &due {
             let told = as_told(notice, &self.announced, instant);
             let (title, body) = rendered(localizer, &told, now.time_zone());
             self.enforcer.warn(title, body);
-        }
-        let visible = matches!(evaluation.enforcement, Enforcement::Free);
-        for notice in due
-            .iter()
-            .filter(|notice| visible && notice.kind == NoticeKind::ShutDown)
-        {
-            self.announced
-                .entry((notice.key.clone(), notice.moment))
-                .or_insert(instant);
         }
         let windows = windows_around(&self.config, self.seed, now);
         due.iter()
@@ -196,28 +229,38 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         let shown = self
             .shown
             .entry(identity.clone())
-            .or_insert_with(|| ShownLock {
+            .or_insert_with(|| StoredLock {
+                identity: identity.clone(),
                 label: window.label.clone(),
                 logical_date: window.logical_date,
-                shutdown_on_screen: None,
-                ended: false,
-                shut_down: false,
                 test: window.test,
+                ended: false,
+                shutdown_on_screen: None,
+                shut_down: false,
             });
         let wanted = own_shutdown
             .into_iter()
             .chain(rule.map(|rule| rule.starts_at.timestamp()))
             .min();
         let shutdown_at = shown_shutdown(shown, wanted, now, window.ends_at.timestamp());
+        save_lock(&self.store, &self.boot_id, shown);
+        if let Some(rule) = rule.filter(|_| shutdown_at.is_some()) {
+            let announcement = Announcement {
+                rule_key: rule.key(),
+                starts_at: rule.starts_at.timestamp(),
+                announced_at: now,
+            };
+            announce(
+                &self.store,
+                &self.boot_id,
+                &mut self.announced,
+                announcement,
+            );
+        }
         self.enforcer.show_lock(LockView {
             shutdown_at,
             ..lock_view(lock, language.tag())
         });
-        if let Some(rule) = rule.filter(|_| shutdown_at.is_some()) {
-            self.announced
-                .entry((rule.key(), rule.starts_at.timestamp()))
-                .or_insert(now);
-        }
         let event = |kind| {
             Record::Event(lock_event(
                 now,
@@ -244,11 +287,12 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         if own_shutdown.is_some_and(|at| at <= now) {
             records.push(event(EventKind::Shutdown));
         }
+        shown.shut_down = true;
+        save_lock(&self.store, &self.boot_id, shown);
         if let Some(rule) = rule {
-            self.shut_down.insert(shutdown_key(rule));
+            shutdown_done(&self.store, &self.boot_id, &mut self.shut_down, rule);
             records.push(rule_shutdown(rule, now));
         }
-        shown.shut_down = true;
         Outcome {
             records,
             pending_shutdown: None,
@@ -264,15 +308,15 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         language: Language,
     ) -> Outcome {
         let instant = now.timestamp();
-        let mut records = self.release(instant);
+        self.release(instant);
         let Some(rule) = rule else {
             return Outcome {
-                records,
+                records: Vec::new(),
                 pending_shutdown: None,
                 shut_down: false,
             };
         };
-        records.extend(started_record(log, rule));
+        let mut records: Vec<Record> = started_record(log, rule).into_iter().collect();
         let Some(shutdown_at) = self.announced_shutdown(rule, now, language) else {
             return Outcome {
                 records,
@@ -287,7 +331,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                 shut_down: false,
             };
         }
-        self.shut_down.insert(shutdown_key(rule));
+        shutdown_done(&self.store, &self.boot_id, &mut self.shut_down, rule);
         records.push(rule_shutdown(rule, instant));
         Outcome {
             records,
@@ -314,33 +358,90 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         if shutdown_at >= ends_at {
             return None;
         }
+        let announcement = Announcement {
+            rule_key: identity.0.clone(),
+            starts_at,
+            announced_at: instant,
+        };
+        let stored = locked(&self.store).record_announcement(&self.boot_id, &announcement);
+        log_failed_write(stored, "a shutdown announcement");
+        self.announced.insert(identity, instant);
         let localizer = localizer_for(&mut self.localizers, language);
         let (title, body) = shutdown_now(localizer, &rule.label, shutdown_at, now.time_zone());
         self.enforcer.warn(title, body);
-        self.announced.insert(identity, instant);
         Some(shutdown_at)
     }
 
-    fn release(&mut self, now: Timestamp) -> Vec<Record> {
+    fn release(&mut self, now: Timestamp) {
         self.enforcer.hide_lock();
-        let mut records = Vec::new();
-        for (identity, shown) in self.shown.iter_mut().filter(|(_, shown)| !shown.ended) {
-            shown.ended = true;
-            records.push(Record::Event(lock_event(
+        let store = locked(&self.store);
+        for shown in self.shown.values_mut().filter(|shown| !shown.ended) {
+            let ended = Record::Event(lock_event(
                 now,
-                identity,
+                &shown.identity,
                 &shown.label,
                 shown.logical_date,
                 EventKind::LockEnded,
                 shown.test,
-            )));
+            ));
+            record_on(&store, &ended);
+            shown.ended = true;
+            log_failed_write(store.save_lock(&self.boot_id, shown), "a lock as ended");
         }
-        records
+    }
+}
+
+fn restored(store: &Store, boot_id: &str, since: civil::Date) -> BootState {
+    if let Err(error) = store.forget_other_boots(boot_id, since) {
+        tracing::error!(%error, "couldn't forget the enforcement state of earlier boots");
+    }
+    store.boot_state(boot_id, since).unwrap_or_else(|error| {
+        tracing::error!(%error, "couldn't restore this boot's enforcement state, starting empty");
+        BootState::default()
+    })
+}
+
+fn announce(
+    store: &Mutex<Store>,
+    boot_id: &str,
+    announced: &mut HashMap<(String, Timestamp), Timestamp>,
+    announcement: Announcement,
+) {
+    log_failed_write(
+        locked(store).record_announcement(boot_id, &announcement),
+        "a shutdown announcement",
+    );
+    announced
+        .entry((announcement.rule_key, announcement.starts_at))
+        .or_insert(announcement.announced_at);
+}
+
+fn save_lock(store: &Mutex<Store>, boot_id: &str, lock: &StoredLock) {
+    log_failed_write(locked(store).save_lock(boot_id, lock), "a lock on screen");
+}
+
+fn shutdown_done(
+    store: &Mutex<Store>,
+    boot_id: &str,
+    shut_down: &mut HashSet<String>,
+    rule: &RuleWindow,
+) {
+    let key = shutdown_key(rule);
+    log_failed_write(
+        locked(store).record_shutdown_done(boot_id, &key),
+        "a rule's shutdown",
+    );
+    shut_down.insert(key);
+}
+
+fn log_failed_write(written: Result<(), StoreError>, what: &str) {
+    if let Err(error) = written {
+        tracing::error!(%error, "couldn't store {what}");
     }
 }
 
 fn shown_shutdown(
-    shown: &mut ShownLock,
+    shown: &mut StoredLock,
     wanted: Option<Timestamp>,
     now: Timestamp,
     ends_at: Timestamp,
@@ -407,6 +508,12 @@ fn rule_shutdown(window: &RuleWindow, at: Timestamp) -> Record {
             json!({ "label": window.label, "rule": window.rule_id, "repeat": repeat }).to_string(),
         ),
     })
+}
+
+fn record_on(store: &Store, record: &Record) {
+    if let Err(error) = write(store, record) {
+        tracing::error!(%error, ?record, "couldn't record an enforcement step");
+    }
 }
 
 fn write(store: &Store, record: &Record) -> Result<(), StoreError> {

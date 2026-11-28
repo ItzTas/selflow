@@ -5,8 +5,8 @@ use std::os::unix::fs::PermissionsExt;
 
 use std::sync::{Arc, Mutex};
 
+use jiff::SignedDuration;
 use jiff::civil::date;
-use jiff::{SignedDuration, ZonedDateTime};
 use selflow_i18n::language::Language;
 use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::{ExtensionSource, MessageView, ReportEntry, Request, Response};
@@ -15,8 +15,9 @@ use selflowd::ipc::handle;
 use selflowd::store::{EventKind, Store};
 use serde_json::{Value, json};
 use support::{
-    Call, Calls, LIGHTS_OUT, REMINDER, TestClock, at, brt, engine_on, extension, no_jitter,
-    save_at, save_text, setup, setup_on, setup_over, shared_over, start_engine_with,
+    Call, Calls, LIGHTS_OUT, REMINDER, TestClock, at, brt, engine_on, engine_on_boot, extension,
+    no_jitter, save_at, save_text, second, setup, setup_on, setup_over, shared_over,
+    start_engine_with, steps,
 };
 
 #[test]
@@ -405,24 +406,6 @@ fn a_tightening_after_the_first_notice_keeps_the_earlier_start_through_the_lock(
     assert_eq!(lock_starts, 1);
 }
 
-fn steps(calls: &Calls) -> Vec<&'static str> {
-    calls
-        .take()
-        .into_iter()
-        .filter_map(|call| match call {
-            Call::Warn(_) => Some("warn"),
-            Call::ShutDown => Some("shut down"),
-            _ => None,
-        })
-        .collect()
-}
-
-fn second(day: i8, hour: i8, minute: i8, second: i64) -> ZonedDateTime {
-    at(day, hour, minute)
-        .checked_add(SignedDuration::from_secs(second))
-        .unwrap()
-}
-
 fn rule_shutdowns(store: &Mutex<Store>) -> Vec<(String, Value)> {
     store
         .lock()
@@ -480,10 +463,10 @@ fn a_shutdown_without_a_lock_gives_a_minute_of_notice() {
 }
 
 #[test]
-fn once_stays_up_after_a_restart() {
+fn once_stays_up_after_a_reboot() {
     let (store, clock) = after_the_first_shutdown(LIGHTS_OUT);
     clock.set(at(20, 2, 30));
-    let (mut engine, calls) = engine_on(store.clone(), clock.clone());
+    let (mut engine, calls) = engine_on_boot(store.clone(), clock.clone(), "boot-2");
     engine.tick().unwrap();
     assert_eq!(steps(&calls), Vec::<&str>::new());
     assert_eq!(
@@ -513,18 +496,18 @@ fn once_stays_up_after_a_restart() {
 }
 
 #[test]
-fn repeat_shuts_down_again_after_a_restart_until_the_rule_ends() {
+fn repeat_shuts_down_again_after_each_reboot_until_the_rule_ends() {
     let repeat = LIGHTS_OUT.replace(r#"shutdown = "once""#, r#"shutdown = "repeat""#);
     let (store, clock) = after_the_first_shutdown(&repeat);
     clock.set(at(20, 2, 30));
-    let (mut second_run, calls) = engine_on(store.clone(), clock.clone());
+    let (mut second_run, calls) = engine_on_boot(store.clone(), clock.clone(), "boot-2");
     assert_eq!(second_run.tick().unwrap(), at(20, 2, 31).timestamp());
     assert_eq!(steps(&calls), ["warn"]);
     clock.set(at(20, 2, 31));
     second_run.tick().unwrap();
     assert_eq!(steps(&calls), ["shut down"]);
     clock.set(at(20, 4, 0));
-    let (mut third_run, calls) = engine_on(store.clone(), clock);
+    let (mut third_run, calls) = engine_on_boot(store.clone(), clock, "boot-3");
     third_run.tick().unwrap();
     assert_eq!(steps(&calls), Vec::<&str>::new());
     let keys: Vec<String> = rule_shutdowns(&store)

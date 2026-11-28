@@ -2,7 +2,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use jiff::Timestamp;
 use selflow_i18n::language::Language;
+use selflow_platform::boot::boot_id;
 use selflow_platform::paths::{socket_path, store_path};
 use selflow_platform::transport::{ListenError, Listener, listen};
 use thiserror::Error;
@@ -64,7 +66,12 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
     tracing::info!("power mode: {power}");
     let enforcer = SystemEnforcer::new(supervisor, Notifier, power);
     let views = enforcer.views();
-    let mut engine = Engine::new(Arc::clone(&clock), enforcer, Arc::clone(&store))?;
+    let mut engine = Engine::new(
+        Arc::clone(&clock),
+        enforcer,
+        Arc::clone(&store),
+        current_boot(),
+    )?;
     let mut terminate = StopSignal::new()?;
     if let Err(error) = engine.tick() {
         tracing::error!(%error, "the first enforcement tick failed");
@@ -89,4 +96,12 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
             Ok(())
         }
     }
+}
+
+fn current_boot() -> String {
+    boot_id().unwrap_or_else(|error| {
+        let fallback = format!("unknown-{}", Timestamp::now());
+        tracing::warn!(%error, fallback, "couldn't read the boot id, so this start counts as a new boot");
+        fallback
+    })
 }

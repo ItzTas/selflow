@@ -1,4 +1,4 @@
-use jiff::{Timestamp, civil};
+use jiff::Timestamp;
 use selflow_core::config::ConfigError;
 use selflow_core::plan::RuleWindow;
 use selflow_protocol::ipc::LockView;
@@ -19,15 +19,6 @@ pub enum EngineError {
     Store(#[from] StoreError),
     #[error("stored configuration version {id} no longer parses: {errors:?}")]
     StoredConfig { id: i64, errors: Vec<ConfigError> },
-}
-
-pub(super) struct ShownLock {
-    pub(super) label: String,
-    pub(super) logical_date: civil::Date,
-    pub(super) shutdown_on_screen: Option<Timestamp>,
-    pub(super) ended: bool,
-    pub(super) shut_down: bool,
-    pub(super) test: bool,
 }
 
 #[derive(Debug)]

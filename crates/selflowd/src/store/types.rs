@@ -59,7 +59,7 @@ pub struct StoredLock {
     pub shut_down: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BootState {
     pub announced: Vec<Announcement>,
     pub sent: Vec<(String, Timestamp)>,
