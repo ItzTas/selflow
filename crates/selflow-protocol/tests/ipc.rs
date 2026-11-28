@@ -6,6 +6,7 @@ use selflow_protocol::ipc::{
     Request, Response, StatusView, hello_as_client, hello_as_daemon, message_reader, read_message,
     write_message,
 };
+use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 
 fn at(seconds: i64) -> Timestamp {
@@ -48,6 +49,11 @@ fn requests() -> Vec<Request> {
             reason: "talking to my sister".into(),
             phrase: String::new(),
             source: ExtensionSource::Terminal,
+        },
+        Request::RequestExtension {
+            reason: String::new(),
+            phrase: "I choose to rest".into(),
+            source: ExtensionSource::Screen,
         },
         Request::GetConfig,
         Request::SaveConfig {
@@ -144,6 +150,59 @@ fn responses() -> Vec<Response> {
     ]
 }
 
+macro_rules! variants {
+    ($enum:ident: $($variant:ident),+ $(,)?) => {
+        (
+            [$(stringify!($variant)),+],
+            |value: &$enum| match value {
+                $($enum::$variant { .. } => stringify!($variant)),+
+            },
+        )
+    };
+}
+
+type Variants = Vec<(u8, &'static str)>;
+
+fn wire_coverage<T: Serialize, const N: usize>(
+    samples: &[T],
+    (declared, variant_of): ([&'static str; N], impl Fn(&T) -> &'static str),
+) -> (Variants, Variants) {
+    let mut sampled = samples
+        .iter()
+        .map(|sample| (postcard::to_stdvec(sample).unwrap()[0], variant_of(sample)))
+        .collect::<Vec<_>>();
+    sampled.sort_unstable();
+    sampled.dedup();
+    let declared = declared
+        .into_iter()
+        .enumerate()
+        .map(|(index, variant)| (u8::try_from(index).unwrap(), variant))
+        .collect();
+    (sampled, declared)
+}
+
+fn refusals() -> Vec<RefusalView> {
+    responses()
+        .into_iter()
+        .filter_map(|response| match response {
+            Response::ExtensionRefused(refusal) | Response::ExceptionRefused(refusal) => {
+                Some(refusal)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn sources() -> Vec<ExtensionSource> {
+    requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            Request::RequestExtension { source, .. } => Some(source),
+            _ => None,
+        })
+        .collect()
+}
+
 fn encoded_hex() -> String {
     let requests = requests()
         .iter()
@@ -215,6 +274,51 @@ fn changing_the_wire_format_needs_a_new_protocol_version() {
         (PROTOCOL_VERSION, encoded_hex().as_str()),
         (1, include_str!("wire/v1.hex"))
     );
+}
+
+#[test]
+fn the_samples_cover_every_variant_of_every_wire_enum() {
+    let request = variants!(Request:
+        Status,
+        SubscribeLock,
+        RequestExtension,
+        GetConfig,
+        SaveConfig,
+        ConfigStatus,
+        Report,
+        TestLock,
+        ReleaseScreen,
+        StartException,
+        ConfirmException,
+    );
+    let response = variants!(Response:
+        Status,
+        Lock,
+        LockEnded,
+        ExtensionGranted,
+        ExtensionRefused,
+        Config,
+        Saved,
+        Invalid,
+        ConfigStatus,
+        Report,
+        TestLockStarted,
+        Released,
+        ExceptionChallenge,
+        ExceptionGranted,
+        ExceptionRefused,
+        Error,
+    );
+    let refusal = variants!(RefusalView: TooEarly, NoBudget, ReasonTooShort, PhraseMismatch);
+    let source = variants!(ExtensionSource: Screen, Terminal);
+    for (sampled, declared) in [
+        wire_coverage(&requests(), request),
+        wire_coverage(&responses(), response),
+        wire_coverage(&refusals(), refusal),
+        wire_coverage(&sources(), source),
+    ] {
+        assert_eq!(sampled, declared);
+    }
 }
 
 #[tokio::test]
