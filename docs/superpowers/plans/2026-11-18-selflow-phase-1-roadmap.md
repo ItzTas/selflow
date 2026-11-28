@@ -12,14 +12,14 @@
 Phase 1 ("Stop", spec §17) is too big for a single plan, so it is split into milestones. Each
 milestone ends with something the owner uses every day, and each gets its own detailed plan. The
 next plan is written when the previous milestone is done, so it can build on the real code instead
-of guessed interfaces; the plans for M1 and M2.1 are written. The order follows the spec: a
+of guessed interfaces; the plans for M1, M2.1 and M2b are written. The order follows the spec: a
 working night lock on one machine first, then the server and the multi-device pieces.
 
 | Milestone | What the owner gets | Detailed plan |
 |---|---|---|
 | M1. Night lock | Bedtime warnings, a real lock screen with extensions, shutdown, and config changes that wait 24 hours to loosen. One machine, no server. | `2026-11-18-selflow-m1-night-lock.md` |
 | M2.1. Rules and steps | Rules with any mix of notices, a lock and a shutdown (with or without a lock, once or on every boot), custom messages, challenges and a budget per rule, each change on its own clock, exception days, the terminal unlock, and the command line split from the graphical binary. Still one machine. | `2026-11-20-selflow-m2-1-rules-and-steps.md` |
-| M2b. Claude Code sessions | Claude steps in any rule: messages to open Claude Code sessions, with a level that narrows what the agent takes on, reminders on every prompt, and edits and shell commands denied at the firmest level. Still one machine. | not written yet |
+| M2b. Claude Code sessions | Claude steps in any rule: messages to open Claude Code sessions, with a level that narrows what the agent takes on, reminders on every prompt, and edits and shell commands denied at the firmest level. Still one machine. | `2026-11-28-selflow-m2b-claude-code-sessions.md` |
 | M3. Server and accounts | The server with accounts and devices, onboarding with modes, the configuration kept on the server, sync with an offline queue. | not written yet |
 | M4. Deploy on the Pi | The server running on the Pi behind HTTPS, used by the laptop and the work PC. | not written yet |
 | M5. One user, many devices | Locks and blocks that follow the user across machines, the shared budget, the cross-device workday and the morning report. | not written yet |
@@ -128,6 +128,8 @@ critical notification stays until the owner dismisses it, and a notice set to th
 popup window.
 
 ## M2b. Claude Code sessions
+
+Plan: `2026-11-28-selflow-m2b-claude-code-sessions.md`.
 
 Added on 2026-11-18 and reworked on 2026-11-20. It comes right after M2.1 and the versioned IPC
 plan, in the owner's order of 2026-11-28, and uses M2.1's rule steps. Its steps cover sessions by folder (§8.12), so it

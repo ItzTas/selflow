@@ -67,3 +67,63 @@ The brackets keep the pattern from matching the shell that runs this line. Witho
 ### If a lock screen stays up after the lock ended
 
 Switch to a TTY, log in and run `selflow unlock`. With nothing locked, it releases the stuck screen at once. If the lock client has died, releasing the screen relies on `misc:allow_session_lock_restore = true`, which is why the Hyprland line above is there.
+
+## Claude Code sessions
+
+A rule can also talk to the Claude Code sessions you have open. Before the rule starts, an agent step sends Claude a message, and from then until the rule ends it holds a level that limits what Claude takes on.
+
+### Connecting Claude Code
+
+Run `selflow claude install`. It adds hooks for four Claude Code events (`SessionStart`, `SessionEnd`, `UserPromptSubmit` and `PreToolUse`) to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set. Each hook runs `selflow claude hook <event>`. The command lists the lines it would add and asks before it writes anything (`--yes` skips the question). Your own hooks stay where they are. If the file isn't valid JSON, or something changed it while the command waited for your answer, nothing is written.
+
+It also warns you when Claude Code is missing or older than 2.1.224, when `crossSessionInbound` is set to anything but `"accept"`, and when your default permission mode skips permission prompts. Each of these keeps Selflow's messages from reaching a session. `selflow claude uninstall` removes Selflow's hooks and leaves the rest of the file alone.
+
+The hooks never hold Claude Code up. If the daemon isn't running, takes more than a second to answer or runs a different version, the hook exits quietly and the session carries on as if Selflow weren't there.
+
+### Agent steps
+
+Steps go in `[[rule_set.rule.agent]]` tables under their rule:
+
+```toml
+[[rule_set.rule]]
+id = "bedtime"
+label = "Bedtime"
+start = "bedtime"
+end = "wake"
+lock = true
+
+[[rule_set.rule.agent]]
+before = "60m"
+level = "light"
+folders = ["~/Workspace/work"]
+
+[[rule_set.rule.agent]]
+before = "15m"
+level = "save-only"
+message = "Bedtime soon. Save the work and stop here."
+```
+
+- `before` says how long before the rule's start the step happens, up to 24 hours.
+- `level` is one of four, from lightest to firmest. With `message`, Claude gets the message and passes it on to you, and nothing else changes. With `light`, every prompt you send also carries a reminder to finish what is underway and take on only small tasks. With `no-new-work`, the reminder asks Claude to start nothing new, help save the work, write down where it stopped and what comes next, and tell you to go rest. `save-only` sends the same reminder and also blocks file edits and shell commands, except the allowed commands below.
+- `message` replaces Selflow's own text for that step.
+- `folders` limits the step to sessions working inside those folders. Write `~`, a path starting with `~/`, or an absolute path. A folder covers everything inside it, but `~/Workspace/app` doesn't cover `~/Workspace/app-old`. Without `folders`, the step covers every session.
+- `unattended = true` also covers runs nobody is watching, such as `claude -p`. Selflow leaves those alone by default, and the report lists the ones that start while a level holds.
+
+A level holds from its step until the rule ends. When several steps cover a session, the firmest one governs it. Each session gets each message once, including a session you open after the step and one the daemon only learns about after a restart.
+
+At `save-only`, Claude can still run the commands in the `[agent]` table. This is the default list:
+
+```toml
+[agent]
+allowed_commands = ["git status", "git diff", "git add", "git commit", "git stash push"]
+```
+
+A shell command passes when its first words match an entry, it has no shell operator (`;`, `&`, `|`, `>`, `<`, `$`, backticks, parentheses, braces or a line break), and none of its arguments starts with `--output`. So `git commit -m "wip"` runs, and `git commit -m wip && rm -rf src` is blocked.
+
+Agent steps follow the same clocks as the rest of the file. Adding a step, covering more folders, turning `unattended` on or allowing fewer commands applies at once. Removing a step, covering fewer folders, turning `unattended` off or allowing more commands waits the loosening delay. Selflow tells steps apart by their `before` and `level`, so changing either one adds a new step right away and removes the old one after the delay. A new `message` applies at once.
+
+### How messages arrive
+
+Selflow sends each message to the session's inbox, the local socket Claude Code opens for messages from other sessions. This needs Claude Code 2.1.224 or later. A session sitting idle gets it too: Claude wakes up and answers. Claude Code shows the message as coming from another Claude session, so Claude treats it as a request from someone working on your behalf rather than something you typed. When the inbox can't be reached, the message comes with your next prompt instead.
+
+`selflow report` lists which way each message went and the edits and commands Selflow blocked, with the rule, the level and the session's folder. Selflow doesn't read transcripts or prompts, and it never stores the commands Claude runs.

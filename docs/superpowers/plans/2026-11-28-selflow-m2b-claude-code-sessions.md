@@ -27,7 +27,19 @@ folded in below. Interfaces come from the code at `749d557`.
 **Repository root:** `/home/talinux/Workspace/github.com/ItzTas/personal-projects/selflow`. Paths
 are relative to it.
 
-**Status:** not started; runs with superpowers:subagent-driven-development.
+**Status:** done on 2026-11-28, Tasks 1 to 12 in `b087773`..`48ea091` plus the commit that writes
+this line. Task 12's isolated scenario (`scenario-claude.sh`, level 1, release build, Claude Code
+2.1.332 with `--model haiku`) passed: the light message arrived through the inbox and Claude passed
+it on, the next prompt carried the reminder, Save only denied the write (and a chained
+`git status --short && git log --oneline -1`) while `git commit --allow-empty -m save` ran, and the
+session in another folder got nothing. Hook latency, 300 calls each with Save only active: prompt
+p50 1.44 ms, p95 2.23 ms; tool p50 1.12 ms, p95 1.37 ms. An earlier run gave 1.59 and 1.28 ms at
+p95, and one run in between gave 12.49 and 13.49 ms, over the 10 ms budget, while other sessions'
+jobs ran on the laptop; the passing run had a higher load average, so that cause isn't pinned down. Idle
+release daemon over 600 s: 7.5 MB RSS, 0 CPU ticks. `scenario-level1.sh` and `scenario-level2.sh`
+passed again. Left for later: the deferred minors in the SDD progress file (Task 10's inbox claims
+and courier, Task 11's `claude --version` and `current_exe` cases), the slow latency run, and the
+owner's steps below.
 
 ## Global Constraints
 
