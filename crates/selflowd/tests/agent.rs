@@ -314,7 +314,6 @@ fn a_message_delivered_with_a_prompt_is_reported() {
 fn a_denial_is_reported_without_the_command() {
     let rig = ticked(&["before = \"60m\"\nlevel = \"save-only\""], at(19, 22, 10));
     verdict(&rig, seconv(), shell("rm -rf secret-folder"));
-    rig.clock.set(at(19, 22, 11));
     verdict(&rig, seconv(), ToolCall::Edit);
     let lines = agent_lines(&rig);
     assert_eq!(
@@ -333,6 +332,32 @@ fn a_denial_is_reported_without_the_command() {
         ]
     );
     assert!(!format!("{lines:?}").contains("secret-folder"));
+    let stored = rig
+        .store
+        .lock()
+        .unwrap()
+        .events_for(jiff::civil::date(2026, 11, 19))
+        .unwrap();
+    assert!(!format!("{stored:?}").contains("secret-folder"));
+}
+
+#[test]
+fn each_kind_of_denied_call_is_reported_once_per_session() {
+    let rig = ticked(&["before = \"60m\"\nlevel = \"save-only\""], at(19, 22, 10));
+    for command in ["rm a", "rm b", "touch c"] {
+        verdict(&rig, seconv(), shell(command));
+    }
+    assert_eq!(
+        agent_lines(&rig),
+        vec![line(
+            "report-agent-denied-shell",
+            "save-only",
+            "~/Workspace/seconv"
+        )]
+    );
+    verdict(&rig, seconv(), ToolCall::Edit);
+    verdict(&rig, session("other", "/home/user/a"), ToolCall::Edit);
+    assert_eq!(agent_lines(&rig).len(), 3);
 }
 
 #[test]
@@ -403,4 +428,22 @@ fn an_unattended_run_a_step_governs_is_reported_as_a_message() {
             "~/Workspace/seconv"
         )]
     );
+}
+
+#[test]
+fn an_unattended_run_one_covering_step_governs_is_not_reported_as_ungoverned() {
+    let rig = ticked(
+        &[
+            "before = \"60m\"\nlevel = \"save-only\"\nunattended = true",
+            "before = \"30m\"\nlevel = \"light\"",
+        ],
+        at(19, 22, 40),
+    );
+    let unattended = AgentSession {
+        attended: false,
+        ..seconv()
+    };
+    prompt(&rig, unattended);
+    let ids: Vec<String> = agent_lines(&rig).into_iter().map(|line| line.id).collect();
+    assert_eq!(ids, vec!["report-agent-message-prompt"]);
 }

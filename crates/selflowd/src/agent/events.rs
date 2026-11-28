@@ -23,7 +23,7 @@ impl Origin<'_> {
     }
 
     pub(super) fn denied(&self, tool: &str) -> Event {
-        let key = format!("{}/{}", self.pair_key(), self.at);
+        let key = format!("{}/{tool}", self.pair_key());
         self.event(EventKind::AgentDenied, key, ("tool", tool))
     }
 

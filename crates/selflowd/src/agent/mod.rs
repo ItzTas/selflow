@@ -2,7 +2,7 @@ mod constants;
 mod events;
 mod types;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -28,6 +28,7 @@ pub struct AgentHub {
     directives: watch::Receiver<Directives>,
     home: Option<PathBuf>,
     sessions: Mutex<HashMap<SessionKey, AgentSession>>,
+    ungoverned: Mutex<HashSet<(String, String)>>,
     localizers: Mutex<HashMap<Language, Localizer>>,
     changed: Notify,
 }
@@ -43,6 +44,7 @@ impl AgentHub {
             directives,
             home,
             sessions: Mutex::new(HashMap::new()),
+            ungoverned: Mutex::new(HashSet::new()),
             localizers: Mutex::new(HashMap::new()),
             changed: Notify::new(),
         }
@@ -55,6 +57,7 @@ impl AgentHub {
 
     pub fn ended(&self, agent: AgentKind, id: &str, now: &ZonedDateTime) -> Response {
         let ended = guarded(&self.sessions).remove(&(agent, id.to_owned()));
+        guarded(&self.ungoverned).retain(|(session, _)| session != id);
         if let Some(session) = ended {
             let steps = self.directives.borrow().steps.clone();
             self.claim_unsent(&session, &steps, MISSED_DELIVERY, now.timestamp());
@@ -100,8 +103,8 @@ impl AgentHub {
             session.attended,
         )
         .filter(|step| step.step.level == AgentLevel::SaveOnly);
-        let Some(step) = save_only.filter(|_| !tool_allowed(&tool, &directives.allowed_commands))
-        else {
+        let denial = save_only.zip(denied_kind(&tool, &directives.allowed_commands));
+        let Some((step, kind)) = denial else {
             return Response::AgentVerdict(ToolVerdict::Allow);
         };
         let cwd = lexically_normal(&session.cwd);
@@ -112,7 +115,7 @@ impl AgentHub {
             home: self.home.as_deref(),
             at: now.timestamp(),
         };
-        record(&guarded(&self.store), &origin.denied(tool_name(&tool)));
+        record(&guarded(&self.store), &origin.denied(kind));
         let reason = self.with_texts(&directives, now.time_zone(), |texts| texts.denied(step));
         Response::AgentVerdict(ToolVerdict::Deny { reason })
     }
@@ -141,11 +144,15 @@ impl AgentHub {
         }
         let steps = self.directives.borrow().steps.clone();
         let cwd = lexically_normal(&session.cwd);
+        if governing(&steps, &cwd, self.home.as_deref(), false).is_some() {
+            return;
+        }
+        let mut noted = guarded(&self.ungoverned);
         let store = guarded(&self.store);
         for active in steps
             .iter()
-            .filter(|active| !active.step.unattended)
             .filter(|active| covers(&active.step, &cwd, self.home.as_deref()))
+            .filter(|active| noted.insert((session.id.clone(), active.key.clone())))
         {
             let origin = Origin {
                 active,
@@ -231,19 +238,11 @@ fn claimed_now(
         })
 }
 
-fn tool_allowed(tool: &ToolCall, allowed: &[String]) -> bool {
+fn denied_kind(tool: &ToolCall, allowed: &[String]) -> Option<&'static str> {
     match tool {
-        ToolCall::Edit => false,
-        ToolCall::Shell { command } => command_allowed(command, allowed),
-        ToolCall::Other => true,
-    }
-}
-
-fn tool_name(tool: &ToolCall) -> &'static str {
-    match tool {
-        ToolCall::Edit => "edit",
-        ToolCall::Shell { .. } => "shell",
-        ToolCall::Other => "other",
+        ToolCall::Edit => Some("edit"),
+        ToolCall::Shell { command } => (!command_allowed(command, allowed)).then_some("shell"),
+        ToolCall::Other => None,
     }
 }
 
