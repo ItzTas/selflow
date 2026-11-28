@@ -1,4 +1,6 @@
+pub mod claude_code;
 mod constants;
+pub mod courier;
 mod events;
 mod types;
 
@@ -60,7 +62,9 @@ impl AgentHub {
         guarded(&self.ungoverned).retain(|(session, _)| session != id);
         if let Some(session) = ended {
             let steps = self.directives.borrow().steps.clone();
-            self.claim_unsent(&session, &steps, MISSED_DELIVERY, now.timestamp());
+            let at = now.timestamp();
+            let missed = self.claim_unsent(&session, &steps, MISSED_DELIVERY, at);
+            self.record_sent(&session, &missed, MISSED_DELIVERY, at);
         }
         Response::AgentNoted
     }
@@ -68,12 +72,9 @@ impl AgentHub {
     pub fn prompt(&self, session: AgentSession, now: &ZonedDateTime) -> Response {
         self.register(session.clone(), now.timestamp());
         let directives = self.directives.borrow().clone();
-        let claimed = self.claim_unsent(
-            &session,
-            &directives.steps,
-            PROMPT_DELIVERY,
-            now.timestamp(),
-        );
+        let at = now.timestamp();
+        let claimed = self.claim_unsent(&session, &directives.steps, PROMPT_DELIVERY, at);
+        self.record_sent(&session, &claimed, PROMPT_DELIVERY, at);
         let reminded = governing(
             &directives.steps,
             &lexically_normal(&session.cwd),
@@ -185,22 +186,53 @@ impl AgentHub {
         let store = guarded(&self.store);
         covering
             .into_iter()
-            .filter(|active| {
-                if !claimed_now(&store, active, &session.id, at, how) {
-                    return false;
-                }
-                let origin = Origin {
-                    active,
-                    session,
-                    cwd: &cwd,
-                    home: self.home.as_deref(),
-                    at,
-                };
-                record(&store, &origin.message(how));
-                true
-            })
+            .filter(|active| claimed_now(&store, active, &session.id, at, how))
             .cloned()
             .collect()
+    }
+
+    fn record_sent(
+        &self,
+        session: &AgentSession,
+        sent: &[ActiveAgentStep],
+        how: &str,
+        at: Timestamp,
+    ) {
+        let cwd = lexically_normal(&session.cwd);
+        let store = guarded(&self.store);
+        for active in sent {
+            let origin = Origin {
+                active,
+                session,
+                cwd: &cwd,
+                home: self.home.as_deref(),
+                at,
+            };
+            record(&store, &origin.message(how));
+        }
+    }
+
+    fn release(&self, session: &AgentSession, claimed: &[ActiveAgentStep]) {
+        let store = guarded(&self.store);
+        for active in claimed {
+            if let Err(error) = store
+                .release_agent_delivery(&active.key, &session.id)
+                .map_err(AgentError::from)
+            {
+                tracing::error!(%error, step = active.key, "couldn't release an agent message");
+            }
+        }
+    }
+
+    fn forget(&self, session: &AgentSession) {
+        let key = (session.agent, session.id.clone());
+        let mut sessions = guarded(&self.sessions);
+        if sessions
+            .get(&key)
+            .is_some_and(|known| known.inbox == session.inbox)
+        {
+            sessions.remove(&key);
+        }
     }
 
     fn with_texts<T>(

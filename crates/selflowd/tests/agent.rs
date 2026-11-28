@@ -1,9 +1,20 @@
 mod support;
 
+use std::fmt::Debug;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
 use jiff::ZonedDateTime;
 use selflow_protocol::ipc::{AgentSession, MessageView, Request, Response, ToolCall, ToolVerdict};
+use selflowd::agent::claude_code::inbox_frame;
+use selflowd::agent::courier::run_courier;
 use selflowd::ipc::handle;
 use support::{AgentRig, agent_rig, agent_rig_on, at, no_jitter, session};
+use tokio::io::AsyncReadExt;
+use tokio::net::UnixListener;
+use tokio::task::JoinHandle;
+use tokio::time::{sleep, timeout};
 
 const LIGHT: &str = "before = \"60m\"\nlevel = \"light\"";
 
@@ -80,6 +91,49 @@ fn shell(command: &str) -> ToolCall {
 
 fn seconv() -> AgentSession {
     session("3f6c1d52", "/home/user/Workspace/seconv")
+}
+
+fn with_inbox(inbox: &Path) -> AgentSession {
+    AgentSession {
+        inbox: Some(inbox.to_string_lossy().into_owned()),
+        ..seconv()
+    }
+}
+
+fn courier(rig: &AgentRig) -> JoinHandle<()> {
+    tokio::spawn(run_courier(
+        Arc::clone(&rig.shared.agents),
+        rig.clock.clone(),
+    ))
+}
+
+async fn received(listener: &UnixListener) -> Vec<u8> {
+    let wait = Duration::from_secs(5);
+    let (mut stream, _) = timeout(wait, listener.accept()).await.unwrap().unwrap();
+    let mut frame = Vec::new();
+    timeout(wait, stream.read_to_end(&mut frame))
+        .await
+        .unwrap()
+        .unwrap();
+    frame
+}
+
+async fn eventually<T: PartialEq + Debug>(current: impl Fn() -> T, expected: T) {
+    for _ in 0..500 {
+        if current() == expected {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(current(), expected);
+}
+
+async fn assert_next_prompt_gets_the_message(rig: &AgentRig, session: AgentSession) {
+    let courier = courier(rig);
+    handle(Request::AgentSessionStarted(session.clone()), &rig.shared);
+    eventually(|| rig.shared.agents.sessions(), Vec::new()).await;
+    assert_eq!(prompt(rig, session).as_deref(), Some(WIND_DOWN));
+    courier.abort();
 }
 
 #[test]
@@ -446,4 +500,62 @@ fn an_unattended_run_one_covering_step_governs_is_not_reported_as_ungoverned() {
     prompt(&rig, unattended);
     let ids: Vec<String> = agent_lines(&rig).into_iter().map(|line| line.id).collect();
     assert_eq!(ids, vec!["report-agent-message-prompt"]);
+}
+
+#[test]
+fn the_frame_matches_the_recorded_sample() {
+    assert_eq!(
+        inbox_frame("hello from selflow"),
+        b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hello from selflow\"}}\n"
+    );
+    let quoted = "say \"stop\"\nnow";
+    let frame = inbox_frame(quoted);
+    let parsed: serde_json::Value = serde_json::from_slice(&frame).unwrap();
+    assert_eq!(parsed["message"]["content"], quoted);
+    assert_eq!(frame.iter().filter(|byte| **byte == b'\n').count(), 1);
+}
+
+#[tokio::test]
+async fn an_idle_session_gets_the_message_through_its_inbox() {
+    let rig = ticked(&[LIGHT], at(19, 22, 10));
+    let dir = tempfile::tempdir().unwrap();
+    let inbox = dir.path().join("4242.sock");
+    let listener = UnixListener::bind(&inbox).unwrap();
+    let courier = courier(&rig);
+    handle(
+        Request::AgentSessionStarted(with_inbox(&inbox)),
+        &rig.shared,
+    );
+    assert_eq!(received(&listener).await, inbox_frame(WIND_DOWN));
+    assert_eq!(
+        prompt(&rig, with_inbox(&inbox)).as_deref(),
+        Some(LIGHT_REMINDER)
+    );
+    eventually(
+        || agent_lines(&rig),
+        vec![line(
+            "report-agent-message-inbox",
+            "light",
+            "~/Workspace/seconv",
+        )],
+    )
+    .await;
+    courier.abort();
+}
+
+#[tokio::test]
+async fn a_gone_inbox_leaves_the_message_for_the_next_prompt() {
+    let rig = ticked(&[LIGHT], at(19, 22, 10));
+    let dir = tempfile::tempdir().unwrap();
+    assert_next_prompt_gets_the_message(&rig, with_inbox(&dir.path().join("4242.sock"))).await;
+}
+
+#[tokio::test]
+async fn a_refusing_inbox_leaves_the_message_for_the_next_prompt() {
+    let rig = ticked(&[LIGHT], at(19, 22, 10));
+    let dir = tempfile::tempdir().unwrap();
+    let inbox = dir.path().join("4242.sock");
+    drop(UnixListener::bind(&inbox).unwrap());
+    assert!(inbox.exists());
+    assert_next_prompt_gets_the_message(&rig, with_inbox(&inbox)).await;
 }
