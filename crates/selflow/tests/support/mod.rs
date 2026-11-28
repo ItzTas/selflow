@@ -11,7 +11,7 @@ use jiff::tz::{self, TimeZone};
 use jiff::{Timestamp, ZonedDateTime};
 use selflow::editor::Editor;
 use selflow::prompt::Prompt;
-use selflow_client::client::{Client, DaemonService};
+use selflow_client::client::{Client, NeverRestart};
 use selflow_platform::transport::listen;
 use selflow_protocol::ipc::{
     Request, Response, hello_as_daemon, message_reader, read_message, write_message,
@@ -136,23 +136,15 @@ impl FakeDaemon {
     }
 
     pub fn client(&self) -> Client {
-        Client::connect_with(&self.path, &NoRestart).unwrap()
+        Client::connect_with(&self.path, &NeverRestart).unwrap()
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
-    }
-}
-
-struct NoRestart;
-
-impl DaemonService for NoRestart {
-    fn installed_version(&self) -> Option<u32> {
-        None
-    }
-
-    fn restart(&self) -> bool {
-        false
     }
 }
 

@@ -1,9 +1,11 @@
+mod claude_cmd;
 mod config_cmd;
 mod exception_cmd;
 mod report_cmd;
 mod test_lock_cmd;
 mod unlock_cmd;
 
+pub use claude_cmd::{ClaudeAction, ClaudeArgs, claude_cmd, claude_with};
 pub use config_cmd::{config_cmd, config_edit_with};
 pub use exception_cmd::{ExceptionArgs, exception_cmd, exception_with};
 pub use report_cmd::report_cmd;

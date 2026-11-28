@@ -1,0 +1,98 @@
+use std::io::Read;
+use std::path::Path;
+
+use selflow_client::client::{NeverRestart, exchange_with};
+use selflow_protocol::ipc::{AgentKind, AgentSession, Request, Response, ToolCall, ToolVerdict};
+use serde_json::{Value, json};
+use tokio::runtime::Builder;
+use tokio::time::timeout;
+
+use super::constants::{EDIT_TOOLS, HOOK_DEADLINE, SHELL_TOOL};
+use super::types::{HookEnv, HookEvent};
+
+pub fn hook_env() -> HookEnv {
+    let read = |name: &str| std::env::var(name).ok();
+    HookEnv {
+        inbox: read("CLAUDE_CODE_MESSAGING_SOCKET"),
+        attended: read("CLAUDE_CODE_SESSION_ATTENDED"),
+        entrypoint: read("CLAUDE_CODE_ENTRYPOINT"),
+    }
+}
+
+pub fn attended(env: &HookEnv) -> bool {
+    env.attended.as_deref() != Some("0")
+}
+
+pub fn hook_request(event: HookEvent, input: &Value, env: &HookEnv) -> Option<Request> {
+    let id = input["session_id"].as_str()?.to_owned();
+    match event {
+        HookEvent::SessionStart => session(id, input, env).map(Request::AgentSessionStarted),
+        HookEvent::SessionEnd => Some(Request::AgentSessionEnded {
+            agent: AgentKind::ClaudeCode,
+            id,
+        }),
+        HookEvent::Prompt => session(id, input, env).map(Request::AgentPrompt),
+        HookEvent::Tool => Some(Request::AgentTool {
+            session: session(id, input, env)?,
+            tool: tool_call(input)?,
+        }),
+    }
+}
+
+fn session(id: String, input: &Value, env: &HookEnv) -> Option<AgentSession> {
+    Some(AgentSession {
+        agent: AgentKind::ClaudeCode,
+        id,
+        cwd: input["cwd"].as_str()?.to_owned(),
+        inbox: env.inbox.clone(),
+        attended: attended(env),
+    })
+}
+
+fn tool_call(input: &Value) -> Option<ToolCall> {
+    let name = input["tool_name"].as_str()?;
+    if name == SHELL_TOOL {
+        let command = input["tool_input"]["command"].as_str()?.to_owned();
+        return Some(ToolCall::Shell { command });
+    }
+    if EDIT_TOOLS.contains(&name) {
+        return Some(ToolCall::Edit);
+    }
+    Some(ToolCall::Other)
+}
+
+pub fn hook_output(event: HookEvent, response: &Response) -> Option<String> {
+    let name = event.settings_event();
+    let output = match (event, response) {
+        (HookEvent::Prompt, Response::AgentContext { text: Some(text) }) => json!({
+            "hookSpecificOutput": {"hookEventName": name, "additionalContext": text}
+        }),
+        (HookEvent::Tool, Response::AgentVerdict(ToolVerdict::Deny { reason })) => json!({
+            "hookSpecificOutput": {
+                "hookEventName": name,
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason
+            }
+        }),
+        _ => return None,
+    };
+    Some(output.to_string())
+}
+
+pub fn hook_with(
+    event: HookEvent,
+    input: impl Read,
+    env: &HookEnv,
+    socket: Option<&Path>,
+) -> Option<String> {
+    let input: Value = serde_json::from_reader(input).ok()?;
+    let request = hook_request(event, &input, env)?;
+    let socket = socket?;
+    let runtime = Builder::new_current_thread().enable_all().build().ok()?;
+    let exchange = exchange_with(socket, &request, &NeverRestart);
+    let response = runtime
+        .block_on(async { timeout(HOOK_DEADLINE, exchange).await })
+        .ok()?
+        .ok()?;
+    hook_output(event, &response)
+}

@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
 use selflow_client::client::{
-    Client, ClientError, DaemonService, LockFeed, RestartOnce, exchange_with, installed_version_of,
+    Client, ClientError, DaemonService, LockFeed, NeverRestart, RestartOnce, exchange_with,
+    installed_version_of,
 };
 use selflow_platform::transport::{Listener, listen};
 use selflow_protocol::ipc::{
@@ -278,6 +279,12 @@ fn a_process_restarts_the_daemon_at_most_once() {
     assert!(service.restart());
     assert!(!service.restart());
     assert_eq!(restarts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn never_restart_never_restarts() {
+    assert_eq!(NeverRestart.installed_version(), None);
+    assert!(!NeverRestart.restart());
 }
 
 fn script(dir: &Path, name: &str, body: &str) -> PathBuf {

@@ -15,7 +15,7 @@ use tokio::time::timeout;
 use restart::open;
 pub use restart::{SYSTEM_SERVICE, installed_version_of};
 use types::Hello;
-pub use types::{Client, ClientError, DaemonService, LockFeed, RestartOnce, Systemd};
+pub use types::{Client, ClientError, DaemonService, LockFeed, NeverRestart, RestartOnce, Systemd};
 
 impl Client {
     pub fn connect(path: &Path) -> Result<Client, ClientError> {

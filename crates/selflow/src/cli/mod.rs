@@ -9,8 +9,11 @@ use selflow_i18n::language::Language;
 use selflow_i18n::localizer::{Arg, Localizer};
 use selflow_protocol::ipc::PROTOCOL_VERSION;
 
+use crate::claude::ClaudeError;
 use crate::render::message_text;
 
+pub use crate::claude::HookEvent;
+pub use commands::{ClaudeAction, ClaudeArgs};
 pub use types::{Cli, CliError, Command, ConfigAction, ConfigArgs, ReportArgs};
 
 pub fn run() -> ExitCode {
@@ -21,6 +24,7 @@ pub fn run() -> ExitCode {
         .try_init();
     let cli = Cli::parse();
     let result = match cli.command {
+        Command::Claude(args) => commands::claude_cmd(args),
         Command::Config(args) => commands::config_cmd(args),
         Command::Exception(args) => commands::exception_cmd(args),
         Command::Report(args) => commands::report_cmd(args),
@@ -45,6 +49,7 @@ pub fn error_text(localizer: &Localizer, error: &CliError) -> String {
         CliError::Editor(_) => "cli-editor-failed",
         CliError::UnexpectedResponse => "cli-unexpected-response",
         CliError::Daemon(message) => return message_text(localizer, message),
+        CliError::Claude(error) => return claude_error_text(localizer, error),
         CliError::VersionMismatch { running, installed } => {
             return localizer.text(
                 "cli-version-mismatch",
@@ -57,6 +62,20 @@ pub fn error_text(localizer: &Localizer, error: &CliError) -> String {
         }
     };
     localizer.text(id, &[])
+}
+
+fn claude_error_text(localizer: &Localizer, error: &ClaudeError) -> String {
+    let (id, path, detail) = match error {
+        ClaudeError::NoSettingsPath => return localizer.text("cli-claude-no-settings-path", &[]),
+        ClaudeError::NoProgramPath => return localizer.text("cli-claude-no-program-path", &[]),
+        ClaudeError::Invalid { path, detail } => ("cli-claude-invalid-file", path, detail.clone()),
+        ClaudeError::File { path, source } => ("cli-claude-file-failed", path, source.to_string()),
+    };
+    let args = [
+        ("path", Arg::Text(path.display().to_string())),
+        ("detail", Arg::Text(detail)),
+    ];
+    localizer.text(id, &args)
 }
 
 fn version_text(version: Option<u32>) -> String {

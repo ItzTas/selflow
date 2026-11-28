@@ -47,6 +47,8 @@ pub struct RestartOnce<S> {
 
 pub struct Systemd;
 
+pub struct NeverRestart;
+
 pub(super) enum Hello {
     Ready(MessageReader<Stream>),
     Mismatch(Option<u32>),

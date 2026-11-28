@@ -13,7 +13,7 @@ use selflow_protocol::ipc::{
 use tokio::time::sleep;
 
 use super::hello;
-use super::types::{ClientError, DaemonService, Hello, RestartOnce, Systemd};
+use super::types::{ClientError, DaemonService, Hello, NeverRestart, RestartOnce, Systemd};
 
 const EXIT_POLL: Duration = Duration::from_millis(10);
 const RECONNECT_POLL: Duration = Duration::from_millis(100);
@@ -54,6 +54,16 @@ impl DaemonService for Systemd {
 
     fn restart(&self) -> bool {
         restart_daemon().is_ok()
+    }
+}
+
+impl DaemonService for NeverRestart {
+    fn installed_version(&self) -> Option<u32> {
+        None
+    }
+
+    fn restart(&self) -> bool {
+        false
     }
 }
 

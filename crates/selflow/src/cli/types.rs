@@ -4,7 +4,8 @@ use selflow_client::client::ClientError;
 use selflow_protocol::ipc::MessageView;
 use std::io;
 
-use super::commands::{ExceptionArgs, TestLockArgs, UnlockArgs};
+use super::commands::{ClaudeArgs, ExceptionArgs, TestLockArgs, UnlockArgs};
+use crate::claude::ClaudeError;
 
 #[derive(Debug, Parser)]
 #[command(name = "selflow", arg_required_else_help = true)]
@@ -15,6 +16,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    Claude(ClaudeArgs),
     Config(ConfigArgs),
     Exception(ExceptionArgs),
     Report(ReportArgs),
@@ -59,6 +61,8 @@ pub enum CliError {
         running: Option<u32>,
         installed: Option<u32>,
     },
+    #[error(transparent)]
+    Claude(#[from] ClaudeError),
 }
 
 impl From<ClientError> for CliError {
