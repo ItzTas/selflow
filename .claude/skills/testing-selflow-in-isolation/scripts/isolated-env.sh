@@ -529,6 +529,7 @@ cmd_down() {
 	((${#left[@]} == 0)) || die "processes still carry this env: ${left[*]}"
 	runtime_looks_ours "$RUNTIME" && rm -rf -- "$RUNTIME"
 	remove_claude_projects
+	remove_claude_session_state
 	printf 'stopped; logs kept in %s\n' "$DIR" >&2
 }
 
@@ -933,6 +934,21 @@ remove_claude_projects() {
 		[[ -d $folder && ! -L $folder ]] || continue
 		rm -rf -- "$folder"
 		printf 'removed %s\n' "$folder" >&2
+	done
+}
+
+remove_claude_session_state() {
+	local file id kind path
+	for file in "$DIR"/claude/*.id; do
+		[[ -f $file ]] || continue
+		id=$(<"$file")
+		[[ $id =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || continue
+		for kind in session-env file-history; do
+			path=$HOME/.claude/$kind/$id
+			[[ -e $path && ! -L $path ]] || continue
+			rm -rf -- "$path"
+			printf 'removed %s\n' "$path" >&2
+		done
 	done
 }
 

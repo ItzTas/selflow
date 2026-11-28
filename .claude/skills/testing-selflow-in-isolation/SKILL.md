@@ -54,12 +54,12 @@ bash $ISO claude-calls "$D" a tool                     # kept hook inputs; outpu
 bash $ISO claude-deny "$D" a                           # refuses a pending permission prompt (Escape); never approves
 bash $ISO measure-hook "$D" 300 "$D/home/Workspace/seconv"  # p50/p95 of the hook from the Claude fixtures; fails unless all N calls were timed
 bash $ISO claude-stop "$D" a                           # /exit, then waits
-bash $ISO down "$D"                                    # also kills the tmux server and removes the sessions' ~/.claude/projects/ folders
+bash $ISO down "$D"                                    # also kills the tmux server and removes the sessions' ~/.claude/projects/, session-env/<id> and file-history/<id> folders
 ```
 
 - Every hook call is kept as `$D/claude/calls/<event>-<ns>.in.json`, `.out.json` and `.env`. The hook forwards `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_ENTRYPOINT`, and `CLAUDE_CODE_MESSAGING_SOCKET` only when that socket is inside the env's runtime dir, so the isolated daemon never learns about another session's inbox.
 - `selflow claude install|uninstall` runs only through `bash $ISO run "$D" env CLAUDE_CONFIG_DIR=$D/... selflow claude install`, never against `~/.claude`.
-- What a session still leaves in `~/.claude` after `down`: `session-env/<id>` and `file-history/<id>` folders named after its session id, lines in `history.jsonl` and, very probably, a project entry in `~/.claude.json`, all written by Claude Code itself. Leave them: `history.jsonl` and `~/.claude.json` are shared with the owner's live sessions, and the agent-safety rules let a run remove only its own `~/.claude/projects/` folder.
+- What a session still leaves in `~/.claude` after `down`: lines in `history.jsonl` and, very probably, a project entry in `~/.claude.json`, both written by Claude Code itself. Leave them: both files are shared with the owner's live sessions. `down` removes only the folders named after the session ids this env recorded in `$D/claude/<name>.id`, never anything matched more widely.
 - Claude Code's first-run dialogs: the workspace trust dialog defaults to "No, exit" (`claude-start` sends Down, Enter); the "Teach auto mode" picker gets Down, Enter before the next `claude-send`.
 
 ## Driving the CLI
