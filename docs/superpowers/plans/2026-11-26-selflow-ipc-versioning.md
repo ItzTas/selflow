@@ -22,10 +22,38 @@ below come from the code at `6a88ea3`, not from older plans.
 **Repository root:** `/home/talinux/Workspace/github.com/ItzTas/personal-projects/selflow`. Paths
 are relative to it.
 
-**Status:** not started. It runs with superpowers:subagent-driven-development (the owner's choice
-on 2026-11-26): one fresh implementer and one fresh reviewer per task, then a review of the whole
-range. Before Task 1, check that no other session is still working on `main` in this tree (the
-M2.1 close-out was running against the owner's daemon on 2026-11-26).
+**Status:** done on 2026-11-28 (commits 80b0e32..eeb829e on `main`), run with
+superpowers:subagent-driven-development: one implementer and one reviewer per task, a final review
+of the whole range and one fix wave, all approved. The owner installs it with `make install`, then
+`systemctl --user restart selflowd.service`, outside lock and shutdown hours (README). The idle
+release daemon measured RSS 8.3 MB and 0.01 s of CPU over 600 s in the isolated environment.
+
+Left for later (from the reviews, none blocking):
+
+- The daemon binds the socket before `serve` starts (`crates/selflowd/src/app.rs`), so a client
+  that connects during a start-up longer than 2 s reads it as an outdated daemon and restarts it
+  once.
+- `save_lock` and the lock-screen announcement are written on every lock tick even when nothing
+  changed (`crates/selflowd/src/engine/mod.rs`).
+- The automatic restart always targets `selflowd.service`; with a daemon on the socket that systemd
+  didn't start and a matching installed binary, the lock client restarts the unit about every 13 s.
+- A hello timeout counts as an outdated daemon, so a current daemon stalled for more than 2 s gets
+  restarted; the lock client's exit log then says a restart can't fix it.
+- `installed_version()` and `restart()` block inside async `open` (once per process).
+- After two store faults in one boot, a restart can use an earlier stored announcement than the
+  latest notice named (an earlier notice of that boot did name it).
+- A false "shuts down in a minute" notice after a reboot within `WARNING_GRACE` that follows a done
+  `once` shutdown (leftovers E1/E2, per-boot state by design).
+- A `peer_cred` failure ends `serve`, and systemd restarts the daemon.
+- The release client needs a working daemon connection; a protocol-free release path, or checking
+  `selflow-ui --protocol-version` before restarting, is the owner's call.
+- Small test gaps: the foreign-peer path through `serve`, `boot_state`'s date filter, the lock
+  path of the same-boot shutdown restore, the write-before-warn order outside
+  `announced_shutdown`, `--protocol-version` only through the parser.
+- Polish: postcard ignores trailing bytes in a frame; `rename_all` left on `ExtensionSource`; jiff
+  times travel as strings (pinned by `tests/wire/v1.hex`); `store/mod.rs` at about 600 lines;
+  `install` copies without a rename, so an interrupt during the copy itself could leave one
+  truncated binary.
 
 ## Global Constraints
 
