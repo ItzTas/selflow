@@ -1,6 +1,9 @@
 mod support;
 
+use std::path::Path;
+
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil::date};
+use selflow_core::agent::governing;
 use selflow_core::config::{Action, Challenges, Config, parse};
 use selflow_core::enforce::{
     DayLog, Enforcement, GrantedException, GrantedExtension, NoticeKind, ShutdownDone, evaluate,
@@ -19,6 +22,33 @@ fn started_on_the_19th() -> DayLog {
         ),
         ..DayLog::default()
     }
+}
+
+fn with_save_only_step(extra: &str) -> String {
+    format!(
+        "{}\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"save-only\"\nmessage = \"Stop now.\"\n{extra}",
+        no_jitter()
+    )
+}
+
+fn started_with_step(extra: &str) -> DayLog {
+    DayLog {
+        started: windows_for(
+            &parse(&with_save_only_step(extra)).unwrap(),
+            Seed(7),
+            date(2026, 11, 19),
+            &brt(),
+        ),
+        ..DayLog::default()
+    }
+}
+
+fn governed(log: &DayLog, extra: &str, cwd: &str, attended: bool) -> bool {
+    let config = parse(&with_save_only_step(extra)).unwrap();
+    let agent = evaluate(&at(19, 22, 30), &config, Seed(7), log).agent;
+    assert_eq!(agent.len(), 1);
+    assert_eq!(agent[0].message.as_deref(), Some("Stop now."));
+    governing(&agent, Path::new(cwd), Some(Path::new("/home/u")), attended).is_some()
 }
 
 fn locked(now: &ZonedDateTime, config: &Config, log: &DayLog) -> bool {
@@ -447,4 +477,45 @@ fn a_test_window_stays_apart_from_the_real_window_of_its_rule() {
     assert_eq!(lock.window, real);
     assert!(!lock.window.test);
     assert_eq!(lock.extensions_left, 1);
+}
+
+#[test]
+fn widening_the_folders_of_a_started_step_covers_the_new_folder_at_once() {
+    let log = started_with_step("folders = [\"~/work\"]\n");
+    let widened = "folders = [\"~/work\", \"~/notes\"]\n";
+    assert!(governed(&log, widened, "/home/u/notes", true));
+    assert!(governed(&log, widened, "/home/u/work/a", true));
+    assert!(!governed(&log, widened, "/home/u/music", true));
+}
+
+#[test]
+fn a_started_step_without_folders_on_either_side_covers_every_session() {
+    let narrow = started_with_step("folders = [\"~/work\"]\n");
+    assert!(governed(&narrow, "", "/home/u/notes", true));
+    let everywhere = started_with_step("");
+    assert!(governed(
+        &everywhere,
+        "folders = [\"~/work\"]\n",
+        "/home/u/notes",
+        true
+    ));
+}
+
+#[test]
+fn a_started_step_turning_unattended_applies_at_once() {
+    let log = started_with_step("");
+    assert!(governed(&log, "unattended = true\n", "/home/u/x", false));
+    let unattended = started_with_step("unattended = true\n");
+    assert!(governed(&unattended, "", "/home/u/x", false));
+}
+
+#[test]
+fn narrowing_the_folders_of_a_started_step_keeps_the_started_folders() {
+    let log = started_with_step("folders = [\"~/work\", \"~/notes\"]\n");
+    assert!(governed(
+        &log,
+        "folders = [\"~/work\"]\n",
+        "/home/u/notes",
+        true
+    ));
 }

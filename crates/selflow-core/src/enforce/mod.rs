@@ -135,13 +135,39 @@ fn merged(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> RuleWi
 }
 
 fn merged_steps(started: &RuleWindow, computed: &RuleWindow) -> Vec<AgentStep> {
-    let added = computed.agent.iter().filter(|step| {
-        !started
+    let kept = started.agent.iter().map(|kept| {
+        computed
             .agent
             .iter()
-            .any(|kept| kept.before == step.before && kept.level == step.level)
+            .find(|step| same_step(kept, step))
+            .map_or_else(|| kept.clone(), |step| stricter_step(kept, step))
     });
-    started.agent.iter().chain(added).cloned().collect()
+    let added = computed
+        .agent
+        .iter()
+        .filter(|step| !started.agent.iter().any(|kept| same_step(kept, step)))
+        .cloned();
+    kept.chain(added).collect()
+}
+
+fn same_step(step: &AgentStep, other: &AgentStep) -> bool {
+    step.before == other.before && step.level == other.level
+}
+
+fn stricter_step(started: &AgentStep, computed: &AgentStep) -> AgentStep {
+    AgentStep {
+        folders: wider_folders(&started.folders, &computed.folders),
+        unattended: started.unattended || computed.unattended,
+        ..started.clone()
+    }
+}
+
+fn wider_folders(started: &[String], computed: &[String]) -> Vec<String> {
+    if started.is_empty() || computed.is_empty() {
+        return Vec::new();
+    }
+    let added = computed.iter().filter(|folder| !started.contains(folder));
+    started.iter().chain(added).cloned().collect()
 }
 
 fn merged_start(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> ZonedDateTime {
