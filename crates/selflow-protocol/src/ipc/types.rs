@@ -3,14 +3,12 @@ use jiff::{SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
     Status,
     SubscribeLock,
     RequestExtension {
         reason: String,
         phrase: String,
-        #[serde(default)]
         source: ExtensionSource,
     },
     GetConfig,
@@ -45,7 +43,6 @@ pub enum ExtensionSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Status(StatusView),
     Lock(LockView),
@@ -122,7 +119,6 @@ pub struct ChallengeView {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "refusal", rename_all = "snake_case")]
 pub enum RefusalView {
     TooEarly { available_at: Timestamp },
     NoBudget,

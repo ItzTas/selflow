@@ -1,145 +1,69 @@
+use jiff::civil::Date;
+use jiff::{SignedDuration, Timestamp};
 use selflow_protocol::ipc::{
-    ChallengeView, ChangeView, ExtensionSource, MAX_LINE_BYTES, MessageView, RefusalView, Request,
-    Response, message_reader, read_message, write_message,
+    ChallengeView, ChangeView, ConfigStatusView, ExtensionSource, LockView, MAX_FRAME_BYTES,
+    MessageView, PositionedMessage, RefusalView, ReportEntry, ReportView, Request, Response,
+    StatusView, message_reader, read_message, write_message,
 };
 
-#[tokio::test]
-async fn round_trips_messages_as_json_lines() {
-    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = message_reader(other_end);
-    let sent = Request::SaveConfig {
-        text: "a\nb".into(),
-    };
-    write_message(&mut writer, &sent).await.unwrap();
-    assert_eq!(
-        read_message::<Request>(&mut reader).await.unwrap(),
-        Some(sent)
-    );
+fn at(seconds: i64) -> Timestamp {
+    Timestamp::from_second(seconds).unwrap()
 }
 
-#[test]
-fn tags_messages_with_a_snake_case_type() {
-    assert_eq!(
-        serde_json::to_string(&Request::Status).unwrap(),
-        r#"{"type":"status"}"#
-    );
+fn message(id: &str) -> MessageView {
+    MessageView {
+        id: id.into(),
+        args: vec![("rule".into(), "bedtime".into())],
+    }
 }
 
-#[test]
-fn an_extension_request_without_a_source_comes_from_the_screen() {
-    let line = r#"{"type":"request_extension","reason":"talking to my sister","phrase":""}"#;
-    assert_eq!(
-        serde_json::from_str::<Request>(line).unwrap(),
+fn change(id: &str, effective_at: Timestamp) -> ChangeView {
+    ChangeView {
+        message: message(id),
+        effective_at,
+    }
+}
+
+fn lock() -> LockView {
+    LockView {
+        label: "Bedtime".into(),
+        ends_at: at(2_000),
+        extension_available_at: at(1_500),
+        extensions_left: 2,
+        extension_minutes: 10,
+        reason_required: true,
+        phrase: Some("I choose to rest".into()),
+        shutdown_at: Some(at(1_900)),
+        language: "en".into(),
+    }
+}
+
+fn requests() -> Vec<Request> {
+    vec![
+        Request::Status,
+        Request::SubscribeLock,
         Request::RequestExtension {
             reason: "talking to my sister".into(),
             phrase: String::new(),
-            source: ExtensionSource::Screen,
-        }
-    );
-}
-
-#[tokio::test]
-async fn rejects_a_line_over_the_limit() {
-    let line = format!("\"{}\"\n", "x".repeat(MAX_LINE_BYTES + 1));
-    let mut reader = message_reader(line.as_bytes());
-    let error = read_message::<Request>(&mut reader).await.unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-}
-
-#[tokio::test]
-async fn rejects_malformed_json_and_reads_none_at_end_of_input() {
-    let mut reader = message_reader(&b"not json\n"[..]);
-    let error = read_message::<Request>(&mut reader).await.unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-    assert_eq!(read_message::<Request>(&mut reader).await.unwrap(), None);
-}
-
-#[tokio::test]
-async fn round_trips_extension_refusals() {
-    let refusals = [
-        RefusalView::NoBudget,
-        RefusalView::TooEarly {
-            available_at: jiff::Timestamp::from_second(1_000).unwrap(),
+            source: ExtensionSource::Terminal,
         },
-    ];
-    for refusal in refusals {
-        let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-        let mut reader = message_reader(other_end);
-        let sent = Response::ExtensionRefused(refusal);
-        write_message(&mut writer, &sent).await.unwrap();
-        assert_eq!(
-            read_message::<Response>(&mut reader).await.unwrap(),
-            Some(sent)
-        );
-    }
-}
-
-#[tokio::test]
-async fn round_trips_a_test_lock_request_and_its_answer() {
-    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = message_reader(other_end);
-    let requests = [
+        Request::GetConfig,
+        Request::SaveConfig {
+            text: "a\nb".into(),
+        },
+        Request::ConfigStatus,
+        Request::Report {
+            logical_date: Some(Date::constant(2026, 11, 28)),
+        },
         Request::TestLock {
             rule: Some("every-night/bedtime".into()),
-            duration: jiff::SignedDuration::from_mins(5),
+            duration: SignedDuration::from_mins(5),
         },
         Request::TestLock {
             rule: None,
-            duration: jiff::SignedDuration::from_secs(90),
+            duration: SignedDuration::from_secs(90),
         },
-    ];
-    for sent in requests {
-        write_message(&mut writer, &sent).await.unwrap();
-        assert_eq!(
-            read_message::<Request>(&mut reader).await.unwrap(),
-            Some(sent)
-        );
-    }
-    let sent = Response::TestLockStarted {
-        label: "Bedtime".into(),
-        ends_at: jiff::Timestamp::from_second(1_000).unwrap(),
-    };
-    write_message(&mut writer, &sent).await.unwrap();
-    assert_eq!(
-        read_message::<Response>(&mut reader).await.unwrap(),
-        Some(sent)
-    );
-}
-
-#[tokio::test]
-async fn round_trips_a_save_answer_with_each_change_and_its_time() {
-    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = message_reader(other_end);
-    let saved_at = jiff::Timestamp::from_second(1_000).unwrap();
-    let change = |id: &str, effective_at| ChangeView {
-        message: MessageView {
-            id: id.into(),
-            args: vec![("rule".into(), "bedtime".into())],
-        },
-        effective_at,
-    };
-    let sent = Response::Saved {
-        saved_at,
-        changes: vec![
-            change("change-rule-starts-earlier", saved_at),
-            change(
-                "change-more-extensions",
-                jiff::Timestamp::from_second(87_400).unwrap(),
-            ),
-        ],
-    };
-    write_message(&mut writer, &sent).await.unwrap();
-    assert_eq!(
-        read_message::<Response>(&mut reader).await.unwrap(),
-        Some(sent)
-    );
-}
-
-#[tokio::test]
-async fn round_trips_an_exception_request_and_its_answers() {
-    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
-    let mut reader = message_reader(other_end);
-    let requests = [
+        Request::ReleaseScreen,
         Request::StartException {
             rule: "bedtime".into(),
         },
@@ -148,18 +72,62 @@ async fn round_trips_an_exception_request_and_its_answers() {
             reason: "on call tonight".into(),
             phrase: String::new(),
         },
-    ];
-    for sent in requests {
-        write_message(&mut writer, &sent).await.unwrap();
-        assert_eq!(
-            read_message::<Request>(&mut reader).await.unwrap(),
-            Some(sent)
-        );
-    }
-    let responses = [
+    ]
+}
+
+fn responses() -> Vec<Response> {
+    vec![
+        Response::Status(StatusView {
+            language: "en".into(),
+            locked: Some(lock()),
+            next_lock_at: Some(at(3_000)),
+        }),
+        Response::Lock(lock()),
+        Response::LockEnded,
+        Response::ExtensionGranted { until: at(2_600) },
+        Response::ExtensionRefused(RefusalView::NoBudget),
+        Response::ExtensionRefused(RefusalView::TooEarly {
+            available_at: at(1_000),
+        }),
+        Response::ExtensionRefused(RefusalView::ReasonTooShort { min_chars: 12 }),
+        Response::ExtensionRefused(RefusalView::PhraseMismatch),
+        Response::Config {
+            text: "[rules]\n".into(),
+        },
+        Response::Saved {
+            saved_at: at(1_000),
+            changes: vec![
+                change("change-rule-starts-earlier", at(1_000)),
+                change("change-more-extensions", at(87_400)),
+            ],
+        },
+        Response::Invalid {
+            errors: vec![PositionedMessage {
+                message: message("invalid-rule"),
+                line: 3,
+                column: 7,
+            }],
+        },
+        Response::ConfigStatus(ConfigStatusView {
+            last_saved_at: Some(at(1_000)),
+            pending: vec![change("change-more-extensions", at(87_400))],
+        }),
+        Response::Report(ReportView {
+            logical_date: Date::constant(2026, 11, 28),
+            entries: vec![ReportEntry {
+                at: at(1_000),
+                message: message("lock-started"),
+            }],
+            pending: vec![],
+        }),
+        Response::TestLockStarted {
+            label: "Bedtime".into(),
+            ends_at: at(1_000),
+        },
+        Response::Released,
         Response::ExceptionChallenge(ChallengeView {
             label: "bedtime".into(),
-            available_at: jiff::Timestamp::from_second(1_000).unwrap(),
+            available_at: at(1_000),
             reason_required: true,
             phrase: Some("I choose to rest".into()),
             extensions_left: 1,
@@ -168,14 +136,78 @@ async fn round_trips_an_exception_request_and_its_answers() {
             label: "bedtime".into(),
         },
         Response::ExceptionRefused(RefusalView::TooEarly {
-            available_at: jiff::Timestamp::from_second(1_000).unwrap(),
+            available_at: at(1_000),
         }),
-    ];
-    for sent in responses {
+        Response::Error(message("internal-error")),
+    ]
+}
+
+fn encoded_hex() -> String {
+    let requests = requests()
+        .iter()
+        .map(|request| postcard::to_stdvec(request).unwrap())
+        .collect::<Vec<_>>();
+    let responses = responses()
+        .iter()
+        .map(|response| postcard::to_stdvec(response).unwrap())
+        .collect::<Vec<_>>();
+    requests
+        .into_iter()
+        .chain(responses)
+        .map(|bytes| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+                + "\n"
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn round_trips_every_request_and_response() {
+    let (mut writer, other_end) = tokio::io::duplex(64 * 1024);
+    let mut reader = message_reader(other_end);
+    for sent in requests() {
+        write_message(&mut writer, &sent).await.unwrap();
+        assert_eq!(
+            read_message::<Request>(&mut reader).await.unwrap(),
+            Some(sent)
+        );
+    }
+    for sent in responses() {
         write_message(&mut writer, &sent).await.unwrap();
         assert_eq!(
             read_message::<Response>(&mut reader).await.unwrap(),
             Some(sent)
         );
     }
+}
+
+#[tokio::test]
+async fn reads_none_at_end_of_input() {
+    let mut reader = message_reader(&b""[..]);
+    assert_eq!(read_message::<Request>(&mut reader).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn rejects_a_frame_over_the_limit() {
+    let header = u32::try_from(MAX_FRAME_BYTES + 1).unwrap().to_be_bytes();
+    let mut reader = message_reader(&header[..]);
+    let error = read_message::<Request>(&mut reader).await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[tokio::test]
+async fn rejects_bytes_that_are_not_a_message() {
+    let mut input = 8u32.to_be_bytes().to_vec();
+    input.extend_from_slice(&[0xff; 8]);
+    let mut reader = message_reader(&input[..]);
+    let error = read_message::<Request>(&mut reader).await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn changing_the_wire_format_needs_a_new_protocol_version() {
+    assert_eq!(encoded_hex(), include_str!("wire/v1.hex"));
 }
