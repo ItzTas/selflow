@@ -102,7 +102,7 @@ These would count as failure even if the app technically works:
 | `selflow` | The command line. From M2 it links no GUI library. It covers onboarding (`selflow init`), configuration (`selflow config edit`, `selflow config status`), reports (`selflow report`), the terminal unlock (`selflow unlock`, section 8.13) and the Claude Code hooks (section 8.12). While the daemon runs in test mode (`SELFLOW_POWER=log`, where a shutdown is only logged), `selflow test-lock` starts a short lock with a chosen rule, so the owner can check the lock screen without waiting for bedtime. |
 | `selflow-ui` | The graphical binary, from M2. It holds the window, the tray and the lock screen, and it is the only binary that links iced. (The name is Claude's call.) |
 | `selflow-ui --tray` | A small process that holds the tray icon (StatusNotifierItem, through `ksni`) and talks to the daemon over a local socket. Hyprland starts it at login from the `hyprland.start` hook of the owner's Lua config (Hyprland 0.57). |
-| Window | `selflow-ui` started with no arguments. In phase 1 the window is small: it shows what is active and handles unblocking (section 8.6, Claude's call). The full GUI editor comes in phase 6. Only one window runs at a time, and starting `selflow-ui` again brings the open one to the front. |
+| Window | `selflow-ui` started with no arguments. In phase 1 the window is small: it shows what is active and handles unblocking (section 8.6, Claude's call). The full interface comes in phase 6 (section 13). Only one window runs at a time, and starting `selflow-ui` again brings the open one to the front. |
 | Lock screen | Part of `selflow-ui`, started by the daemon. An iced UI running as a real Wayland session lock (section 8.5). |
 
 Killing the tray icon doesn't stop enforcement, because the daemon is a separate process. The
@@ -419,7 +419,7 @@ Claude's proposal, approved by the owner.
   timer breaks the resource budget (section 15) and is a risk on a locked screen.
 - Animations stay calm, with no flashing (section 4).
 - Today's screen becomes the default theme, and a command such as `selflow lock theme init` writes
-  a copy to start from. The graphical editor (section 13) edits themes later.
+  a copy to start from. The full interface (section 13) edits themes later.
 - It needs `selflow-ui` (section 6.1), so it comes at the end of M2 or in a small milestone right
   after it.
 
@@ -518,7 +518,7 @@ The builder picks the exact numbers, and they get tuned during real use.
 In phase 1, onboarding runs in the terminal as `selflow init`. It asks for the server address and
 the login, then registers the device. For a user with no configuration yet, it also asks for the
 language, the mode, work hours, bedtime and the main apps to watch. A graphical onboarding comes
-with the editor in phase 6.
+with the full interface in phase 6.
 
 ### 8.11 Editing rules and reading reports in phase 1
 
@@ -530,7 +530,7 @@ Approved by the owner.
   and come in both languages.
 - The next-day report arrives as a desktop notification in the morning, and `selflow report`
   shows the full report in the terminal.
-- The graphical editor comes near the end of the plan, in phase 6.
+- The full interface (section 13) comes near the end of the plan, in phase 6.
 
 ### 8.12 Claude Code sessions
 
@@ -654,7 +654,7 @@ before writing it. It also checks the Claude Code version, and it warns when the
 would keep the messages from arriving: `crossSessionInbound` at `hold` or `refuse`, or permission
 prompts bypassed by default without `accept`. Running it again updates the entries, and
 `selflow claude uninstall` removes only Selflow's. Removing the hooks by hand is a bypass Selflow
-can't prevent, in the same spirit as section 8.7. The graphical editor (section 13) edits the
+can't prevent, in the same spirit as section 8.7. The full interface (section 13) edits the
 Claude steps later on.
 
 Selflow never reads transcripts or prompts. Events record the rule, the step, the level, the
@@ -766,12 +766,17 @@ Configurable tasks and reminders, with times written in natural language in the 
 ("tomorrow at 3pm", "every Monday"), in English and pt-BR. Tasks connect to the "smallest first
 step" behavior in section 9. This phase is not the focus and comes late on purpose.
 
-## 13. GUI editor (phase 6)
+## 13. Full interface (phase 6)
 
-The owner wants the graphical editor near the end of the plan. It covers rules, rule sets, the
+The owner wants the graphical interface near the end of the plan. It covers rules, rule sets, the
 routine, medications, challenges and modes, along with a graphical onboarding and a report view.
-The text file stays supported, and changes made in the editor follow the same loosening rules
+The text file stays supported, and changes made in the interface follow the same loosening rules
 (section 8.9).
+
+The owner wants it to be the complete interface rather than an editor for the text file (owner,
+2026-11-27). It hides some of the machinery behind simpler choices, so that nobody has to read
+hours of documentation to set Selflow up, which is a lot to ask of someone with ADHD. This phase
+gets its own design before it starts.
 
 ## 14. Hosting
 
@@ -852,7 +857,7 @@ Each phase ends with something used daily.
 3. **Medication.** Section 10, plus encryption of the local store (section 6.7).
 4. **Reach.** Section 11.
 5. **Tasks and reminders.** Section 12.
-6. **GUI editor.** Section 13.
+6. **Full interface.** Section 13.
 7. **Future.** A phone client (iPhone first) and other desktop environments. Two ideas from the
    owner wait here too, and each needs its own design first (section 21):
    - AI help: Selflow hands small decisions to an AI, through a Claude Code hook, an API token or a
