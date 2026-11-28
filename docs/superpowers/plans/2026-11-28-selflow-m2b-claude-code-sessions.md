@@ -27,19 +27,20 @@ folded in below. Interfaces come from the code at `749d557`.
 **Repository root:** `/home/talinux/Workspace/github.com/ItzTas/personal-projects/selflow`. Paths
 are relative to it.
 
-**Status:** done on 2026-11-28, Tasks 1 to 12 in `b087773`..`48ea091` plus the commit that writes
-this line. Task 12's isolated scenario (`scenario-claude.sh`, level 1, release build, Claude Code
-2.1.332 with `--model haiku`) passed: the light message arrived through the inbox and Claude passed
-it on, the next prompt carried the reminder, Save only denied the write (and a chained
-`git status --short && git log --oneline -1`) while `git commit --allow-empty -m save` ran, and the
-session in another folder got nothing. Hook latency, 300 calls each with Save only active: prompt
-p50 1.44 ms, p95 2.23 ms; tool p50 1.12 ms, p95 1.37 ms. An earlier run gave 1.59 and 1.28 ms at
-p95, and one run in between gave 12.49 and 13.49 ms, over the 10 ms budget, while other sessions'
-jobs ran on the laptop; the passing run had a higher load average, so that cause isn't pinned down. Idle
-release daemon over 600 s: 7.5 MB RSS, 0 CPU ticks. `scenario-level1.sh` and `scenario-level2.sh`
-passed again. Left for later: the deferred minors in the SDD progress file (Task 10's inbox claims
-and courier, Task 11's `claude --version` and `current_exe` cases), the slow latency run, and the
-owner's steps below.
+**Status:** done on 2026-11-28, Tasks 1 to 12 in `b087773`..`48ea091` plus the docs and fix commits
+that follow. Task 12's isolated scenario (`scenario-claude.sh`, level 1, release build, Claude Code
+2.1.332 with `--model haiku`, sessions in manual permission mode) passed: the light and save-only
+messages arrived through the inbox in the minute of their step (and not before) and Claude passed
+them on, the next prompt carried the reminder, Save only denied the write and
+`git status && touch f` while `git commit --allow-empty -m save` ran, and the session in another
+folder got nothing. Hook latency, three back-to-back measurements of 300 prompt and 300 tool calls
+with Save only active, in each of the last two runs: every p95 between 1.26 and 2.49 ms (p50 1.12 to
+1.66 ms), so the 10 ms budget held in all six. One earlier single measurement gave 12.49 ms (prompt)
+and 13.49 ms (tool) at p95 while other sessions' jobs ran on the laptop, and its cause wasn't found,
+so the budget isn't guaranteed under every load. Idle release daemon over 600 s: 7.5 MB RSS, 0 CPU
+ticks. `scenario-level1.sh` and `scenario-level2.sh` passed again. Left for later: the deferred
+minors in the SDD progress file (Task 10's inbox claims and courier, Task 11's `claude --version` and
+`current_exe` cases), the slow latency measurement, and the owner's steps below.
 
 ## Global Constraints
 

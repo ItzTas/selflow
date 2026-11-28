@@ -74,9 +74,9 @@ A rule can also talk to the Claude Code sessions you have open. Before the rule 
 
 ### Connecting Claude Code
 
-Run `selflow claude install`. It adds hooks for four Claude Code events (`SessionStart`, `SessionEnd`, `UserPromptSubmit` and `PreToolUse`) to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set. Each hook runs `selflow claude hook <event>`. The command lists the lines it would add and asks before it writes anything (`--yes` skips the question). Your own hooks stay where they are. If the file isn't valid JSON, or something changed it while the command waited for your answer, nothing is written.
+Run `selflow claude install`. It adds hooks for four Claude Code events (`SessionStart`, `SessionEnd`, `UserPromptSubmit` and `PreToolUse`) to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json` when that variable is set. Each hook runs `selflow claude hook <event>`. The command lists the lines it would add and asks before it writes anything (`--yes` skips the question). Your own hooks stay where they are. If the file isn't valid JSON, or something changed it while the command waited for your answer, nothing is written. Claude Code sessions you start after that pick up the hooks.
 
-It also warns you when Claude Code is missing or older than 2.1.224, when `crossSessionInbound` is set to anything but `"accept"`, and when your default permission mode skips permission prompts. Each of these keeps Selflow's messages from reaching a session. `selflow claude uninstall` removes Selflow's hooks and leaves the rest of the file alone.
+It also warns you in three cases. If Claude Code is missing, or older than 2.1.224 and so without an inbox, messages wait for your next prompt. If `crossSessionInbound` is set to anything but `"accept"`, messages wait for your approval or never arrive. If your default permission mode is `bypassPermissions` and `crossSessionInbound` isn't `"accept"`, Claude Code holds messages until you approve them. `selflow claude uninstall` removes Selflow's hooks and leaves the rest of the file alone.
 
 The hooks never hold Claude Code up. If the daemon isn't running, takes more than a second to answer or runs a different version, the hook exits quietly and the session carries on as if Selflow weren't there.
 
@@ -103,7 +103,7 @@ level = "save-only"
 message = "Bedtime soon. Save the work and stop here."
 ```
 
-- `before` says how long before the rule's start the step happens, up to 24 hours.
+- `before` says how long before the rule's start the step happens. It has to be under 24 hours.
 - `level` is one of four, from lightest to firmest. With `message`, Claude gets the message and passes it on to you, and nothing else changes. With `light`, every prompt you send also carries a reminder to finish what is underway and take on only small tasks. With `no-new-work`, the reminder asks Claude to start nothing new, help save the work, write down where it stopped and what comes next, and tell you to go rest. `save-only` sends the same reminder and also blocks file edits and shell commands, except the allowed commands below.
 - `message` replaces Selflow's own text for that step.
 - `folders` limits the step to sessions working inside those folders. Write `~`, a path starting with `~/`, or an absolute path. A folder covers everything inside it, but `~/Workspace/app` doesn't cover `~/Workspace/app-old`. Without `folders`, the step covers every session.
@@ -124,6 +124,6 @@ Agent steps follow the same clocks as the rest of the file. Adding a step, cover
 
 ### How messages arrive
 
-Selflow sends each message to the session's inbox, the local socket Claude Code opens for messages from other sessions. This needs Claude Code 2.1.224 or later. A session sitting idle gets it too: Claude wakes up and answers. Claude Code shows the message as coming from another Claude session, so Claude treats it as a request from someone working on your behalf rather than something you typed. When the inbox can't be reached, the message comes with your next prompt instead.
+Selflow sends each message to the session's inbox, the local socket Claude Code opens for messages from other sessions. This needs Claude Code 2.1.224 or later. A session sitting idle gets it too: Claude wakes up and answers. Claude Code shows the message as coming from another Claude session, not as something you typed. Selflow's text says it comes from your focus tool and asks Claude to pass it on to you. When the inbox can't be reached, the message comes with your next prompt instead.
 
 `selflow report` lists which way each message went and the edits and commands Selflow blocked, with the rule, the level and the session's folder. Selflow doesn't read transcripts or prompts, and it never stores the commands Claude runs.
