@@ -51,8 +51,14 @@ pub(super) fn rule_unit(day: Weekday, rule: &str, field: &str) -> String {
     format!("{}/{rule}/{field}", day_tag(day))
 }
 
+pub(super) const AGENT_FIELD_PREFIX: &str = "agent/";
+
 pub(super) fn agent_field(step: &AgentStep) -> String {
-    format!("agent/{:#}/{}", step.before, step.level.name())
+    format!(
+        "{AGENT_FIELD_PREFIX}{:#}/{}",
+        step.before,
+        step.level.name()
+    )
 }
 
 pub(super) fn exception_unit(date: civil::Date) -> String {

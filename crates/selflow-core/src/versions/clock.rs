@@ -5,7 +5,8 @@ use jiff::{Timestamp, civil::Weekday};
 use super::assemble::config_at;
 use super::constants::RULE_FIELDS;
 use super::types::{
-    ChangeKind, History, Scope, StoredChange, TimedChange, UnitChange, agent_field, rule_unit,
+    AGENT_FIELD_PREFIX, ChangeKind, History, Scope, StoredChange, TimedChange, UnitChange,
+    agent_field, rule_unit,
 };
 use super::{diff, just_before};
 use crate::config::{Action, Config, DAYS};
@@ -140,11 +141,23 @@ fn changed_units(
         .filter(|(unit, _, _)| {
             waiting.contains(&unit.as_str()) || judged.iter().any(|entry| entry.unit() == *unit)
         });
+    let dropped_steps = judged
+        .iter()
+        .filter(|entry| entry.field.starts_with(AGENT_FIELD_PREFIX))
+        .filter(|entry| match &entry.scope {
+            Scope::Rule { day, rule } => {
+                proposed.rules_on(*day).iter().any(|next| next.id == *rule)
+                    && !latest.rules_on(*day).iter().any(|kept| kept.id == *rule)
+            }
+            _ => false,
+        })
+        .map(|entry| (entry.unit(), entry.scope.clone(), entry.field.clone()));
     let mut units: Vec<(String, Scope, String)> = Vec::new();
     for (unit, scope, field) in diff(latest, proposed)
         .into_iter()
         .map(|entry| (entry.unit(), entry.scope, entry.field))
         .chain(returning)
+        .chain(dropped_steps)
     {
         if units.iter().any(|(seen, _, _)| *seen == unit) {
             continue;

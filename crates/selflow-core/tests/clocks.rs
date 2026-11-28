@@ -570,6 +570,41 @@ fn a_firmer_step_applies_at_once_while_another_removed_waits() {
 }
 
 #[test]
+fn a_rule_put_back_with_fewer_steps_drops_the_missing_step_after_the_delay() {
+    let both = with_steps(&[
+        "before = \"60m\"\nlevel = \"light\"",
+        "before = \"30m\"\nlevel = \"save-only\"",
+    ]);
+    let only_first = with_step("before = \"60m\"\nlevel = \"light\"");
+    let without_thursday = both.replace(NO_THURSDAY.0, NO_THURSDAY.1);
+    let history = history_of(&[
+        (at(18, 8, 0), &both),
+        (at(18, 10, 0), &without_thursday),
+        (at(18, 12, 0), &only_first),
+    ]);
+    let steps = |when: ZonedDateTime| -> Vec<AgentLevel> {
+        let config = config_at(&history, when.timestamp());
+        let mut levels: Vec<AgentLevel> = config
+            .rules_on(Weekday::Thursday)
+            .first()
+            .map(|rule| rule.agent.iter().map(|step| step.level).collect())
+            .unwrap_or_default();
+        levels.sort();
+        levels
+    };
+    assert_eq!(
+        steps(at(18, 12, 0)),
+        [AgentLevel::Light, AgentLevel::SaveOnly]
+    );
+    assert_eq!(
+        steps(at(19, 11, 0)),
+        [AgentLevel::Light, AgentLevel::SaveOnly]
+    );
+    assert_eq!(steps(at(19, 12, 0)), [AgentLevel::Light]);
+    assert_eq!(steps(at(25, 12, 0)), [AgentLevel::Light]);
+}
+
+#[test]
 fn a_changed_before_adds_the_new_step_at_once_and_drops_the_old_one_later() {
     let history = history_of(&[
         (
