@@ -10,6 +10,7 @@ use selflow_protocol::ipc::{AgentSession, MessageView, Request, Response, ToolCa
 use selflowd::agent::claude_code::inbox_frame;
 use selflowd::agent::courier::run_courier;
 use selflowd::ipc::handle;
+use selflowd::store::{Event, EventKind};
 use support::{AgentRig, agent_rig, agent_rig_on, at, no_jitter, session};
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
@@ -267,6 +268,38 @@ fn a_restart_does_not_resend_a_delivered_message() {
         prompt(&restarted, seconv()).as_deref(),
         Some(LIGHT_REMINDER)
     );
+}
+
+#[test]
+fn an_inbox_claim_without_its_message_is_released_when_the_daemon_starts() {
+    let rig = ticked(&[LIGHT], at(19, 22, 10));
+    let key = "bedtime/2026-11-19/60m/light";
+    let sent = session("8e4f", "/home/user/Workspace/seconv");
+    let lost = seconv();
+    let claimed_at = at(19, 22, 11).timestamp();
+    {
+        let store = rig.store.lock().unwrap();
+        for id in [&sent.id, &lost.id] {
+            assert!(
+                store
+                    .claim_agent_delivery(key, id, claimed_at, "inbox")
+                    .unwrap()
+            );
+        }
+        store
+            .record_event(&Event {
+                at: claimed_at,
+                logical_date: jiff::civil::date(2026, 11, 19),
+                kind: EventKind::AgentMessage,
+                key: format!("{key}/{}", sent.id),
+                detail: None,
+            })
+            .unwrap();
+    }
+    let mut restarted = agent_rig_on(rig.store.clone(), at(19, 22, 12));
+    restarted.engine.tick().unwrap();
+    assert_eq!(prompt(&restarted, lost).as_deref(), Some(WIND_DOWN));
+    assert_eq!(prompt(&restarted, sent).as_deref(), Some(LIGHT_REMINDER));
 }
 
 #[test]

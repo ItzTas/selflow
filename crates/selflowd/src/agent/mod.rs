@@ -19,7 +19,9 @@ use tokio::sync::{Notify, watch};
 use crate::engine::clock_time;
 use crate::store::Store;
 
-use constants::{COMMAND_SEPARATOR, MISSED_DELIVERY, PARAGRAPH_BREAK, PROMPT_DELIVERY};
+use constants::{
+    COMMAND_SEPARATOR, INBOX_DELIVERY, MISSED_DELIVERY, PARAGRAPH_BREAK, PROMPT_DELIVERY,
+};
 use events::{Origin, record};
 pub use types::{AgentError, Directives};
 
@@ -41,6 +43,7 @@ impl AgentHub {
         directives: watch::Receiver<Directives>,
         home: Option<PathBuf>,
     ) -> AgentHub {
+        release_unsent_inbox_messages(&store);
         AgentHub {
             store,
             directives,
@@ -251,6 +254,20 @@ impl AgentHub {
             commands: directives.allowed_commands.join(COMMAND_SEPARATOR),
             tz,
         })
+    }
+}
+
+fn release_unsent_inbox_messages(store: &Mutex<Store>) {
+    match guarded(store)
+        .release_unsent_agent_deliveries(INBOX_DELIVERY)
+        .map_err(AgentError::from)
+    {
+        Ok(0) => {}
+        Ok(released) => tracing::info!(
+            released,
+            "agent messages claimed for an inbox but never sent wait for the next prompt"
+        ),
+        Err(error) => tracing::error!(%error, "couldn't release unsent agent messages"),
     }
 }
 

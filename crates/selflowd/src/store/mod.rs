@@ -511,6 +511,14 @@ impl Store {
         Ok(())
     }
 
+    pub fn release_unsent_agent_deliveries(&self, how: &str) -> Result<usize, StoreError> {
+        Ok(self.conn.execute(
+            "DELETE FROM agent_deliveries WHERE how = ?1 AND NOT EXISTS (
+               SELECT 1 FROM events WHERE kind = ?2 AND key = step_key || '/' || session_id)",
+            params![how, event_kind_text(EventKind::AgentMessage)],
+        )?)
+    }
+
     pub fn record_shutdown_done(&self, boot_id: &str, key: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR IGNORE INTO boot_shutdowns (boot_id, key) VALUES (?1, ?2)",
