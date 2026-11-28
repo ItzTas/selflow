@@ -1,12 +1,14 @@
-use std::path::PathBuf;
+use std::fs::{self, Permissions};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use jiff::{SignedDuration, Timestamp};
 use selflow_client::client::{
-    Client, ClientError, DaemonService, LockFeed, RestartOnce, exchange_with,
+    Client, ClientError, DaemonService, LockFeed, RestartOnce, exchange_with, installed_version_of,
 };
 use selflow_platform::transport::{Listener, listen};
 use selflow_protocol::ipc::{
@@ -241,6 +243,33 @@ fn a_process_restarts_the_daemon_at_most_once() {
     assert!(service.restart());
     assert!(!service.restart());
     assert_eq!(restarts.load(Ordering::SeqCst), 1);
+}
+
+fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[test]
+fn the_installed_version_is_what_the_binary_prints_before_the_handshake_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let prints = script(dir.path(), "prints", "echo 1");
+    let fails = script(dir.path(), "fails", "echo 1\nexit 1");
+    let hangs = script(
+        dir.path(),
+        "hangs",
+        &format!("echo $$ > '{}'\nexec sleep 30", pid_file.display()),
+    );
+    assert_eq!(installed_version_of(&prints), Some(1));
+    assert_eq!(installed_version_of(&fails), None);
+    let started = Instant::now();
+    assert_eq!(installed_version_of(&hangs), None);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let pid = fs::read_to_string(&pid_file).unwrap();
+    assert!(!Path::new("/proc").join(pid.trim()).exists());
 }
 
 fn view() -> LockView {

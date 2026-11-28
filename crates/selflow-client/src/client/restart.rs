@@ -45,24 +45,28 @@ impl<S: DaemonService> DaemonService for RestartOnce<S> {
 
 impl DaemonService for Systemd {
     fn installed_version(&self) -> Option<u32> {
-        let mut child = Command::new(daemon_binary().ok()?)
-            .arg(PROTOCOL_VERSION_FLAG)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        if !exit_within(&mut child, HANDSHAKE_TIMEOUT)?.success() {
-            return None;
-        }
-        let mut printed = String::new();
-        child.stdout.take()?.read_to_string(&mut printed).ok()?;
-        printed.trim().parse().ok()
+        installed_version_of(&daemon_binary().ok()?)
     }
 
     fn restart(&self) -> bool {
         restart_daemon().is_ok()
     }
+}
+
+pub fn installed_version_of(binary: &Path) -> Option<u32> {
+    let mut child = Command::new(binary)
+        .arg(PROTOCOL_VERSION_FLAG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if !exit_within(&mut child, HANDSHAKE_TIMEOUT)?.success() {
+        return None;
+    }
+    let mut printed = String::new();
+    child.stdout.take()?.read_to_string(&mut printed).ok()?;
+    printed.trim().parse().ok()
 }
 
 pub(super) async fn open(

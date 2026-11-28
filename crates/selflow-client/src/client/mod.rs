@@ -12,8 +12,8 @@ use selflow_protocol::ipc::{
 use tokio::runtime::Builder;
 use tokio::time::timeout;
 
-pub use restart::SYSTEM_SERVICE;
 use restart::open;
+pub use restart::{SYSTEM_SERVICE, installed_version_of};
 use types::Hello;
 pub use types::{Client, ClientError, DaemonService, LockFeed, RestartOnce, Systemd};
 
