@@ -7,8 +7,8 @@ use jiff::{
 
 use super::constants::RULE_FIELDS;
 use super::just_before;
-use super::types::{History, SavedConfig, exception_unit, rule_unit};
-use crate::config::{Config, DAYS, Exception, Rule, RuleSet};
+use super::types::{History, SavedConfig, agent_field, exception_unit, rule_unit};
+use crate::config::{AgentStep, Config, DAYS, Exception, Rule, RuleSet};
 
 struct InForce<'h> {
     at: Timestamp,
@@ -182,7 +182,43 @@ impl<'h> InForce<'h> {
                 .unwrap_or(source);
             copy(&mut rule, rule_on(&source.config, day, id).unwrap_or(base));
         }
+        rule.agent = self.agent_steps(day, base, arrival);
         Some(rule)
+    }
+
+    fn agent_steps(
+        &self,
+        day: Weekday,
+        base: &Rule,
+        arrival: Option<&'h SavedConfig>,
+    ) -> Vec<AgentStep> {
+        let mut known: Vec<&AgentStep> = Vec::new();
+        for version in std::iter::once(self.latest).chain(self.saved.iter().copied()) {
+            for step in rule_on(&version.config, day, &base.id).map_or(&[][..], |rule| &rule.agent)
+            {
+                if !known
+                    .iter()
+                    .any(|seen| agent_field(seen) == agent_field(step))
+                {
+                    known.push(step);
+                }
+            }
+        }
+        known
+            .into_iter()
+            .filter_map(|step| {
+                let field = agent_field(step);
+                let source = self.source(&rule_unit(day, &base.id, &field));
+                let source = arrival
+                    .filter(|arrived| arrived.id > source.id)
+                    .unwrap_or(source);
+                let rule = rule_on(&source.config, day, &base.id).unwrap_or(base);
+                rule.agent
+                    .iter()
+                    .find(|candidate| agent_field(candidate) == field)
+                    .cloned()
+            })
+            .collect()
     }
 }
 

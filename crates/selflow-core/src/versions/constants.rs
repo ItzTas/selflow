@@ -2,7 +2,7 @@ use crate::config::Rule;
 
 pub(super) type CopyField = fn(&mut Rule, &Rule);
 
-pub(super) const RULE_FIELDS: [(&str, CopyField); 11] = [
+pub(super) const RULE_FIELDS: [(&str, CopyField); 10] = [
     ("timing", |rule, from| {
         rule.start = from.start;
         rule.start_jitter = from.start_jitter;
@@ -31,5 +31,4 @@ pub(super) const RULE_FIELDS: [(&str, CopyField); 11] = [
     ("extension_length", |rule, from| {
         rule.challenges.extension_length = from.challenges.extension_length;
     }),
-    ("agent", |rule, from| rule.agent.clone_from(&from.agent)),
 ];

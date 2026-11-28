@@ -4,7 +4,9 @@ use jiff::{Timestamp, civil::Weekday};
 
 use super::assemble::config_at;
 use super::constants::RULE_FIELDS;
-use super::types::{ChangeKind, History, Scope, StoredChange, TimedChange, UnitChange, rule_unit};
+use super::types::{
+    ChangeKind, History, Scope, StoredChange, TimedChange, UnitChange, agent_field, rule_unit,
+};
 use super::{diff, just_before};
 use crate::config::{Action, Config, DAYS};
 
@@ -113,7 +115,7 @@ fn changed_units(
     proposed: &Config,
     judged: &[UnitChange],
     waiting: &[&str],
-) -> Vec<(String, Scope, &'static str)> {
+) -> Vec<(String, Scope, String)> {
     let returning = DAYS
         .iter()
         .flat_map(|(_, day)| {
@@ -122,19 +124,23 @@ fn changed_units(
                 .iter()
                 .filter(|rule| !latest.rules_on(*day).iter().any(|kept| kept.id == rule.id))
                 .flat_map(move |rule| {
-                    RULE_FIELDS.iter().map(move |(field, _)| {
+                    let fields = RULE_FIELDS
+                        .iter()
+                        .map(|(field, _)| (*field).to_owned())
+                        .chain(rule.agent.iter().map(agent_field));
+                    fields.map(move |field| {
                         let scope = Scope::Rule {
                             day: *day,
                             rule: rule.id.clone(),
                         };
-                        (rule_unit(*day, &rule.id, field), scope, *field)
+                        (rule_unit(*day, &rule.id, &field), scope, field)
                     })
                 })
         })
         .filter(|(unit, _, _)| {
             waiting.contains(&unit.as_str()) || judged.iter().any(|entry| entry.unit() == *unit)
         });
-    let mut units: Vec<(String, Scope, &'static str)> = Vec::new();
+    let mut units: Vec<(String, Scope, String)> = Vec::new();
     for (unit, scope, field) in diff(latest, proposed)
         .into_iter()
         .map(|entry| (entry.unit(), entry.scope, entry.field))
@@ -148,12 +154,9 @@ fn changed_units(
     units
 }
 
-fn canceled(scope: Scope, field: &'static str) -> UnitChange {
+fn canceled(scope: Scope, field: String) -> UnitChange {
     let (id, args) = match &scope {
-        Scope::Setting => (
-            "change-setting-canceled",
-            vec![("setting", field.to_owned())],
-        ),
+        Scope::Setting => ("change-setting-canceled", vec![("setting", field.clone())]),
         Scope::Rule { .. } => ("change-canceled", Vec::new()),
         Scope::Exception(date) => (
             "change-exception-canceled",

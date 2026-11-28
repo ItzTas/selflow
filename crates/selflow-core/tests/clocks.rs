@@ -454,55 +454,143 @@ fn defaulted_notices_follow_the_action_in_force() {
     assert_eq!(later.notice_offsets(), [SignedDuration::ZERO]);
 }
 
+fn with_steps(bodies: &[&str]) -> String {
+    let tables: String = bodies
+        .iter()
+        .map(|body| format!("\n[[rule_set.rule.agent]]\n{body}\n"))
+        .collect();
+    format!("{}{tables}", no_jitter())
+}
+
 fn with_step(body: &str) -> String {
-    format!("{}\n[[rule_set.rule.agent]]\n{body}\n", no_jitter())
+    with_steps(&[body])
+}
+
+fn thursday_steps(history: &History, when: ZonedDateTime) -> Vec<AgentStep> {
+    config_at(history, when.timestamp()).rules_on(Weekday::Thursday)[0]
+        .agent
+        .clone()
 }
 
 fn thursday_step(history: &History, when: ZonedDateTime) -> AgentStep {
-    config_at(history, when.timestamp()).rules_on(Weekday::Thursday)[0].agent[0].clone()
+    thursday_steps(history, when)[0].clone()
+}
+
+fn levels(history: &History, when: ZonedDateTime) -> Vec<AgentLevel> {
+    let mut levels: Vec<AgentLevel> = thursday_steps(history, when)
+        .iter()
+        .map(|step| step.level)
+        .collect();
+    levels.sort();
+    levels
 }
 
 #[test]
-fn a_lighter_level_waits_and_a_firmer_one_applies_at_once() {
+fn a_new_level_applies_at_once_and_the_old_one_goes_after_the_delay() {
+    use AgentLevel::{Light, SaveOnly};
     let light = with_step("before = \"60m\"\nlevel = \"light\"");
     let save_only = with_step("before = \"60m\"\nlevel = \"save-only\"");
-    let saved_at = || at(18, 12, 0);
 
-    let history = history_of(&[(at(18, 8, 0), &save_only)]);
-    let lighter = plan_save(&history, &parse(&light).unwrap(), saved_at().timestamp());
-    assert!(!lighter.is_empty());
-    assert!(
-        lighter
-            .iter()
-            .all(|timed| timed.effective_at == at(19, 12, 0).timestamp())
-    );
-    let history = history_of(&[(at(18, 8, 0), &save_only), (saved_at(), &light)]);
-    assert_eq!(
-        thursday_step(&history, at(19, 11, 0)).level,
-        AgentLevel::SaveOnly
-    );
-    assert_eq!(
-        thursday_step(&history, at(19, 12, 0)).level,
-        AgentLevel::Light
-    );
+    let history = history_of(&[(at(18, 8, 0), &save_only), (at(18, 12, 0), &light)]);
+    assert_eq!(levels(&history, at(18, 12, 0)), [Light, SaveOnly]);
+    assert_eq!(levels(&history, at(19, 11, 0)), [Light, SaveOnly]);
+    assert_eq!(levels(&history, at(19, 12, 0)), [Light]);
 
-    let history = history_of(&[(at(18, 8, 0), &light)]);
-    let firmer = plan_save(
+    let history = history_of(&[(at(18, 8, 0), &light), (at(18, 12, 0), &save_only)]);
+    assert_eq!(levels(&history, at(18, 12, 0)), [Light, SaveOnly]);
+    assert_eq!(levels(&history, at(19, 12, 0)), [SaveOnly]);
+}
+
+#[test]
+fn a_step_inserted_in_front_applies_at_once() {
+    let before = with_step("before = \"60m\"\nlevel = \"save-only\"");
+    let inserted = with_steps(&[
+        "before = \"90m\"\nlevel = \"light\"",
+        "before = \"60m\"\nlevel = \"save-only\"",
+    ]);
+    let history = history_of(&[(at(18, 8, 0), &before)]);
+    let planned = plan_save(
         &history,
-        &parse(&save_only).unwrap(),
-        saved_at().timestamp(),
+        &parse(&inserted).unwrap(),
+        at(18, 12, 0).timestamp(),
     );
-    assert!(!firmer.is_empty());
+    assert!(!planned.is_empty());
     assert!(
-        firmer
+        planned
             .iter()
-            .all(|timed| timed.effective_at == saved_at().timestamp())
+            .all(|timed| timed.effective_at == at(18, 12, 0).timestamp())
     );
-    let history = history_of(&[(at(18, 8, 0), &light), (saved_at(), &save_only)]);
+    let history = history_of(&[(at(18, 8, 0), &before), (at(18, 12, 0), &inserted)]);
     assert_eq!(
-        thursday_step(&history, saved_at()).level,
-        AgentLevel::SaveOnly
+        levels(&history, at(18, 12, 0)),
+        [AgentLevel::Light, AgentLevel::SaveOnly]
     );
+}
+
+#[test]
+fn reordering_steps_plans_nothing() {
+    let light = "before = \"60m\"\nlevel = \"light\"";
+    let save_only = "before = \"30m\"\nlevel = \"save-only\"";
+    let history = history_of(&[(at(18, 8, 0), &with_steps(&[light, save_only]))]);
+    let reordered = with_steps(&[save_only, light]);
+    let planned = plan_save(
+        &history,
+        &parse(&reordered).unwrap(),
+        at(18, 12, 0).timestamp(),
+    );
+    assert!(planned.is_empty());
+}
+
+#[test]
+fn a_firmer_step_applies_at_once_while_another_removed_waits() {
+    let wide = "before = \"60m\"\nlevel = \"light\"";
+    let narrow = "before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\"]";
+    let second = "before = \"30m\"\nlevel = \"save-only\"";
+    let history = history_of(&[
+        (at(18, 8, 0), &with_steps(&[narrow, second])),
+        (at(18, 12, 0), &with_steps(&[wide])),
+    ]);
+    let folders = |when: ZonedDateTime| -> Vec<(AgentLevel, usize)> {
+        let mut steps: Vec<(AgentLevel, usize)> = thursday_steps(&history, when)
+            .iter()
+            .map(|step| (step.level, step.folders.len()))
+            .collect();
+        steps.sort();
+        steps
+    };
+    assert_eq!(
+        folders(at(18, 12, 0)),
+        [(AgentLevel::Light, 0), (AgentLevel::SaveOnly, 0)]
+    );
+    assert_eq!(
+        folders(at(19, 11, 0)),
+        [(AgentLevel::Light, 0), (AgentLevel::SaveOnly, 0)]
+    );
+    assert_eq!(folders(at(19, 12, 0)), [(AgentLevel::Light, 0)]);
+}
+
+#[test]
+fn a_changed_before_adds_the_new_step_at_once_and_drops_the_old_one_later() {
+    let history = history_of(&[
+        (
+            at(18, 8, 0),
+            &with_step("before = \"60m\"\nlevel = \"light\""),
+        ),
+        (
+            at(18, 12, 0),
+            &with_step("before = \"30m\"\nlevel = \"light\""),
+        ),
+    ]);
+    let befores = |when: ZonedDateTime| -> Vec<i64> {
+        let mut befores: Vec<i64> = thursday_steps(&history, when)
+            .iter()
+            .map(|step| step.before.as_mins())
+            .collect();
+        befores.sort_unstable_by(|a, b| b.cmp(a));
+        befores
+    };
+    assert_eq!(befores(at(18, 12, 0)), [60, 30]);
+    assert_eq!(befores(at(19, 12, 0)), [30]);
 }
 
 #[test]

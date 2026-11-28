@@ -5,7 +5,7 @@ use jiff::{
     civil::{self, Weekday},
 };
 
-use crate::config::{Config, day_tag};
+use crate::config::{AgentStep, Config, day_tag};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
@@ -31,7 +31,7 @@ pub enum Scope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitChange {
     pub scope: Scope,
-    pub field: &'static str,
+    pub field: String,
     pub id: &'static str,
     pub args: Vec<(&'static str, String)>,
     pub kind: ChangeKind,
@@ -40,8 +40,8 @@ pub struct UnitChange {
 impl UnitChange {
     pub fn unit(&self) -> String {
         match &self.scope {
-            Scope::Setting => self.field.to_owned(),
-            Scope::Rule { day, rule } => rule_unit(*day, rule, self.field),
+            Scope::Setting => self.field.clone(),
+            Scope::Rule { day, rule } => rule_unit(*day, rule, &self.field),
             Scope::Exception(date) => exception_unit(*date),
         }
     }
@@ -49,6 +49,10 @@ impl UnitChange {
 
 pub(super) fn rule_unit(day: Weekday, rule: &str, field: &str) -> String {
     format!("{}/{rule}/{field}", day_tag(day))
+}
+
+pub(super) fn agent_field(step: &AgentStep) -> String {
+    format!("agent/{:#}/{}", step.before, step.level.name())
 }
 
 pub(super) fn exception_unit(date: civil::Date) -> String {

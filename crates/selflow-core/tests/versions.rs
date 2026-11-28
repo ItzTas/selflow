@@ -547,7 +547,7 @@ fn diff_keeps_each_weekday_apart() {
                 day: Weekday::Thursday,
                 rule: "bedtime".to_owned(),
             },
-            field: "timing",
+            field: "timing".into(),
             id: "change-rule-starts-later",
             args: vec![("old", "23:00".into()), ("new", "01:00".into())],
             kind: ChangeKind::Loosen,
@@ -620,115 +620,148 @@ fn an_exception_entry_names_its_date_and_rules() {
     );
 }
 
-fn stepped(step: Option<&str>) -> Config {
-    let tables = step.map_or(String::new(), |body| {
-        format!("\n[[rule_set.rule.agent]]\n{body}\n")
-    });
+fn with_steps(steps: &[&str]) -> Config {
+    let tables: String = steps
+        .iter()
+        .map(|body| format!("\n[[rule_set.rule.agent]]\n{body}\n"))
+        .collect();
     parse(&format!("{}{tables}", no_jitter())).unwrap()
+}
+
+fn agent_changes(current: &[&str], proposed: &[&str]) -> Vec<UnitChange> {
+    diff(&with_steps(current), &with_steps(proposed))
+        .into_iter()
+        .filter(|change| change.unit().starts_with("thu/bedtime/agent/"))
+        .collect()
 }
 
 #[test]
 fn agent_step_changes_are_judged() {
     use ChangeKind::{Loosen, Neutral, Tighten};
     const LIGHT: &str = "before = \"60m\"\nlevel = \"light\"";
-    let cases: &[(Option<&str>, Option<&str>, &str, ChangeKind)] = &[
-        (None, Some(LIGHT), "change-agent-step-added", Tighten),
-        (Some(LIGHT), None, "change-agent-step-removed", Loosen),
+    const LIGHT_UNIT: &str = "thu/bedtime/agent/1h/light";
+    let light_with = |extra: &str| format!("{LIGHT}\n{extra}");
+    type Expected = Vec<(&'static str, &'static str, ChangeKind)>;
+    let cases: &[(Vec<String>, Vec<String>, Expected)] = &[
         (
-            Some(LIGHT),
-            Some("before = \"30m\"\nlevel = \"light\""),
-            "change-agent-step-looser",
-            Loosen,
+            vec![],
+            vec![LIGHT.into()],
+            vec![(LIGHT_UNIT, "change-agent-step-added", Tighten)],
         ),
         (
-            Some("before = \"30m\"\nlevel = \"light\""),
-            Some(LIGHT),
-            "change-agent-step-firmer",
-            Tighten,
+            vec![LIGHT.into()],
+            vec![],
+            vec![(LIGHT_UNIT, "change-agent-step-removed", Loosen)],
         ),
         (
-            Some(LIGHT),
-            Some("before = \"60m\"\nlevel = \"save-only\""),
-            "change-agent-step-firmer",
-            Tighten,
+            vec![LIGHT.into()],
+            vec![light_with("folders = [\"~/a\"]")],
+            vec![(LIGHT_UNIT, "change-agent-step-looser", Loosen)],
         ),
         (
-            Some("before = \"60m\"\nlevel = \"save-only\""),
-            Some("before = \"60m\"\nlevel = \"no-new-work\""),
-            "change-agent-step-looser",
-            Loosen,
+            vec![light_with("folders = [\"~/a\"]")],
+            vec![LIGHT.into()],
+            vec![(LIGHT_UNIT, "change-agent-step-firmer", Tighten)],
         ),
         (
-            Some(LIGHT),
-            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\"]"),
-            "change-agent-step-looser",
-            Loosen,
+            vec![light_with("folders = [\"~/a\"]")],
+            vec![light_with("folders = [\"~/a\", \"~/b\"]")],
+            vec![(LIGHT_UNIT, "change-agent-step-firmer", Tighten)],
         ),
         (
-            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\"]"),
-            Some(LIGHT),
-            "change-agent-step-firmer",
-            Tighten,
+            vec![light_with("folders = [\"~/a\"]")],
+            vec![light_with("folders = [\"~/b\"]")],
+            vec![(LIGHT_UNIT, "change-agent-step-looser", Loosen)],
         ),
         (
-            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\"]"),
-            Some("before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/b\"]"),
-            "change-agent-step-looser",
-            Loosen,
+            vec![light_with("unattended = true")],
+            vec![LIGHT.into()],
+            vec![(LIGHT_UNIT, "change-agent-step-looser", Loosen)],
         ),
         (
-            Some("before = \"60m\"\nlevel = \"light\"\nunattended = true"),
-            Some(LIGHT),
-            "change-agent-step-looser",
-            Loosen,
+            vec![LIGHT.into()],
+            vec![light_with("unattended = true")],
+            vec![(LIGHT_UNIT, "change-agent-step-firmer", Tighten)],
         ),
         (
-            Some(LIGHT),
-            Some("before = \"60m\"\nlevel = \"light\"\nunattended = true"),
-            "change-agent-step-firmer",
-            Tighten,
+            vec![light_with("folders = [\"~/a\"]")],
+            vec![light_with(
+                "folders = [\"~/a\", \"~/b\"]\nunattended = false",
+            )],
+            vec![(LIGHT_UNIT, "change-agent-step-firmer", Tighten)],
         ),
         (
-            Some(LIGHT),
-            Some("before = \"30m\"\nlevel = \"save-only\""),
-            "change-agent-step-changed",
-            Loosen,
+            vec![light_with("unattended = true")],
+            vec![light_with("folders = [\"~/a\"]")],
+            vec![(LIGHT_UNIT, "change-agent-step-looser", Loosen)],
         ),
         (
-            Some(LIGHT),
-            Some("before = \"60m\"\nlevel = \"light\"\nmessage = \"Wrap up\""),
-            "change-agent-message",
-            Neutral,
+            vec![light_with("folders = [\"~/a\", \"~/b\"]")],
+            vec![light_with("folders = [\"~/a\"]\nunattended = true")],
+            vec![(LIGHT_UNIT, "change-agent-step-changed", Loosen)],
+        ),
+        (
+            vec![LIGHT.into()],
+            vec![light_with("message = \"Wrap up\"")],
+            vec![(LIGHT_UNIT, "change-agent-message", Neutral)],
+        ),
+        (
+            vec![LIGHT.into()],
+            vec![light_with("message = \"Wrap up\"\nfolders = [\"~/a\"]")],
+            vec![(LIGHT_UNIT, "change-agent-step-looser", Loosen)],
+        ),
+        (
+            vec![LIGHT.into()],
+            vec!["before = \"30m\"\nlevel = \"light\"".into()],
+            vec![
+                (LIGHT_UNIT, "change-agent-step-removed", Loosen),
+                (
+                    "thu/bedtime/agent/30m/light",
+                    "change-agent-step-added",
+                    Tighten,
+                ),
+            ],
+        ),
+        (
+            vec![LIGHT.into()],
+            vec!["before = \"60m\"\nlevel = \"save-only\"".into()],
+            vec![
+                (LIGHT_UNIT, "change-agent-step-removed", Loosen),
+                (
+                    "thu/bedtime/agent/1h/save-only",
+                    "change-agent-step-added",
+                    Tighten,
+                ),
+            ],
         ),
     ];
-    for &(current, proposed, id, kind) in cases {
-        let changes = diff(&stepped(current), &stepped(proposed));
-        assert!(
-            changes
-                .iter()
-                .any(|change| (change.unit().as_str(), change.id, change.kind)
-                    == ("thu/bedtime/agent", id, kind)),
-            "{id}: {changes:?}"
-        );
+    fn as_refs(steps: &[String]) -> Vec<&str> {
+        steps.iter().map(String::as_str).collect()
+    }
+    for (current, proposed, expected) in cases {
+        let changes = agent_changes(&as_refs(current), &as_refs(proposed));
+        let found: Vec<(String, &str, ChangeKind)> = changes
+            .iter()
+            .map(|change| (change.unit(), change.id, change.kind))
+            .collect();
+        let wanted: Vec<(String, &str, ChangeKind)> = expected
+            .iter()
+            .map(|&(unit, id, kind)| (unit.to_owned(), id, kind))
+            .collect();
+        assert_eq!(found, wanted, "{current:?} -> {proposed:?}");
     }
 }
 
 #[test]
-fn an_agent_step_change_names_its_position_and_both_sides() {
-    let changes = diff(
-        &stepped(Some("before = \"60m\"\nlevel = \"light\"")),
-        &stepped(Some(
-            "before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\", \"~/b\"]\nunattended = true",
-        )),
+fn an_agent_step_change_names_the_step_and_both_sides() {
+    let changes = agent_changes(
+        &["before = \"60m\"\nlevel = \"light\""],
+        &["before = \"60m\"\nlevel = \"light\"\nfolders = [\"~/a\", \"~/b\"]\nunattended = true"],
     );
-    let change = changes
-        .iter()
-        .find(|change| change.unit() == "thu/bedtime/agent")
-        .unwrap();
     assert_eq!(
-        change.args,
+        changes[0].args,
         [
-            ("step", "1".into()),
+            ("step", "1h, light".into()),
             ("old", "1h, light".into()),
             ("new", "1h, light, ~/a ~/b, unattended".into())
         ]
@@ -736,26 +769,32 @@ fn an_agent_step_change_names_its_position_and_both_sides() {
 }
 
 #[test]
-fn a_second_step_is_judged_against_the_second_step() {
-    let two = |second: &str| {
-        let text = format!(
-            "{}\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\n\n[[rule_set.rule.agent]]\n{second}\n",
-            no_jitter()
-        );
-        parse(&text).unwrap()
-    };
-    let changes = diff(
-        &two("before = \"15m\"\nlevel = \"no-new-work\""),
-        &two("before = \"15m\"\nlevel = \"save-only\""),
+fn a_step_inserted_in_front_only_adds() {
+    let changes = agent_changes(
+        &["before = \"60m\"\nlevel = \"save-only\""],
+        &[
+            "before = \"90m\"\nlevel = \"light\"",
+            "before = \"60m\"\nlevel = \"save-only\"",
+        ],
     );
-    let change = changes
-        .iter()
-        .find(|change| change.unit() == "thu/bedtime/agent")
-        .unwrap();
     assert_eq!(
-        (change.id, change.args[0].1.as_str()),
-        ("change-agent-step-firmer", "2")
+        changes
+            .iter()
+            .map(|change| (change.unit(), change.id, change.kind))
+            .collect::<Vec<_>>(),
+        [(
+            "thu/bedtime/agent/1h 30m/light".to_owned(),
+            "change-agent-step-added",
+            ChangeKind::Tighten
+        )]
     );
+}
+
+#[test]
+fn reordering_steps_changes_nothing() {
+    let light = "before = \"60m\"\nlevel = \"light\"";
+    let save_only = "before = \"30m\"\nlevel = \"save-only\"";
+    assert!(agent_changes(&[light, save_only], &[save_only, light]).is_empty());
 }
 
 #[test]

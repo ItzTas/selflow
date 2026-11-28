@@ -5,7 +5,7 @@ use jiff::{
     civil::{Time, Weekday},
 };
 
-use super::types::{Change, ChangeKind, Scope, UnitChange};
+use super::types::{Change, ChangeKind, Scope, UnitChange, agent_field};
 use crate::agent::folders_cover;
 use crate::config::{Action, AgentStep, Challenges, Config, DAYS, Exception, Rule, RuleEnd};
 
@@ -121,7 +121,7 @@ fn on_day(old: &Config, new: &Config, day: Weekday) -> Vec<UnitChange> {
     changes
 }
 
-fn rule_fields(old: Side, new: Side) -> Vec<Field> {
+fn rule_fields(old: Side, new: Side) -> Vec<(String, Option<Change>)> {
     let (previous, next) = (old.rule, new.rule);
     let enforcing = previous.enforces() || next.enforces();
     let judge = |change: Option<Change>| change.map(|change| judged(enforcing, change));
@@ -132,7 +132,7 @@ fn rule_fields(old: Side, new: Side) -> Vec<Field> {
     let agent = agent_fields(&previous.agent, &next.agent)
         .into_iter()
         .map(|(field, change)| (field, judge(change)));
-    [
+    let named: Vec<Field> = [
         ("timing", judge(first_timing)),
         ("timing", judge(second_timing)),
         ("action", first_action),
@@ -152,52 +152,64 @@ fn rule_fields(old: Side, new: Side) -> Vec<Field> {
         ),
     ]
     .into_iter()
-    .chain(agent)
     .chain(challenges)
-    .collect()
-}
-
-fn agent_fields(old: &[AgentStep], new: &[AgentStep]) -> Vec<Field> {
-    (0..old.len().max(new.len()))
-        .filter_map(|index| agent_step(index + 1, old.get(index), new.get(index)))
-        .map(|change| ("agent", Some(change)))
+    .collect();
+    named
+        .into_iter()
+        .map(|(field, change)| (field.to_owned(), change))
+        .chain(agent)
         .collect()
 }
 
-fn agent_step(position: usize, old: Option<&AgentStep>, new: Option<&AgentStep>) -> Option<Change> {
-    let step = ("step", position.to_string());
-    match (old, new) {
-        (None, Some(new)) => Some(change(
-            "change-agent-step-added",
-            ChangeKind::Tighten,
-            vec![step, ("new", step_summary(new))],
-        )),
-        (Some(old), None) => Some(change(
-            "change-agent-step-removed",
-            ChangeKind::Loosen,
-            vec![step, ("old", step_summary(old))],
-        )),
-        (Some(old), Some(new)) => paired_step(step, old, new),
-        (None, None) => None,
-    }
+fn agent_fields(old: &[AgentStep], new: &[AgentStep]) -> Vec<(String, Option<Change>)> {
+    let kept_or_removed = old.iter().map(|previous| {
+        let change = match new.iter().find(|next| same_step(previous, next)) {
+            Some(next) => paired_step(previous, next),
+            None => Some(change(
+                "change-agent-step-removed",
+                ChangeKind::Loosen,
+                vec![
+                    ("step", step_key(previous)),
+                    ("old", step_summary(previous)),
+                ],
+            )),
+        };
+        (agent_field(previous), change)
+    });
+    let added = new
+        .iter()
+        .filter(|next| !old.iter().any(|previous| same_step(previous, next)))
+        .map(|next| {
+            let added = change(
+                "change-agent-step-added",
+                ChangeKind::Tighten,
+                vec![("step", step_key(next)), ("new", step_summary(next))],
+            );
+            (agent_field(next), Some(added))
+        });
+    kept_or_removed.chain(added).collect()
 }
 
-fn paired_step(step: (&'static str, String), old: &AgentStep, new: &AgentStep) -> Option<Change> {
+fn same_step(old: &AgentStep, new: &AgentStep) -> bool {
+    (old.before, old.level) == (new.before, new.level)
+}
+
+fn paired_step(old: &AgentStep, new: &AgentStep) -> Option<Change> {
     let tightens = [
-        new.before > old.before,
-        new.level > old.level,
         folders_cover(&new.folders, &old.folders) && !folders_cover(&old.folders, &new.folders),
         !old.unattended && new.unattended,
     ]
     .contains(&true);
     let loosens = [
-        new.before < old.before,
-        new.level < old.level,
         !folders_cover(&new.folders, &old.folders),
         old.unattended && !new.unattended,
     ]
     .contains(&true);
-    let args = vec![step, ("old", step_summary(old)), ("new", step_summary(new))];
+    let args = vec![
+        ("step", step_key(new)),
+        ("old", step_summary(old)),
+        ("new", step_summary(new)),
+    ];
     match (tightens, loosens) {
         (true, false) => Some(change(
             "change-agent-step-firmer",
@@ -220,19 +232,18 @@ fn paired_step(step: (&'static str, String), old: &AgentStep, new: &AgentStep) -
     }
 }
 
+fn step_key(step: &AgentStep) -> String {
+    format!("{}, {}", friendly(step.before), step.level.name())
+}
+
 fn step_summary(step: &AgentStep) -> String {
     let folders = (!step.folders.is_empty()).then(|| step.folders.join(" "));
     let unattended = step.unattended.then(|| "unattended".to_owned());
-    [
-        Some(friendly(step.before)),
-        Some(step.level.name().to_owned()),
-        folders,
-        unattended,
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(", ")
+    [Some(step_key(step)), folders, unattended]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn allowed_commands(old: &[String], new: &[String]) -> Option<Change> {
@@ -259,9 +270,9 @@ fn allowed_commands(old: &[String], new: &[String]) -> Option<Change> {
     }
 }
 
-fn presence(id: &'static str, kind: ChangeKind, rule: &Rule) -> Field {
+fn presence(id: &'static str, kind: ChangeKind, rule: &Rule) -> (String, Option<Change>) {
     let change = judged(rule.enforces(), change(id, kind, Vec::new()));
-    ("presence", Some(change))
+    ("presence".to_owned(), Some(change))
 }
 
 fn timing(old: Side, new: Side) -> [Option<Change>; 2] {
@@ -495,14 +506,14 @@ fn rules_arg(rules: &[String]) -> String {
     rules.join(", ")
 }
 
-fn units(
+fn units<F: Into<String>>(
     scope: Scope,
-    fields: impl IntoIterator<Item = Field>,
+    fields: impl IntoIterator<Item = (F, Option<Change>)>,
 ) -> impl Iterator<Item = UnitChange> {
     fields.into_iter().filter_map(move |(field, change)| {
         change.map(|change| UnitChange {
             scope: scope.clone(),
-            field,
+            field: field.into(),
             id: change.id,
             args: change.args,
             kind: change.kind,
