@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod challenge;
 pub mod config;
 pub mod enforce;

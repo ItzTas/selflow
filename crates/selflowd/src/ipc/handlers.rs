@@ -458,6 +458,7 @@ fn test_lock(
         },
         challenges: lock.challenges.clone(),
         test: true,
+        agent: Vec::new(),
     };
     store.record_started(&window)?;
     Ok(Response::TestLockStarted {

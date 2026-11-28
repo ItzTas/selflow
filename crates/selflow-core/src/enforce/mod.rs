@@ -4,7 +4,8 @@ use std::cmp;
 
 use jiff::{SignedDuration, Timestamp, ZonedDateTime, civil};
 
-use crate::config::{Action, Config};
+use crate::agent::ActiveAgentStep;
+use crate::config::{Action, AgentStep, Config};
 use crate::plan::{RuleWindow, windows_around};
 use crate::timing::{Seed, fnv1a64};
 
@@ -23,12 +24,19 @@ pub fn evaluate(now: &ZonedDateTime, config: &Config, seed: Seed, log: &DayLog) 
         .iter()
         .flat_map(|window| notices_for(window, log, seed, instant))
         .collect();
+    let (agent, coming): (Vec<ActiveAgentStep>, Vec<ActiveAgentStep>) = windows
+        .iter()
+        .flat_map(|window| agent_steps_for(window, seed))
+        .filter(|step| step.window.ends_at.timestamp() > instant)
+        .partition(|step| step.at <= instant);
     let next_change_at = notices
         .iter()
         .map(|notice| notice.at)
         .chain(windows.iter().map(|window| window.starts_at.timestamp()))
         .chain(log.extensions.iter().map(|extension| extension.until))
         .chain(active.iter().flat_map(lock_moments))
+        .chain(coming.iter().map(|step| step.at))
+        .chain(agent.iter().map(|step| step.window.ends_at.timestamp()))
         .filter(|moment| *moment > instant)
         .min();
     Evaluation {
@@ -39,7 +47,32 @@ pub fn evaluate(now: &ZonedDateTime, config: &Config, seed: Seed, log: &DayLog) 
             .iter()
             .find(|window| due_shutdown(window, log, instant))
             .cloned(),
+        agent,
     }
+}
+
+fn agent_steps_for(window: &RuleWindow, seed: Seed) -> impl Iterator<Item = ActiveAgentStep> {
+    window.agent.iter().map(move |step| {
+        let key = agent_step_key(window, step);
+        let message = chosen_text(&step.message, seed, &key, window);
+        ActiveAgentStep {
+            at: earlier_by(window.starts_at.timestamp(), step.before),
+            window: window.clone(),
+            step: step.clone(),
+            message,
+            key,
+        }
+    })
+}
+
+fn agent_step_key(window: &RuleWindow, step: &AgentStep) -> String {
+    format!(
+        "{}/{}/{}m/{}",
+        window.rule_id,
+        window.logical_date,
+        step.before.as_mins(),
+        step.level.name()
+    )
 }
 
 fn due_shutdown(window: &RuleWindow, log: &DayLog, now: Timestamp) -> bool {
@@ -95,9 +128,18 @@ fn merged(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> RuleWi
         notices: computed.notices.clone(),
         message: computed.message.clone(),
         action: stricter_action(started.action, computed.action),
+        agent: merged_steps(started, computed),
         challenges: started.challenges.stricter(&computed.challenges),
         ..started.clone()
     }
+}
+
+fn merged_steps(started: &RuleWindow, computed: &RuleWindow) -> Vec<AgentStep> {
+    let added = computed
+        .agent
+        .iter()
+        .filter(|step| !started.agent.contains(step));
+    started.agent.iter().chain(added).cloned().collect()
 }
 
 fn merged_start(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> ZonedDateTime {
@@ -252,11 +294,15 @@ fn notice_kind(action: Action) -> NoticeKind {
 }
 
 fn chosen_message(window: &RuleWindow, seed: Seed) -> Option<String> {
-    if window.message.is_empty() {
+    chosen_text(&window.message, seed, &window.key(), window)
+}
+
+fn chosen_text(texts: &[String], seed: Seed, key: &str, window: &RuleWindow) -> Option<String> {
+    if texts.is_empty() {
         return None;
     }
-    let mut rng = seeded(seed, &window.key(), &window.logical_date.to_string());
-    Some(window.message[rng.usize(..window.message.len())].clone())
+    let mut rng = seeded(seed, key, &window.logical_date.to_string());
+    Some(texts[rng.usize(..texts.len())].clone())
 }
 
 fn draw_variant(seed: Seed, key: &str, moment: Timestamp) -> u8 {

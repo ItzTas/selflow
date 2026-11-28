@@ -1,5 +1,6 @@
 use jiff::{Timestamp, civil};
 
+use crate::agent::ActiveAgentStep;
 use crate::plan::RuleWindow;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,4 +76,5 @@ pub struct Evaluation {
     pub notices: Vec<Notice>,
     pub next_change_at: Option<Timestamp>,
     pub shutdown: Option<RuleWindow>,
+    pub agent: Vec<ActiveAgentStep>,
 }

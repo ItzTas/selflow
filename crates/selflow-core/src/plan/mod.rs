@@ -42,6 +42,7 @@ pub fn windows_for(
                 action: rule.action,
                 challenges: rule.challenges.clone(),
                 test: false,
+                agent: rule.agent.clone(),
             }
         })
         .collect()

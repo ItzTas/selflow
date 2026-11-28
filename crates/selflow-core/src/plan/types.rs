@@ -1,7 +1,7 @@
 use jiff::{SignedDuration, ZonedDateTime, civil};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Action, Challenges};
+use crate::config::{Action, AgentStep, Challenges};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuleWindow {
@@ -17,10 +17,16 @@ pub struct RuleWindow {
     pub challenges: Challenges,
     #[serde(default)]
     pub test: bool,
+    #[serde(default)]
+    pub agent: Vec<AgentStep>,
 }
 
 impl RuleWindow {
     pub fn key(&self) -> String {
         self.rule_id.clone()
+    }
+
+    pub fn enforces(&self) -> bool {
+        self.action != Action::Nothing || !self.agent.is_empty()
     }
 }
