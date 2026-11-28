@@ -5,12 +5,13 @@ use std::sync::{Arc, Mutex};
 use jiff::Timestamp;
 use selflow_i18n::language::Language;
 use selflow_platform::boot::boot_id;
-use selflow_platform::paths::{socket_path, store_path};
+use selflow_platform::paths::{home_dir, socket_path, store_path};
 use selflow_platform::transport::{ListenError, Listener, listen};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 
+use crate::agent::AgentHub;
 use crate::clock::SystemClock;
 use crate::enforcer::{
     LockSupervisor, Notifier, ScreenControl, SystemEnforcer, lock_program_from, power_mode,
@@ -66,6 +67,11 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
     tracing::info!("power mode: {power}");
     let enforcer = SystemEnforcer::new(supervisor, Notifier, power);
     let views = enforcer.views();
+    let agents = Arc::new(AgentHub::new(
+        Arc::clone(&store),
+        enforcer.directives(),
+        agent_home(),
+    ));
     let parsed = ParsedVersions::default();
     let mut engine = Engine::new(
         Arc::clone(&clock),
@@ -88,6 +94,7 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
         env_language: Language::from_env(),
         screen,
         parsed,
+        agents,
     });
     let mut server = tokio::spawn(serve(listener, shared));
     tracing::info!("selflowd is running");
@@ -99,6 +106,14 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
             Ok(())
         }
     }
+}
+
+fn agent_home() -> Option<PathBuf> {
+    let home = home_dir();
+    if home.is_none() {
+        tracing::warn!("HOME is not set, so agent steps with folders under ~ cover no session");
+    }
+    home
 }
 
 fn current_boot() -> String {

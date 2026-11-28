@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod app;
 pub mod args;
 pub mod clock;

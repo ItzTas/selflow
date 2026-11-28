@@ -9,6 +9,7 @@ use selflow_protocol::ipc::LockView;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
+use crate::agent::AgentHub;
 use crate::clock::Clock;
 use crate::enforcer::{PowerMode, ScreenControl};
 use crate::engine::{EngineError, ParsedVersions};
@@ -23,6 +24,7 @@ pub struct Shared {
     pub env_language: Language,
     pub screen: Arc<dyn ScreenControl>,
     pub parsed: ParsedVersions,
+    pub agents: Arc<AgentHub>,
 }
 
 pub(super) struct ExceptionDay {

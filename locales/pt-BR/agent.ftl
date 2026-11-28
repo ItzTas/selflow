@@ -1,0 +1,11 @@
+agent-message = Mensagem do Selflow, a ferramenta de foco do próprio usuário, sobre a regra { $label }, que começa às { $time }: { $text } { $instruction } Repasse esta mensagem ao usuário.
+agent-message-plain = Mensagem do Selflow, a ferramenta de foco do próprio usuário, sobre a regra { $label }, que começa às { $time }: { $text } Repasse esta mensagem ao usuário.
+agent-text-message = { $label } começa às { $time }.
+agent-text-light = Hora de desacelerar: { $label } começa às { $time }.
+agent-text-no-new-work = Hora de encerrar: { $label } começa às { $time }.
+agent-text-save-only = Hora de parar: { $label } começa às { $time }.
+agent-instruction-light = Até as { $until }, termine o que está em andamento e pegue só tarefas pequenas.
+agent-instruction-no-new-work = Até as { $until }, não comece nada novo. Ajude a salvar o trabalho, anote onde ele parou e qual é o próximo passo, e diga ao usuário para ir descansar.
+agent-instruction-save-only = Até as { $until }, não comece nada novo. Ajude a salvar o trabalho, anote onde ele parou e qual é o próximo passo, e diga ao usuário para ir descansar. Edições de arquivos e comandos de shell estão bloqueados, exceto: { $commands }.
+agent-reminder = Lembrete do Selflow, a ferramenta de foco do próprio usuário (regra { $label }): { $instruction }
+agent-denied = O Selflow bloqueia isto até as { $until } (regra { $label }). Só estes comandos podem rodar: { $commands }. Ajude o usuário a salvar o trabalho e parar por hoje.

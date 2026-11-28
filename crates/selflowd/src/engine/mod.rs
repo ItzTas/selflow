@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use jiff::{SignedDuration, Timestamp, ToSpan, Unit, ZonedDateTime, civil, tz::TimeZone};
+use selflow_core::agent::ActiveAgentStep;
 use selflow_core::config::{Action, Config, parse};
 use selflow_core::enforce::{
     ActiveLock, DayLog, Enforcement, Evaluation, Notice, NoticeKind, evaluate,
@@ -18,6 +19,7 @@ use selflow_protocol::ipc::LockView;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::Receiver;
 
+use crate::agent::Directives;
 use crate::clock::Clock;
 use crate::store::{Announcement, BootState, Event, EventKind, Store, StoreError, StoredLock};
 
@@ -86,7 +88,13 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         let (log, history) = self.load(&now)?;
         let evaluation = evaluate(&now, &self.config, self.seed, &log);
         let language = Language::from_tag(&self.config.language).unwrap_or(Language::En);
+        self.enforcer.direct_agents(Directives {
+            steps: evaluation.agent.clone(),
+            allowed_commands: self.config.agent_allowed_commands.clone(),
+            language,
+        });
         let mut records = self.send_notices(&now, &evaluation, &log, language);
+        records.extend(agent_started(&log, &evaluation.agent));
         let rule = evaluation
             .shutdown
             .as_ref()
@@ -206,7 +214,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
                     window.key() == notice.key && window.starts_at.timestamp() == notice.moment
                 })
             })
-            .filter(|window| window.action != Action::Nothing && !recorded(log, window))
+            .filter(|window| window.enforces() && !recorded(log, window))
             .map(|window| Record::Started(window.clone()))
             .collect()
     }
@@ -488,6 +496,20 @@ fn still_on_time(shutdown_at: Timestamp, now: Timestamp) -> bool {
     now <= later_by(shutdown_at, SHUTDOWN_NOTICE)
 }
 
+fn agent_started(log: &DayLog, steps: &[ActiveAgentStep]) -> Vec<Record> {
+    let mut windows: Vec<&RuleWindow> = Vec::new();
+    for window in steps.iter().map(|active| &active.window) {
+        if recorded(log, window) || windows.iter().any(|kept| same_window(kept, window)) {
+            continue;
+        }
+        windows.push(window);
+    }
+    windows
+        .into_iter()
+        .map(|window| Record::Started(window.clone()))
+        .collect()
+}
+
 fn started_record(log: &DayLog, window: &RuleWindow) -> Option<Record> {
     starts_earlier_than_recorded(log, window).then(|| Record::Started(window.clone()))
 }
@@ -642,7 +664,7 @@ fn shutdown_now(
     (title, localizer.text("notice-shutdown-now", &[time]))
 }
 
-fn clock_time(at: Timestamp, tz: &TimeZone) -> String {
+pub(crate) fn clock_time(at: Timestamp, tz: &TimeZone) -> String {
     at.to_zoned_datetime(tz.clone())
         .strftime("%H:%M")
         .to_string()

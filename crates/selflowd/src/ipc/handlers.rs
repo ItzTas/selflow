@@ -16,7 +16,6 @@ use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
     ChallengeView, ChangeView, ConfigStatusView, ExtensionSource, LockView, MessageView,
     PositionedMessage, RefusalView, ReportEntry, ReportView, Request, Response, StatusView,
-    ToolVerdict,
 };
 use serde_json::{Value, json};
 
@@ -27,51 +26,58 @@ use crate::engine::{ParsedVersions, config_in_force, event_detail, stored_histor
 use crate::store::{Event, EventKind, Store, StoreError};
 
 pub fn handle(request: Request, shared: &Shared) -> Response {
-    if let Some(answer) = agent_answer(&request) {
-        return answer;
-    }
     let now = shared.clock.now();
-    let store = locked(&shared.store);
+    let agents = &shared.agents;
+    let parsed = &shared.parsed;
     let answer = match request {
-        Request::Status => status(&store, &now, shared),
+        Request::AgentSessionStarted(session) => return agents.started(session, &now),
+        Request::AgentSessionEnded { agent, id } => return agents.ended(agent, &id, &now),
+        Request::AgentPrompt(session) => return agents.prompt(session, &now),
+        Request::AgentTool { session, tool } => return agents.tool(session, tool, &now),
         Request::SubscribeLock => Ok(lock_state(&shared.views.borrow())),
+        Request::ReleaseScreen => Ok(release_screen(shared)),
+        Request::Status => stored(shared, |store| status(store, &now, shared)),
         Request::RequestExtension {
             reason,
             phrase,
             source,
-        } => extend(
-            &store,
-            &shared.parsed,
-            &now,
-            &ExtensionAnswer { reason, phrase },
-            source,
-        ),
-        Request::GetConfig => config_text(&store, shared.env_language),
-        Request::SaveConfig { text } => save(&store, &shared.parsed, &now, text),
-        Request::ConfigStatus => config_status(&store, &shared.parsed, now.timestamp()),
-        Request::Report { logical_date } => report(&store, &shared.parsed, &now, logical_date),
-        Request::TestLock { rule, duration } => {
-            test_lock(&store, &now, shared, rule.as_deref(), duration)
+        } => stored(shared, |store| {
+            extend(
+                store,
+                parsed,
+                &now,
+                &ExtensionAnswer { reason, phrase },
+                source,
+            )
+        }),
+        Request::GetConfig => stored(shared, |store| config_text(store, shared.env_language)),
+        Request::SaveConfig { text } => stored(shared, |store| save(store, parsed, &now, text)),
+        Request::ConfigStatus => stored(shared, |store| {
+            config_status(store, parsed, now.timestamp())
+        }),
+        Request::Report { logical_date } => {
+            stored(shared, |store| report(store, parsed, &now, logical_date))
         }
-        Request::ReleaseScreen => Ok(release_screen(shared)),
-        Request::StartException { rule } => start_exception(&store, &shared.parsed, &now, &rule),
+        Request::TestLock { rule, duration } => stored(shared, |store| {
+            test_lock(store, &now, shared, rule.as_deref(), duration)
+        }),
+        Request::StartException { rule } => {
+            stored(shared, |store| start_exception(store, parsed, &now, &rule))
+        }
         Request::ConfirmException {
             rule,
             reason,
             phrase,
-        } => confirm_exception(
-            &store,
-            &shared.parsed,
-            &now,
-            &rule,
-            &ExtensionAnswer { reason, phrase },
-        ),
-        Request::AgentSessionStarted(_)
-        | Request::AgentSessionEnded { .. }
-        | Request::AgentPrompt(_)
-        | Request::AgentTool { .. } => unreachable!("agent requests are answered before the store"),
+        } => stored(shared, |store| {
+            confirm_exception(
+                store,
+                parsed,
+                &now,
+                &rule,
+                &ExtensionAnswer { reason, phrase },
+            )
+        }),
     };
-    drop(store);
     let response = answer.unwrap_or_else(|error| {
         tracing::error!(%error, "couldn't answer a request");
         Response::Error(message("ipc-failed", &[]))
@@ -88,15 +94,11 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
     response
 }
 
-fn agent_answer(request: &Request) -> Option<Response> {
-    match request {
-        Request::AgentSessionStarted(_) | Request::AgentSessionEnded { .. } => {
-            Some(Response::AgentNoted)
-        }
-        Request::AgentPrompt(_) => Some(Response::AgentContext { text: None }),
-        Request::AgentTool { .. } => Some(Response::AgentVerdict(ToolVerdict::Allow)),
-        _ => None,
-    }
+fn stored(
+    shared: &Shared,
+    answer: impl FnOnce(&Store) -> Result<Response, IpcError>,
+) -> Result<Response, IpcError> {
+    answer(&locked(&shared.store))
 }
 
 pub(super) fn lock_state(view: &Option<LockView>) -> Response {

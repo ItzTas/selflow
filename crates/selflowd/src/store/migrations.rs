@@ -23,4 +23,6 @@ pub const MIGRATIONS: &[&str] = &[
      CREATE TABLE shown_locks (identity TEXT PRIMARY KEY, label TEXT NOT NULL, logical_date TEXT NOT NULL,
        test INTEGER NOT NULL, ended INTEGER NOT NULL, boot_id TEXT NOT NULL, shutdown_on_screen TEXT,
        shut_down INTEGER NOT NULL) STRICT;",
+    "CREATE TABLE agent_deliveries (step_key TEXT NOT NULL, session_id TEXT NOT NULL, at TEXT NOT NULL,
+       how TEXT NOT NULL, PRIMARY KEY (step_key, session_id)) STRICT;",
 ];

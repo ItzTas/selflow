@@ -31,3 +31,11 @@ pub fn socket_path_from(runtime_dir: Option<&OsStr>) -> Option<PathBuf> {
 pub fn socket_path() -> Option<PathBuf> {
     socket_path_from(std::env::var_os("XDG_RUNTIME_DIR").as_deref())
 }
+
+pub fn home_dir_from(home: Option<&OsStr>) -> Option<PathBuf> {
+    home.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+pub fn home_dir() -> Option<PathBuf> {
+    home_dir_from(std::env::var_os("HOME").as_deref())
+}

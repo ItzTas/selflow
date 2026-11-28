@@ -5,6 +5,7 @@ mod power;
 use selflow_protocol::ipc::LockView;
 use tokio::sync::watch;
 
+use crate::agent::Directives;
 use crate::engine::Enforcer;
 
 pub use lock_supervisor::{LockSupervisor, lock_program_from};
@@ -19,6 +20,7 @@ pub struct SystemEnforcer {
     supervisor: LockSupervisor,
     notifier: Notifier,
     power: PowerMode,
+    directives: watch::Sender<Directives>,
 }
 
 impl SystemEnforcer {
@@ -27,11 +29,16 @@ impl SystemEnforcer {
             supervisor,
             notifier,
             power,
+            directives: watch::Sender::new(Directives::default()),
         }
     }
 
     pub fn views(&self) -> watch::Receiver<Option<LockView>> {
         self.supervisor.views()
+    }
+
+    pub fn directives(&self) -> watch::Receiver<Directives> {
+        self.directives.subscribe()
     }
 }
 
@@ -50,5 +57,15 @@ impl Enforcer for SystemEnforcer {
 
     fn shut_down(&mut self) {
         power::shut_down(self.power);
+    }
+
+    fn direct_agents(&mut self, directives: Directives) {
+        self.directives.send_if_modified(|current| {
+            if *current == directives {
+                return false;
+            }
+            *current = directives;
+            true
+        });
     }
 }

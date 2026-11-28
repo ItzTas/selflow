@@ -7,6 +7,7 @@ use selflow_core::plan::RuleWindow;
 use selflow_protocol::ipc::LockView;
 use thiserror::Error;
 
+use crate::agent::Directives;
 use crate::store::{Event, StoreError};
 
 pub trait Enforcer: Send {
@@ -14,6 +15,7 @@ pub trait Enforcer: Send {
     fn show_lock(&mut self, view: LockView);
     fn hide_lock(&mut self);
     fn shut_down(&mut self);
+    fn direct_agents(&mut self, directives: Directives);
 }
 
 #[derive(Debug, Error)]

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use jiff::civil::date;
 use selflow_protocol::ipc::LockView;
+use selflowd::agent::Directives;
 use selflowd::engine::{Enforcer, Engine, ParsedVersions};
 use selflowd::store::{Announcement, EventKind, Store};
 use support::{
@@ -196,6 +197,8 @@ impl Enforcer for ProbingEnforcer {
     fn hide_lock(&mut self) {}
 
     fn shut_down(&mut self) {}
+
+    fn direct_agents(&mut self, _directives: Directives) {}
 }
 
 #[test]

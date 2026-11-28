@@ -379,3 +379,18 @@ fn two_histories_share_each_parsed_version() {
         assert!(Arc::ptr_eq(&one.config, &other.config));
     }
 }
+
+#[test]
+fn an_agent_delivery_is_claimed_once() {
+    let store = Store::open_in_memory().unwrap();
+    let key = "bedtime/2026-11-19/60m/light";
+    let claim = || {
+        store
+            .claim_agent_delivery(key, "3f6c1d52", at(19, 22, 10).timestamp(), "prompt")
+            .unwrap()
+    };
+    assert!(claim());
+    assert!(!claim());
+    store.release_agent_delivery(key, "3f6c1d52").unwrap();
+    assert!(claim());
+}

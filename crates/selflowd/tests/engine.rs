@@ -812,3 +812,78 @@ fn a_lock_shutdown_at_a_once_rules_start_counts_for_the_rule() {
         )]
     );
 }
+
+const WRAP_UP: &str = r#"
+language = "en"
+day_starts_at = "05:00"
+
+[[rule_set]]
+name = "everyday"
+days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+[[rule_set.rule]]
+id = "wrap-up"
+start = "22:00"
+end = "23:00"
+
+[[rule_set.rule.agent]]
+before = "30m"
+level = "no-new-work"
+"#;
+
+fn published_keys(calls: &Calls) -> Vec<String> {
+    calls
+        .last_directives()
+        .unwrap()
+        .steps
+        .into_iter()
+        .map(|step| step.key)
+        .collect()
+}
+
+#[test]
+fn the_engine_publishes_active_agent_steps() {
+    let text = format!(
+        "{}\n[[rule_set.rule.agent]]\nbefore = \"60m\"\nlevel = \"light\"\n",
+        no_jitter()
+    );
+    let (mut engine, calls, clock, _store) = start_engine_with(&text, at(19, 21, 59));
+    engine.tick().unwrap();
+    assert_eq!(published_keys(&calls), Vec::<String>::new());
+    clock.set(at(19, 22, 0));
+    engine.tick().unwrap();
+    assert_eq!(published_keys(&calls), ["bedtime/2026-11-19/60m/light"]);
+    let directives = calls.last_directives().unwrap();
+    assert_eq!(directives.language, Language::PtBr);
+    assert_eq!(
+        directives.allowed_commands,
+        [
+            "git status",
+            "git diff",
+            "git add",
+            "git commit",
+            "git stash push"
+        ]
+    );
+}
+
+#[test]
+fn an_agent_step_records_its_window_as_started() {
+    let (mut engine, _calls, clock, store) = start_engine_with(WRAP_UP, at(19, 21, 29));
+    let started = |store: &Mutex<Store>| {
+        store
+            .lock()
+            .unwrap()
+            .night_log(&[date(2026, 11, 19)])
+            .unwrap()
+            .started
+            .into_iter()
+            .map(|window| (window.rule_id, window.starts_at))
+            .collect::<Vec<_>>()
+    };
+    engine.tick().unwrap();
+    assert_eq!(started(&store), []);
+    clock.set(at(19, 21, 30));
+    engine.tick().unwrap();
+    assert_eq!(started(&store), [("wrap-up".to_owned(), at(19, 22, 0))]);
+}

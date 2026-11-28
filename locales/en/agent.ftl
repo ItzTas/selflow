@@ -1,0 +1,11 @@
+agent-message = Message from Selflow, the user's own focus tool, for the { $label } rule at { $time }: { $text } { $instruction } Please pass this message on to the user.
+agent-message-plain = Message from Selflow, the user's own focus tool, for the { $label } rule at { $time }: { $text } Please pass this message on to the user.
+agent-text-message = { $label } starts at { $time }.
+agent-text-light = Time to wind down: { $label } starts at { $time }.
+agent-text-no-new-work = Time to wrap up: { $label } starts at { $time }.
+agent-text-save-only = Time to stop: { $label } starts at { $time }.
+agent-instruction-light = Until { $until }, finish what is underway and take on only small tasks.
+agent-instruction-no-new-work = Until { $until }, take on nothing new. Help save the work, write down where it stopped and what the next step is, and tell the user to go rest.
+agent-instruction-save-only = Until { $until }, take on nothing new. Help save the work, write down where it stopped and what the next step is, and tell the user to go rest. File edits and shell commands are blocked, except: { $commands }.
+agent-reminder = Reminder from Selflow, the user's own focus tool ({ $label } rule): { $instruction }
+agent-denied = Selflow blocks this until { $until } ({ $label } rule). Only these commands can run: { $commands }. Help the user save the work and stop for the day.

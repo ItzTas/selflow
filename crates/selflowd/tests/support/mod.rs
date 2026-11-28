@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,9 +19,10 @@ use selflow_core::versions::{plan_save, stored_changes};
 use selflow_i18n::language::Language;
 use selflow_platform::transport::{Stream, connect, listen};
 use selflow_protocol::ipc::{
-    LockView, MessageReader, PROTOCOL_VERSION, Request, Response, hello_as_client, message_reader,
-    read_message, write_message,
+    AgentKind, AgentSession, LockView, MessageReader, PROTOCOL_VERSION, Request, Response,
+    hello_as_client, message_reader, read_message, write_message,
 };
+use selflowd::agent::{AgentHub, Directives};
 use selflowd::clock::Clock;
 use selflowd::enforcer::{PowerMode, ScreenControl};
 use selflowd::engine::{Enforcer, Engine, ParsedVersions, stored_history};
@@ -61,6 +62,7 @@ pub struct Calls {
     calls: Arc<Mutex<Vec<Call>>>,
     last_view: Arc<Mutex<Option<LockView>>>,
     last_title: Arc<Mutex<Option<String>>>,
+    last_directives: Arc<Mutex<Option<Directives>>>,
 }
 
 impl Calls {
@@ -76,31 +78,43 @@ impl Calls {
         self.last_title.lock().unwrap().clone()
     }
 
+    pub fn last_directives(&self) -> Option<Directives> {
+        self.last_directives.lock().unwrap().clone()
+    }
+
     fn push(&self, call: Call) {
         self.calls.lock().unwrap().push(call);
     }
 }
 
-pub struct FakeEnforcer(Calls);
+pub struct FakeEnforcer {
+    calls: Calls,
+    directives: watch::Sender<Directives>,
+}
 
 impl Enforcer for FakeEnforcer {
     fn warn(&mut self, title: String, body: String) {
-        *self.0.last_title.lock().unwrap() = Some(title);
-        self.0.push(Call::Warn(body));
+        *self.calls.last_title.lock().unwrap() = Some(title);
+        self.calls.push(Call::Warn(body));
     }
 
     fn show_lock(&mut self, view: LockView) {
-        self.0
+        self.calls
             .push(Call::Show(view.label.clone(), view.extensions_left));
-        *self.0.last_view.lock().unwrap() = Some(view);
+        *self.calls.last_view.lock().unwrap() = Some(view);
     }
 
     fn hide_lock(&mut self) {
-        self.0.push(Call::Hide);
+        self.calls.push(Call::Hide);
     }
 
     fn shut_down(&mut self) {
-        self.0.push(Call::ShutDown);
+        self.calls.push(Call::ShutDown);
+    }
+
+    fn direct_agents(&mut self, directives: Directives) {
+        *self.calls.last_directives.lock().unwrap() = Some(directives.clone());
+        self.directives.send_replace(directives);
     }
 }
 
@@ -165,16 +179,80 @@ pub fn engine_on_boot(
     clock: Arc<TestClock>,
     boot: &str,
 ) -> (TestEngine, Calls) {
+    let (engine, calls, _) = engine_directing(store, clock, boot);
+    (engine, calls)
+}
+
+pub fn engine_directing(
+    store: Arc<Mutex<Store>>,
+    clock: Arc<TestClock>,
+    boot: &str,
+) -> (TestEngine, Calls, watch::Receiver<Directives>) {
     let calls = Calls::default();
+    let (directives, published) = watch::channel(Directives::default());
+    let enforcer = FakeEnforcer {
+        calls: calls.clone(),
+        directives,
+    };
     let engine = Engine::new(
         clock,
-        FakeEnforcer(calls.clone()),
+        enforcer,
         store,
         boot.to_owned(),
         ParsedVersions::default(),
     )
     .unwrap();
-    (engine, calls)
+    (engine, calls, published)
+}
+
+pub const HOME: &str = "/home/user";
+
+pub struct AgentRig {
+    pub engine: TestEngine,
+    pub clock: Arc<TestClock>,
+    pub store: Arc<Mutex<Store>>,
+    pub shared: Shared,
+}
+
+pub fn agent_rig(text: &str, now: ZonedDateTime) -> AgentRig {
+    let store = Store::open_in_memory().unwrap();
+    save_text(&store, text);
+    agent_rig_on(Arc::new(Mutex::new(store)), now)
+}
+
+pub fn agent_rig_on(store: Arc<Mutex<Store>>, now: ZonedDateTime) -> AgentRig {
+    let clock = Arc::new(TestClock::new(now));
+    let (engine, _calls, directives) = engine_directing(store.clone(), clock.clone(), BOOT);
+    let agents = Arc::new(AgentHub::new(
+        store.clone(),
+        directives,
+        Some(PathBuf::from(HOME)),
+    ));
+    let shared = Shared {
+        agents,
+        ..shared_over(store.clone(), clock.clone(), PowerMode::Real)
+    };
+    AgentRig {
+        engine,
+        clock,
+        store,
+        shared,
+    }
+}
+
+pub fn session(id: &str, cwd: &str) -> AgentSession {
+    AgentSession {
+        agent: AgentKind::ClaudeCode,
+        id: id.to_owned(),
+        cwd: cwd.to_owned(),
+        inbox: None,
+        attended: true,
+    }
+}
+
+pub fn idle_agents(store: Arc<Mutex<Store>>) -> Arc<AgentHub> {
+    let (_, directives) = watch::channel(Directives::default());
+    Arc::new(AgentHub::new(store, directives, Some(PathBuf::from(HOME))))
 }
 
 pub fn steps(calls: &Calls) -> Vec<&'static str> {
@@ -466,6 +544,7 @@ pub fn shared_over(store: Arc<Mutex<Store>>, clock: Arc<TestClock>, power: Power
     let (wake, _) = mpsc::channel(1);
     let (_, views) = watch::channel(None);
     Shared {
+        agents: idle_agents(store.clone()),
         store,
         clock,
         wake,
@@ -530,8 +609,10 @@ pub async fn launch(
     let listener = listen(&path).unwrap();
     let (wake, _) = mpsc::channel(1);
     let screen = Arc::new(FakeScreen::default());
+    let store = Arc::new(Mutex::new(store));
     let shared = Arc::new(Shared {
-        store: Arc::new(Mutex::new(store)),
+        agents: idle_agents(store.clone()),
+        store,
         clock,
         wake,
         views,

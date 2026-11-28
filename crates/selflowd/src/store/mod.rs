@@ -482,6 +482,32 @@ impl Store {
         Ok(())
     }
 
+    pub fn claim_agent_delivery(
+        &self,
+        step_key: &str,
+        session_id: &str,
+        at: Timestamp,
+        how: &str,
+    ) -> Result<bool, StoreError> {
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO agent_deliveries (step_key, session_id, at, how) VALUES (?1, ?2, ?3, ?4)",
+            params![step_key, session_id, timestamp_text(at), how],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    pub fn release_agent_delivery(
+        &self,
+        step_key: &str,
+        session_id: &str,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "DELETE FROM agent_deliveries WHERE step_key = ?1 AND session_id = ?2",
+            params![step_key, session_id],
+        )?;
+        Ok(())
+    }
+
     pub fn record_shutdown_done(&self, boot_id: &str, key: &str) -> Result<(), StoreError> {
         self.conn.execute(
             "INSERT OR IGNORE INTO boot_shutdowns (boot_id, key) VALUES (?1, ?2)",
