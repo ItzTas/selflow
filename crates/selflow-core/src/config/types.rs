@@ -8,8 +8,8 @@ use jiff::{
 use serde::{Deserialize, Serialize};
 
 use super::constants::{
-    AGENT_LEVELS, DEFAULT_ALLOWED_COMMANDS, DEFAULT_DAY_STARTS_AT, DEFAULT_LANGUAGE,
-    DEFAULT_LOOSENING_DELAY, DEFAULT_NOTICE_AT_START, DEFAULT_NOTICES,
+    DEFAULT_ALLOWED_COMMANDS, DEFAULT_DAY_STARTS_AT, DEFAULT_LANGUAGE, DEFAULT_LOOSENING_DELAY,
+    DEFAULT_NOTICE_AT_START, DEFAULT_NOTICES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,10 +133,12 @@ pub enum AgentLevel {
 
 impl AgentLevel {
     pub fn name(self) -> &'static str {
-        AGENT_LEVELS
-            .iter()
-            .find(|(_, level)| *level == self)
-            .map_or("", |(name, _)| name)
+        match self {
+            AgentLevel::Message => "message",
+            AgentLevel::Light => "light",
+            AgentLevel::NoNewWork => "no-new-work",
+            AgentLevel::SaveOnly => "save-only",
+        }
     }
 }
 
