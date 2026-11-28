@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::clock::Clock;
 use crate::enforcer::{PowerMode, ScreenControl};
-use crate::engine::EngineError;
+use crate::engine::{EngineError, ParsedVersions};
 use crate::store::{Store, StoreError};
 
 pub struct Shared {
@@ -22,6 +22,7 @@ pub struct Shared {
     pub power: PowerMode,
     pub env_language: Language,
     pub screen: Arc<dyn ScreenControl>,
+    pub parsed: ParsedVersions,
 }
 
 pub(super) struct ExceptionDay {

@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use super::constants::{EXCEPTION_START_TTL, TEST_LOCK_MAX, TEST_LOCK_MIN};
 use super::types::{ExceptionDay, IpcError, Shared};
 use crate::enforcer::PowerMode;
-use crate::engine::{config_in_force, event_detail, stored_history};
+use crate::engine::{ParsedVersions, config_in_force, event_detail, stored_history};
 use crate::store::{Event, EventKind, Store, StoreError};
 
 pub fn handle(request: Request, shared: &Shared) -> Response {
@@ -33,21 +33,33 @@ pub fn handle(request: Request, shared: &Shared) -> Response {
             reason,
             phrase,
             source,
-        } => extend(&store, &now, &ExtensionAnswer { reason, phrase }, source),
+        } => extend(
+            &store,
+            &shared.parsed,
+            &now,
+            &ExtensionAnswer { reason, phrase },
+            source,
+        ),
         Request::GetConfig => config_text(&store, shared.env_language),
-        Request::SaveConfig { text } => save(&store, &now, text),
-        Request::ConfigStatus => config_status(&store, now.timestamp()),
-        Request::Report { logical_date } => report(&store, &now, logical_date),
+        Request::SaveConfig { text } => save(&store, &shared.parsed, &now, text),
+        Request::ConfigStatus => config_status(&store, &shared.parsed, now.timestamp()),
+        Request::Report { logical_date } => report(&store, &shared.parsed, &now, logical_date),
         Request::TestLock { rule, duration } => {
             test_lock(&store, &now, shared, rule.as_deref(), duration)
         }
         Request::ReleaseScreen => Ok(release_screen(shared)),
-        Request::StartException { rule } => start_exception(&store, &now, &rule),
+        Request::StartException { rule } => start_exception(&store, &shared.parsed, &now, &rule),
         Request::ConfirmException {
             rule,
             reason,
             phrase,
-        } => confirm_exception(&store, &now, &rule, &ExtensionAnswer { reason, phrase }),
+        } => confirm_exception(
+            &store,
+            &shared.parsed,
+            &now,
+            &rule,
+            &ExtensionAnswer { reason, phrase },
+        ),
     };
     drop(store);
     let response = answer.unwrap_or_else(|error| {
@@ -75,7 +87,7 @@ pub(super) fn lock_state(view: &Option<LockView>) -> Response {
 
 fn status(store: &Store, now: &ZonedDateTime, shared: &Shared) -> Result<Response, IpcError> {
     let instant = now.timestamp();
-    let history = stored_history(store)?;
+    let history = stored_history(store, &shared.parsed)?;
     let config = config_at(&history, instant);
     let next_lock_at = windows_around(&config, store.seed()?, now)
         .iter()
@@ -118,7 +130,12 @@ fn config_text(store: &Store, language: Language) -> Result<Response, IpcError> 
     })
 }
 
-fn save(store: &Store, now: &ZonedDateTime, text: String) -> Result<Response, IpcError> {
+fn save(
+    store: &Store,
+    parsed: &ParsedVersions,
+    now: &ZonedDateTime,
+    text: String,
+) -> Result<Response, IpcError> {
     let proposed = match parse(&text) {
         Ok(config) => config,
         Err(errors) => {
@@ -128,7 +145,7 @@ fn save(store: &Store, now: &ZonedDateTime, text: String) -> Result<Response, Ip
         }
     };
     let saved_at = now.timestamp();
-    let history = stored_history(store)?;
+    let history = stored_history(store, parsed)?;
     let planned = plan_save(&history, &proposed, saved_at);
     let changes = stored_changes(&planned);
     let id = store.save_version(&text, saved_at, &changes)?;
@@ -151,8 +168,12 @@ fn save(store: &Store, now: &ZonedDateTime, text: String) -> Result<Response, Ip
     })
 }
 
-fn config_status(store: &Store, now: Timestamp) -> Result<Response, IpcError> {
-    let history = stored_history(store)?;
+fn config_status(
+    store: &Store,
+    parsed: &ParsedVersions,
+    now: Timestamp,
+) -> Result<Response, IpcError> {
+    let history = stored_history(store, parsed)?;
     Ok(Response::ConfigStatus(ConfigStatusView {
         last_saved_at: history.saved.last().map(|version| version.saved_at),
         pending: change_views(&waiting(&history, now)),
@@ -169,11 +190,12 @@ fn release_screen(shared: &Shared) -> Response {
 
 fn extend(
     store: &Store,
+    parsed: &ParsedVersions,
     now: &ZonedDateTime,
     answer: &ExtensionAnswer,
     source: ExtensionSource,
 ) -> Result<Response, IpcError> {
-    let config = config_in_force(store, now.timestamp())?;
+    let config = config_in_force(store, parsed, now.timestamp())?;
     let today = logical_date(now, config.day_starts_at);
     let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
     let log = store.night_log(&nights)?;
@@ -196,10 +218,11 @@ fn extend(
 
 fn start_exception(
     store: &Store,
+    parsed: &ParsedVersions,
     now: &ZonedDateTime,
     rule_id: &str,
 ) -> Result<Response, IpcError> {
-    let day = exception_day(store, now)?;
+    let day = exception_day(store, parsed, now)?;
     let rule = match skippable(&day, now, rule_id) {
         Ok(rule) => rule,
         Err(refusal) => return Ok(Response::Error(refusal)),
@@ -221,11 +244,12 @@ fn start_exception(
 
 fn confirm_exception(
     store: &Store,
+    parsed: &ParsedVersions,
     now: &ZonedDateTime,
     rule_id: &str,
     answer: &ExtensionAnswer,
 ) -> Result<Response, IpcError> {
-    let day = exception_day(store, now)?;
+    let day = exception_day(store, parsed, now)?;
     let rule = match skippable(&day, now, rule_id) {
         Ok(rule) => rule,
         Err(refusal) => return Ok(Response::Error(refusal)),
@@ -281,8 +305,12 @@ fn answer_exception(
     })
 }
 
-fn exception_day(store: &Store, now: &ZonedDateTime) -> Result<ExceptionDay, IpcError> {
-    let config = config_in_force(store, now.timestamp())?;
+fn exception_day(
+    store: &Store,
+    parsed: &ParsedVersions,
+    now: &ZonedDateTime,
+) -> Result<ExceptionDay, IpcError> {
+    let config = config_in_force(store, parsed, now.timestamp())?;
     let today = logical_date(now, config.day_starts_at);
     let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
     Ok(ExceptionDay {
@@ -401,7 +429,7 @@ fn test_lock(
     if shared.views.borrow().is_some() {
         return Ok(Response::Error(message("ipc-test-lock-busy", &[])));
     }
-    let config = config_in_force(store, now.timestamp())?;
+    let config = config_in_force(store, &shared.parsed, now.timestamp())?;
     let today = logical_date(now, config.day_starts_at);
     let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
     let open_test = store
@@ -476,10 +504,11 @@ fn lock_rules(set: &RuleSet) -> impl Iterator<Item = &Rule> {
 
 fn report(
     store: &Store,
+    parsed: &ParsedVersions,
     now: &ZonedDateTime,
     requested: Option<civil::Date>,
 ) -> Result<Response, IpcError> {
-    let history = stored_history(store)?;
+    let history = stored_history(store, parsed)?;
     let day = match requested {
         Some(day) => day,
         None => {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use jiff::{
     Timestamp,
     civil::{self, Weekday},
@@ -64,7 +66,7 @@ pub struct StoredVersion {
 pub struct SavedConfig {
     pub id: i64,
     pub saved_at: Timestamp,
-    pub config: Config,
+    pub config: Arc<Config>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

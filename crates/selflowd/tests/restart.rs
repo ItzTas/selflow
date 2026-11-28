@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use jiff::civil::date;
 use selflow_protocol::ipc::LockView;
-use selflowd::engine::{Enforcer, Engine};
+use selflowd::engine::{Enforcer, Engine, ParsedVersions};
 use selflowd::store::{Announcement, EventKind, Store};
 use support::{
     BOOT, LIGHTS_OUT, TestClock, at, engine_on, engine_on_boot, save_text, second, setup,
@@ -209,7 +209,14 @@ fn the_announcement_is_stored_before_the_notice_goes_out() {
         saw: saw.clone(),
     };
     let clock = Arc::new(TestClock::new(at(20, 2, 0)));
-    let mut engine = Engine::new(clock, probe, store, BOOT.to_owned()).unwrap();
+    let mut engine = Engine::new(
+        clock,
+        probe,
+        store,
+        BOOT.to_owned(),
+        ParsedVersions::default(),
+    )
+    .unwrap();
     engine.tick().unwrap();
     assert_eq!(*saw.lock().unwrap(), [true]);
 }

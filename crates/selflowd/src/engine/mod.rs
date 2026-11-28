@@ -22,7 +22,7 @@ use crate::clock::Clock;
 use crate::store::{Announcement, BootState, Event, EventKind, Store, StoreError, StoredLock};
 
 pub use constants::{MAX_SLEEP, SHUTDOWN_NOTICE, WARNING_GRACE};
-pub use types::{Enforcer, EngineError};
+pub use types::{Enforcer, EngineError, ParsedVersions};
 use types::{Outcome, Record};
 
 pub struct Engine<C: Clock, E: Enforcer> {
@@ -30,8 +30,8 @@ pub struct Engine<C: Clock, E: Enforcer> {
     enforcer: E,
     store: Arc<Mutex<Store>>,
     boot_id: String,
+    parsed: ParsedVersions,
     seed: Seed,
-    parsed: HashMap<i64, Config>,
     config: Config,
     localizers: HashMap<Language, Localizer>,
     sent: HashSet<(String, Timestamp)>,
@@ -46,6 +46,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
         enforcer: E,
         store: Arc<Mutex<Store>>,
         boot_id: String,
+        parsed: ParsedVersions,
     ) -> Result<Self, EngineError> {
         let since = clock.now().date().saturating_sub(2.days());
         let (seed, state) = {
@@ -57,8 +58,8 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
             enforcer,
             store,
             boot_id,
+            parsed,
             seed,
-            parsed: HashMap::new(),
             config: Config::empty(),
             localizers: HashMap::new(),
             sent: state.sent.into_iter().collect(),
@@ -114,7 +115,7 @@ impl<C: Clock, E: Enforcer> Engine<C, E> {
     fn load(&mut self, now: &ZonedDateTime) -> Result<(DayLog, History), EngineError> {
         let shared = Arc::clone(&self.store);
         let store = locked(&shared);
-        let history = history_with(&store, &mut self.parsed)?;
+        let history = stored_history(&store, &self.parsed)?;
         self.config = config_at(&history, now.timestamp());
         let today = logical_date(now, self.config.day_starts_at);
         let nights: Vec<civil::Date> = today.yesterday().into_iter().chain(Some(today)).collect();
@@ -523,15 +524,15 @@ fn write(store: &Store, record: &Record) -> Result<(), StoreError> {
     }
 }
 
-pub fn config_in_force(store: &Store, now: Timestamp) -> Result<Config, EngineError> {
-    Ok(config_at(&stored_history(store)?, now))
+pub fn config_in_force(
+    store: &Store,
+    parsed: &ParsedVersions,
+    now: Timestamp,
+) -> Result<Config, EngineError> {
+    Ok(config_at(&stored_history(store, parsed)?, now))
 }
 
-pub fn stored_history(store: &Store) -> Result<History, EngineError> {
-    history_with(store, &mut HashMap::new())
-}
-
-fn history_with(store: &Store, parsed: &mut HashMap<i64, Config>) -> Result<History, EngineError> {
+pub fn stored_history(store: &Store, parsed: &ParsedVersions) -> Result<History, EngineError> {
     let (versions, changes) = store.history_rows()?;
     let saved = versions
         .iter()
@@ -546,19 +547,15 @@ fn history_with(store: &Store, parsed: &mut HashMap<i64, Config>) -> Result<Hist
     Ok(History { saved, changes })
 }
 
-fn config_of(
-    version: &StoredVersion,
-    parsed: &mut HashMap<i64, Config>,
-) -> Result<Config, EngineError> {
-    if let Some(config) = parsed.get(&version.id) {
-        return Ok(config.clone());
+fn config_of(version: &StoredVersion, parsed: &ParsedVersions) -> Result<Arc<Config>, EngineError> {
+    if let Some(config) = parsed.get(version.id) {
+        return Ok(config);
     }
     let config = parse(&version.text).map_err(|errors| EngineError::StoredConfig {
         id: version.id,
         errors,
     })?;
-    parsed.insert(version.id, config.clone());
-    Ok(config)
+    Ok(parsed.keep(version.id, config))
 }
 
 fn starts_earlier_than_recorded(log: &DayLog, window: &RuleWindow) -> bool {

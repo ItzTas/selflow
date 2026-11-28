@@ -15,7 +15,7 @@ use crate::clock::SystemClock;
 use crate::enforcer::{
     LockSupervisor, Notifier, ScreenControl, SystemEnforcer, lock_program_from, power_mode,
 };
-use crate::engine::{Engine, EngineError};
+use crate::engine::{Engine, EngineError, ParsedVersions};
 use crate::ipc::{IpcError, Shared, serve};
 use crate::os::StopSignal;
 use crate::store::{Store, StoreError};
@@ -66,11 +66,13 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
     tracing::info!("power mode: {power}");
     let enforcer = SystemEnforcer::new(supervisor, Notifier, power);
     let views = enforcer.views();
+    let parsed = ParsedVersions::default();
     let mut engine = Engine::new(
         Arc::clone(&clock),
         enforcer,
         Arc::clone(&store),
         current_boot(),
+        parsed.clone(),
     )?;
     let mut terminate = StopSignal::new()?;
     if let Err(error) = engine.tick() {
@@ -85,6 +87,7 @@ async fn run_bound(listener: Listener, store_path: &Path) -> Result<(), AppError
         power,
         env_language: Language::from_env(),
         screen,
+        parsed,
     });
     let mut server = tokio::spawn(serve(listener, shared));
     tracing::info!("selflowd is running");

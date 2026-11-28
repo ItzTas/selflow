@@ -24,7 +24,7 @@ use selflow_protocol::ipc::{
 };
 use selflowd::clock::Clock;
 use selflowd::enforcer::{PowerMode, ScreenControl};
-use selflowd::engine::{Enforcer, Engine, stored_history};
+use selflowd::engine::{Enforcer, Engine, ParsedVersions, stored_history};
 use selflowd::ipc::{Shared, serve};
 use selflowd::store::Store;
 use tempfile::TempDir;
@@ -166,7 +166,14 @@ pub fn engine_on_boot(
     boot: &str,
 ) -> (TestEngine, Calls) {
     let calls = Calls::default();
-    let engine = Engine::new(clock, FakeEnforcer(calls.clone()), store, boot.to_owned()).unwrap();
+    let engine = Engine::new(
+        clock,
+        FakeEnforcer(calls.clone()),
+        store,
+        boot.to_owned(),
+        ParsedVersions::default(),
+    )
+    .unwrap();
     (engine, calls)
 }
 
@@ -193,7 +200,7 @@ pub fn save_text(store: &Store, text: &str) {
 pub fn save_at(store: &Store, text: &str, when: ZonedDateTime) {
     let saved_at = when.timestamp();
     let planned = plan_save(
-        &stored_history(store).unwrap(),
+        &stored_history(store, &ParsedVersions::default()).unwrap(),
         &parse(text).unwrap(),
         saved_at,
     );
@@ -466,6 +473,7 @@ pub fn shared_over(store: Arc<Mutex<Store>>, clock: Arc<TestClock>, power: Power
         power,
         env_language: Language::En,
         screen: Arc::new(FakeScreen::default()),
+        parsed: ParsedVersions::default(),
     }
 }
 
@@ -530,6 +538,7 @@ pub async fn launch(
         power,
         env_language,
         screen: screen.clone(),
+        parsed: ParsedVersions::default(),
     });
     tokio::spawn(serve(listener, Arc::clone(&shared)));
     let stream = connect(&path).await.unwrap();

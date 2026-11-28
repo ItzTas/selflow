@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use jiff::{
     ZonedDateTime,
     civil::date,
@@ -103,7 +105,7 @@ pub fn history_of(saves: &[(ZonedDateTime, &str)]) -> History {
         history.saved.push(SavedConfig {
             id,
             saved_at,
-            config,
+            config: Arc::new(config),
         });
     }
     history

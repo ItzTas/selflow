@@ -2,6 +2,7 @@ mod support;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::Arc;
 
 use jiff::civil::date;
 use selflow_core::config::parse;
@@ -9,8 +10,9 @@ use selflow_core::enforce::DayLog;
 use selflow_core::plan::{RuleWindow, windows_for};
 use selflow_core::timing::Seed;
 use selflow_core::versions::{ChangeKind, StoredChange, StoredVersion};
+use selflowd::engine::{ParsedVersions, stored_history};
 use selflowd::store::{Announcement, BootState, Event, EventKind, Store, StoredLock};
-use support::{M1_TEXT, at, brt, extension, m1_store, no_jitter};
+use support::{M1_TEXT, VALID, at, brt, extension, m1_store, no_jitter, save_at};
 
 #[test]
 fn keeps_one_seed_for_the_life_of_the_database() {
@@ -362,4 +364,18 @@ fn forgetting_other_boots_keeps_open_locks() {
     assert_eq!(kept.locks, vec![open]);
     let everything = store.boot_state("b2", date(2026, 11, 1)).unwrap();
     assert_eq!(everything.locks.len(), 1);
+}
+
+#[test]
+fn two_histories_share_each_parsed_version() {
+    let store = Store::open_in_memory().unwrap();
+    save_at(&store, &no_jitter(), at(18, 10, 0));
+    save_at(&store, VALID, at(18, 12, 0));
+    let parsed = ParsedVersions::default();
+    let first = stored_history(&store, &parsed).unwrap();
+    let second = stored_history(&store, &parsed).unwrap();
+    assert_eq!(first.saved.len(), 2);
+    for (one, other) in first.saved.iter().zip(&second.saved) {
+        assert!(Arc::ptr_eq(&one.config, &other.config));
+    }
 }
