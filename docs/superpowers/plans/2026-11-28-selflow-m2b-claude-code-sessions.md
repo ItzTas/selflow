@@ -38,9 +38,34 @@ with Save only active, in each of the last two runs: every p95 between 1.26 and 
 1.66 ms), so the 10 ms budget held in all six. One earlier single measurement gave 12.49 ms (prompt)
 and 13.49 ms (tool) at p95 while other sessions' jobs ran on the laptop, and its cause wasn't found,
 so the budget isn't guaranteed under every load. Idle release daemon over 600 s: 7.5 MB RSS, 0 CPU
-ticks. `scenario-level1.sh` and `scenario-level2.sh` passed again. Left for later: the deferred
-minors in the SDD progress file (Task 10's inbox claims and courier, Task 11's `claude --version` and
-`current_exe` cases), the slow latency measurement, and the owner's steps below.
+ticks. `scenario-level1.sh` and `scenario-level2.sh` passed again. The whole-plan review and its fix wave
+(`f59742b`..`16ac76f`) added `Monitor` and `PowerShell` to the Save-only check, a reinstall that
+updates an out-of-date hook, the release of unsent inbox claims at start, a supervised courier, and
+the release of a prompt's claims when the hook can't read the answer; `make check` passed on HEAD
+with 363 tests. Binary sizes (release): `selflowd` 8.4 MB (+421 KiB), `selflow` 3.4 MB (+434 KiB),
+`selflow-ui` 25 MB (+40 KiB).
+
+Pending the owner: ruling S11 (Claude steps tie only to the rule's start, no resend before a lock
+returns from an extension; spec §8.12).
+
+Left for later (from the reviews, none blocking):
+
+- A crash after an inbox write but before its event is recorded resends that message once at the
+  next start; a crash after a prompt's claim but before the answer still loses it.
+- `REPL`/`Eval` (gated in Claude Code 2.1.332) isn't in the hook matcher; check it if it becomes
+  generally available. `EnterWorktree` isn't either (low risk).
+- An inbox-delivered turn also gets the reminder from its own `UserPromptSubmit`.
+- The hub keeps sessions without an inbox until `SessionEnd`; `agent_deliveries` isn't pruned; the
+  ungoverned set isn't pruned for dropped sessions.
+- The Save-only filter refuses `$`, `{`, `}` and parentheses even inside quotes (strict by design);
+  `git stash push -u` moves untracked files away and `pop` isn't allowed by default.
+- `claude --version`'s kill reaches only the direct child; `current_exe` ending in " (deleted)"
+  after the binary is replaced; the version-deadline test spawns scripts.
+- The harness: `permission_mode` isn't asserted; the `Do you want to ` refusal pattern is broad;
+  `down` leaves a dead tmux socket file; Claude Code's `history.jsonl` lines stay in `~/.claude`.
+- Small test gaps: the shared `ParsedVersions` wiring in `app.rs`, `boot_state`-style filters, the
+  Monitor deny proven in two halves (hook mapping, daemon Shell deny).
+- One hook latency measurement went over 10 ms under other load (cause unknown).
 
 ## Global Constraints
 
