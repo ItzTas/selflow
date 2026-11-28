@@ -666,6 +666,27 @@ fn a_save_during_a_lock_that_brings_the_shutdown_forward_still_gives_a_minute() 
 }
 
 #[test]
+fn a_started_rule_that_gains_a_shutdown_announces_it_and_shuts_down_a_minute_later() {
+    let quiet = LIGHTS_OUT.replace("shutdown = \"once\"\n", "");
+    let (mut engine, calls, clock, store) = start_engine_with(&quiet, at(20, 2, 10));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    save_at(&store.lock().unwrap(), LIGHTS_OUT, at(20, 2, 20));
+    clock.set(at(20, 2, 20));
+    assert_eq!(engine.tick().unwrap(), at(20, 2, 21).timestamp());
+    assert_eq!(
+        calls.take(),
+        [Call::Hide, Call::Warn(shutdown_now_text("02:21"))]
+    );
+    clock.set(second(20, 2, 20, 59));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+    clock.set(at(20, 2, 21));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+}
+
+#[test]
 fn a_resume_after_an_earlier_notice_gets_a_fresh_minute() {
     let defaults = LIGHTS_OUT.replace("notices = []\n", "");
     let (mut engine, calls, clock, _store) = start_engine_with(&defaults, at(20, 1, 45));
