@@ -1,6 +1,8 @@
 .PHONY: check test install
 
 WINDOWS_TARGET := x86_64-pc-windows-msvc
+BINARIES := selflowd selflow selflow-ui
+TARGET_DIR := target
 
 check:
 	cargo fmt --check
@@ -14,8 +16,7 @@ test:
 	cargo test
 
 install:
-	cargo install --locked --path crates/selflowd
-	cargo install --locked --path crates/selflow
-	cargo install --locked --path crates/selflow-ui
+	cargo build --release --locked --target-dir $(TARGET_DIR) $(BINARIES:%=-p %)
+	install -Dm755 -t ~/.cargo/bin $(BINARIES:%=$(TARGET_DIR)/release/%)
 	install -Dm644 contrib/selflowd.service ~/.config/systemd/user/selflowd.service
 	systemctl --user daemon-reload
