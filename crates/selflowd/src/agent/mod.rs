@@ -70,10 +70,10 @@ impl AgentHub {
     }
 
     pub fn prompt(&self, session: AgentSession, now: &ZonedDateTime) -> Response {
-        self.register(session.clone(), now.timestamp());
         let directives = self.directives.borrow().clone();
         let at = now.timestamp();
         let claimed = self.claim_unsent(&session, &directives.steps, PROMPT_DELIVERY, at);
+        self.register(session.clone(), at);
         self.record_sent(&session, &claimed, PROMPT_DELIVERY, at);
         let reminded = governing(
             &directives.steps,
