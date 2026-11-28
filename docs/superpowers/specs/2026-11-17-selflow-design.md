@@ -6,7 +6,10 @@
   rules that need no lock (section 8.3), Claude Code steps inside rules (section 8.12), modes as
   defaults and limits (section 8.10), the terminal unlock (section 8.13), the split between the
   command line and the graphical binary (section 6.1), and the operating system layer
-  (section 19).
+  (section 19). **Updated:** 2026-11-27 with the rule to keep only the data Selflow needs
+  (section 2), agent adapters for agent steps (section 8.12), trusted contacts over WhatsApp in
+  phase 4 (section 11), the full interface in phase 6 (section 13), and the designs still to come
+  (section 21).
 - **Name:** Selflow. Binaries: `selflow`, `selflowd`, `selflow-server`, and from M2 `selflow-ui`.
 
 Decisions marked "Claude's call" were settled by Claude while writing this document and are open
@@ -754,7 +757,8 @@ How the routine works in practice (Claude's call):
 - URL and site rules, through a browser extension that reports the active tab to the local daemon.
 - Plugins, through a standard detector contract: a plugin watches something and reports it to the
   daemon. The builder picks the plugin mechanism (WASM, external processes or something else)
-  within the resource budget.
+  within the resource budget. The owner plans to widen plugins beyond detectors when this phase
+  starts.
 - Optional two-factor login with TOTP (section 7.1).
 - Trusted contacts over WhatsApp: people the user trusts set off rules with ordinary messages,
   inside time windows, and can grant time on the locks they caused. Designed in
@@ -1025,3 +1029,18 @@ Conventions inside every crate:
 - AI help (phase 7). What an AI may see, since an extension reason is private text, and whether it
   runs as a local model or through a hook or a token, which decides whether that text leaves the
   machine.
+
+Designs still to come, recorded with the owner on 2026-11-27. Each one gets its own design before
+it is built:
+
+- Minigames as an unlock challenge. The owner has seen other focus apps offer minigames to get out
+  of a block. Here they would be a sixth challenge type next to the five in section 8.5, with games
+  that are Selflow's own. The central question: section 4 rules out an easy bypass, and a game that
+  is too much fun turns unlocking into a reward instead of friction.
+- Feature flags. A flag turns a whole area off, and the area then disappears from the
+  configuration, the onboarding, the interface and the reports. The owner's example is AI: some
+  people get really annoyed by AI features, so they can turn them all off. Other likely areas are
+  trusted contacts, medication and minigames. Flags are separate from modes (section 8.10),
+  which only set defaults and limits. To settle in that design: switching an area off can weaken
+  rules that are active (turning trusted contacts off while only a family member can end a lock),
+  so it probably counts as loosening (section 8.9).
