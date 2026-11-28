@@ -1,18 +1,22 @@
 mod support;
 
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use selflow::claude::{HookEnv, attended, hook_output, hook_request, hook_with};
-use selflow::cli::HookEvent;
+use clap::Parser;
+use selflow::claude::{HookEnv, attended, hook_event, hook_output, hook_request, hook_with};
+use selflow::cli::commands::claude_with;
+use selflow::cli::{ClaudeAction, Cli, Command, HookEvent};
+use selflow_i18n::language::Language;
+use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
     AgentKind, AgentSession, HELLO_MAGIC, Request, Response, ToolCall, ToolVerdict,
 };
 use serde_json::{Value, json};
-use support::FakeDaemon;
+use support::{FakeDaemon, ScriptedPrompt};
 use tempfile::TempDir;
 
 const SESSION: &str = "b6e272b7-6796-4a56-8a9c-77257b60645f";
@@ -144,7 +148,7 @@ fn a_denial_becomes_a_pre_tool_use_deny() {
     })]);
     let output = hook_with(
         HookEvent::Tool,
-        fixture("tool-write.json").as_bytes(),
+        Cursor::new(fixture("tool-write.json")),
         &interactive(),
         Some(daemon.path()),
     );
@@ -170,7 +174,7 @@ fn an_allow_prints_nothing() {
 fn tool_hook(socket: Option<&Path>) -> Option<String> {
     hook_with(
         HookEvent::Tool,
-        fixture("tool-bash.json").as_bytes(),
+        Cursor::new(fixture("tool-bash.json")),
         &interactive(),
         socket,
     )
@@ -224,10 +228,76 @@ fn input_that_is_not_json_lets_the_call_through() {
     })]);
     let output = hook_with(
         HookEvent::Tool,
-        "not json".as_bytes(),
+        Cursor::new("not json"),
         &interactive(),
         Some(daemon.path()),
     );
     assert_eq!(output, None);
     assert!(daemon.requests().is_empty());
+}
+
+#[test]
+fn stdin_that_never_closes_lets_the_call_through_in_time() {
+    let daemon = FakeDaemon::new([Response::AgentVerdict(ToolVerdict::Deny {
+        reason: "no".to_owned(),
+    })]);
+    let (reader, writer) = std::io::pipe().unwrap();
+    let started = Instant::now();
+    let output = hook_with(HookEvent::Tool, reader, &interactive(), Some(daemon.path()));
+    assert!(started.elapsed() < Duration::from_millis(1500));
+    assert_eq!(output, None);
+    assert!(daemon.requests().is_empty());
+    drop(writer);
+}
+
+fn hook_args(args: &[&str]) -> Vec<String> {
+    let line = ["selflow", "claude", "hook"].iter().chain(args);
+    let Command::Claude(claude) = Cli::try_parse_from(line).unwrap().command else {
+        panic!("not the claude command");
+    };
+    let ClaudeAction::Hook { args } = claude.action else {
+        panic!("not the hook action");
+    };
+    args
+}
+
+#[test]
+fn the_hook_reads_its_event_from_any_arguments() {
+    assert_eq!(hook_event(&hook_args(&["tool"])), Some(HookEvent::Tool));
+    assert_eq!(
+        hook_event(&hook_args(&["session-start"])),
+        Some(HookEvent::SessionStart)
+    );
+    for args in [
+        &["bogus"][..],
+        &[],
+        &["tool", "extra"],
+        &["--help"],
+        &["-x", "tool"],
+    ] {
+        assert_eq!(hook_event(&hook_args(args)), None, "{args:?}");
+    }
+}
+
+#[test]
+fn an_unknown_event_exits_0_without_output() {
+    let line = ["selflow", "claude", "hook", "bogus"];
+    let Command::Claude(args) = Cli::try_parse_from(line).unwrap().command else {
+        panic!("not the claude command");
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut prompt = ScriptedPrompt::new([]);
+    let localizer = Localizer::new(Language::En);
+    let settings = dir.path().join("settings.json");
+    let code = claude_with(
+        args,
+        &settings,
+        "/usr/bin/selflow",
+        None,
+        &localizer,
+        &mut prompt,
+    );
+    assert_eq!(code.unwrap(), std::process::ExitCode::SUCCESS);
+    assert!(prompt.said().is_empty());
+    assert!(!settings.exists());
 }

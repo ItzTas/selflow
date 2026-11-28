@@ -4,7 +4,7 @@ mod settings;
 mod types;
 
 pub use constants::{HOOK_DEADLINE, MIN_INBOX_VERSION};
-pub use hook::{attended, hook_env, hook_output, hook_request, hook_with};
+pub use hook::{attended, hook_env, hook_event, hook_output, hook_request, hook_with};
 pub use settings::{
     delivery_warnings, install, parse_claude_version, read_settings, uninstall, write_settings,
 };

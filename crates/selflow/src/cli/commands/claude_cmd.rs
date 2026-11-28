@@ -9,8 +9,8 @@ use selflow_platform::paths::socket_path;
 use serde_json::Value;
 
 use crate::claude::{
-    ClaudeError, DeliveryWarning, HookEdit, HookEvent, MIN_INBOX_VERSION, delivery_warnings,
-    hook_env, hook_with, install, parse_claude_version, read_settings, uninstall, write_settings,
+    ClaudeError, DeliveryWarning, HookEdit, MIN_INBOX_VERSION, delivery_warnings, hook_env,
+    hook_event, hook_with, install, parse_claude_version, read_settings, uninstall, write_settings,
 };
 use crate::cli::CliError;
 use crate::os::{claude_settings_path, claude_version_output};
@@ -24,9 +24,10 @@ pub struct ClaudeArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ClaudeAction {
+    #[command(disable_help_flag = true)]
     Hook {
-        #[arg(value_enum)]
-        event: HookEvent,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     Install {
         #[arg(long)]
@@ -39,8 +40,8 @@ pub enum ClaudeAction {
 }
 
 pub fn claude_cmd(args: ClaudeArgs) -> Result<ExitCode, CliError> {
-    if let ClaudeAction::Hook { event } = args.action {
-        return Ok(hook(event));
+    if let ClaudeAction::Hook { args } = &args.action {
+        return Ok(hook(args));
     }
     let settings = claude_settings_path().ok_or(ClaudeError::NoSettingsPath)?;
     let program = std::env::current_exe().map_err(|_| ClaudeError::NoProgramPath)?;
@@ -59,9 +60,12 @@ pub fn claude_cmd(args: ClaudeArgs) -> Result<ExitCode, CliError> {
     )
 }
 
-fn hook(event: HookEvent) -> ExitCode {
+fn hook(args: &[String]) -> ExitCode {
+    let Some(event) = hook_event(args) else {
+        return ExitCode::SUCCESS;
+    };
     let socket = socket_path();
-    let output = hook_with(event, io::stdin().lock(), &hook_env(), socket.as_deref());
+    let output = hook_with(event, io::stdin(), &hook_env(), socket.as_deref());
     if let Some(output) = output {
         let _ = writeln!(io::stdout(), "{output}");
     }
@@ -77,7 +81,7 @@ pub fn claude_with(
     prompt: &mut dyn Prompt,
 ) -> Result<ExitCode, CliError> {
     let (yes, installing) = match args.action {
-        ClaudeAction::Hook { event } => return Ok(hook(event)),
+        ClaudeAction::Hook { args } => return Ok(hook(&args)),
         ClaudeAction::Install { yes } => (yes, true),
         ClaudeAction::Uninstall { yes } => (yes, false),
     };
