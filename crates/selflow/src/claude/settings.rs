@@ -1,36 +1,57 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, ErrorKind, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 use tempfile::NamedTempFile;
 
 use super::constants::{
-    BYPASS_MODE, HOOK_EVENTS, HOOK_TIMEOUT_SECONDS, INBOUND_ACCEPT, INBOUND_KEY, PROGRAM_NAME,
+    BYPASS_MODE, HOOK_EVENTS, HOOK_TIMEOUT_SECONDS, INBOUND_ACCEPT, INBOUND_KEY, MAX_LINKS,
+    PLAIN_PATH_CHARS, PROGRAM_NAME,
 };
 use super::types::{ClaudeError, DeliveryWarning, HookEdit, HookEvent};
 
-pub fn read_settings(path: &Path) -> Result<Value, ClaudeError> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
-        Err(source) => return Err(file_error(path, source)),
+pub fn read_settings_bytes(path: &Path) -> Result<Option<Vec<u8>>, ClaudeError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(file_error(path, source)),
+    }
+}
+
+pub fn parse_settings(path: &Path, bytes: Option<&[u8]>) -> Result<Value, ClaudeError> {
+    let invalid = |detail: String| ClaudeError::Invalid {
+        path: path.to_owned(),
+        detail,
     };
+    let text = std::str::from_utf8(bytes.unwrap_or_default())
+        .map_err(|error| invalid(error.to_string()))?;
     if text.trim().is_empty() {
         return Ok(Value::Object(Map::new()));
     }
-    serde_json::from_str::<Map<String, Value>>(&text)
-        .map(Value::Object)
-        .map_err(|error| ClaudeError::Invalid {
-            path: path.to_owned(),
-            detail: error.to_string(),
-        })
+    let settings: Map<String, Value> =
+        serde_json::from_str(text).map_err(|error| invalid(error.to_string()))?;
+    check_hooks(&settings).map_err(invalid)?;
+    Ok(Value::Object(settings))
+}
+
+fn check_hooks(settings: &Map<String, Value>) -> Result<(), String> {
+    let Some(hooks) = settings.get("hooks") else {
+        return Ok(());
+    };
+    let hooks: Map<String, Value> =
+        serde_json::from_value(hooks.clone()).map_err(|error| format!("hooks: {error}"))?;
+    for (event, groups) in &hooks {
+        serde_json::from_value::<Vec<Value>>(groups.clone())
+            .map_err(|error| format!("hooks.{event}: {error}"))?;
+    }
+    Ok(())
 }
 
 pub fn write_settings(path: &Path, settings: &Value) -> Result<(), ClaudeError> {
     let failed = |source: io::Error| file_error(path, source);
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+    let target = link_target(path);
     let folder = target
         .parent()
         .filter(|folder| !folder.as_os_str().is_empty())
@@ -48,6 +69,17 @@ pub fn write_settings(path: &Path, settings: &Value) -> Result<(), ClaudeError> 
     temp.as_file().sync_all().map_err(failed)?;
     temp.persist(&target).map_err(|error| failed(error.error))?;
     Ok(())
+}
+
+fn link_target(path: &Path) -> PathBuf {
+    let mut target = path.to_owned();
+    for _ in 0..MAX_LINKS {
+        let Ok(link) = fs::read_link(&target) else {
+            return target;
+        };
+        target = target.parent().unwrap_or(Path::new("")).join(link);
+    }
+    target
 }
 
 fn file_error(path: &Path, source: io::Error) -> ClaudeError {
@@ -167,7 +199,8 @@ fn selflow_command(selflow: &str, event: HookEvent) -> String {
 }
 
 fn quoted(program: &str) -> String {
-    if !program.contains(char::is_whitespace) {
+    let plain = |c: char| c.is_ascii_alphanumeric() || PLAIN_PATH_CHARS.contains(c);
+    if !program.is_empty() && program.chars().all(plain) {
         return program.to_owned();
     }
     format!("'{}'", program.replace('\'', r"'\''"))

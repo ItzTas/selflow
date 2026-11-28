@@ -1,22 +1,23 @@
 mod support;
 
+use std::ffi::OsString;
 use std::io::{Cursor, Read, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use selflow::claude::{HookEnv, attended, hook_event, hook_output, hook_request, hook_with};
-use selflow::cli::commands::claude_with;
+use selflow::cli::commands::claude_hook_with;
 use selflow::cli::{ClaudeAction, Cli, Command, HookEvent};
-use selflow_i18n::language::Language;
-use selflow_i18n::localizer::Localizer;
 use selflow_protocol::ipc::{
     AgentKind, AgentSession, HELLO_MAGIC, Request, Response, ToolCall, ToolVerdict,
 };
 use serde_json::{Value, json};
-use support::{FakeDaemon, ScriptedPrompt};
+use support::FakeDaemon;
 use tempfile::TempDir;
 
 const SESSION: &str = "b6e272b7-6796-4a56-8a9c-77257b60645f";
@@ -146,14 +147,19 @@ fn a_denial_becomes_a_pre_tool_use_deny() {
     let daemon = FakeDaemon::new([Response::AgentVerdict(ToolVerdict::Deny {
         reason: reason.to_owned(),
     })]);
-    let output = hook_with(
-        HookEvent::Tool,
+    let mut out = Vec::new();
+    let code = claude_hook_with(
+        &[OsString::from("tool")],
         Cursor::new(fixture("tool-write.json")),
         &interactive(),
         Some(daemon.path()),
+        &mut out,
     );
+    assert_eq!(code, ExitCode::SUCCESS);
+    let output = String::from_utf8(out).unwrap();
+    assert_eq!(output.lines().count(), 1);
     assert_eq!(
-        parsed(output),
+        parsed(Some(output)),
         json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -250,8 +256,11 @@ fn stdin_that_never_closes_lets_the_call_through_in_time() {
     drop(writer);
 }
 
-fn hook_args(args: &[&str]) -> Vec<String> {
-    let line = ["selflow", "claude", "hook"].iter().chain(args);
+fn hook_args<I: Into<OsString> + Clone>(args: impl IntoIterator<Item = I>) -> Vec<OsString> {
+    let line = ["selflow", "claude", "hook"]
+        .into_iter()
+        .map(OsString::from)
+        .chain(args.into_iter().map(Into::into));
     let Command::Claude(claude) = Cli::try_parse_from(line).unwrap().command else {
         panic!("not the claude command");
     };
@@ -263,9 +272,9 @@ fn hook_args(args: &[&str]) -> Vec<String> {
 
 #[test]
 fn the_hook_reads_its_event_from_any_arguments() {
-    assert_eq!(hook_event(&hook_args(&["tool"])), Some(HookEvent::Tool));
+    assert_eq!(hook_event(&hook_args(["tool"])), Some(HookEvent::Tool));
     assert_eq!(
-        hook_event(&hook_args(&["session-start"])),
+        hook_event(&hook_args(["session-start"])),
         Some(HookEvent::SessionStart)
     );
     for args in [
@@ -275,29 +284,30 @@ fn the_hook_reads_its_event_from_any_arguments() {
         &["--help"],
         &["-x", "tool"],
     ] {
-        assert_eq!(hook_event(&hook_args(args)), None, "{args:?}");
+        assert_eq!(
+            hook_event(&hook_args(args.iter().copied())),
+            None,
+            "{args:?}"
+        );
     }
+    let not_utf8 = OsString::from_vec(vec![b't', 0xff]);
+    assert_eq!(hook_event(&hook_args([not_utf8])), None);
 }
 
 #[test]
 fn an_unknown_event_exits_0_without_output() {
-    let line = ["selflow", "claude", "hook", "bogus"];
-    let Command::Claude(args) = Cli::try_parse_from(line).unwrap().command else {
-        panic!("not the claude command");
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let mut prompt = ScriptedPrompt::new([]);
-    let localizer = Localizer::new(Language::En);
-    let settings = dir.path().join("settings.json");
-    let code = claude_with(
-        args,
-        &settings,
-        "/usr/bin/selflow",
-        None,
-        &localizer,
-        &mut prompt,
+    let daemon = FakeDaemon::new([Response::AgentVerdict(ToolVerdict::Deny {
+        reason: "no".to_owned(),
+    })]);
+    let mut out = Vec::new();
+    let code = claude_hook_with(
+        &hook_args(["bogus"]),
+        Cursor::new(fixture("tool-bash.json")),
+        &interactive(),
+        Some(daemon.path()),
+        &mut out,
     );
-    assert_eq!(code.unwrap(), std::process::ExitCode::SUCCESS);
-    assert!(prompt.said().is_empty());
-    assert!(!settings.exists());
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(out.is_empty());
+    assert!(daemon.requests().is_empty());
 }

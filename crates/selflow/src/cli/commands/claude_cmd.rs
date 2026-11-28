@@ -1,4 +1,5 @@
-use std::io::{self, Write};
+use std::ffi::OsString;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -9,8 +10,9 @@ use selflow_platform::paths::socket_path;
 use serde_json::Value;
 
 use crate::claude::{
-    ClaudeError, DeliveryWarning, HookEdit, MIN_INBOX_VERSION, delivery_warnings, hook_env,
-    hook_event, hook_with, install, parse_claude_version, read_settings, uninstall, write_settings,
+    ClaudeError, DeliveryWarning, HookEdit, HookEnv, MIN_INBOX_VERSION, delivery_warnings,
+    hook_env, hook_event, hook_with, install, parse_claude_version, parse_settings,
+    read_settings_bytes, uninstall, write_settings,
 };
 use crate::cli::CliError;
 use crate::os::{claude_settings_path, claude_version_output};
@@ -27,7 +29,7 @@ pub enum ClaudeAction {
     #[command(disable_help_flag = true)]
     Hook {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
+        args: Vec<OsString>,
     },
     Install {
         #[arg(long)]
@@ -39,19 +41,27 @@ pub enum ClaudeAction {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsChange {
+    Install { yes: bool },
+    Uninstall { yes: bool },
+}
+
 pub fn claude_cmd(args: ClaudeArgs) -> Result<ExitCode, CliError> {
-    if let ClaudeAction::Hook { args } = &args.action {
-        return Ok(hook(args));
-    }
+    let change = match args.action {
+        ClaudeAction::Hook { args } => return Ok(hook(&args)),
+        ClaudeAction::Install { yes } => SettingsChange::Install { yes },
+        ClaudeAction::Uninstall { yes } => SettingsChange::Uninstall { yes },
+    };
     let settings = claude_settings_path().ok_or(ClaudeError::NoSettingsPath)?;
     let program = std::env::current_exe().map_err(|_| ClaudeError::NoProgramPath)?;
     let program = program.to_str().ok_or(ClaudeError::NoProgramPath)?;
-    let version = matches!(args.action, ClaudeAction::Install { .. })
+    let version = matches!(change, SettingsChange::Install { .. })
         .then(claude_version_output)
         .flatten();
     let localizer = Localizer::new(Language::from_env());
     claude_with(
-        args,
+        change,
         &settings,
         program,
         version.as_deref(),
@@ -60,32 +70,45 @@ pub fn claude_cmd(args: ClaudeArgs) -> Result<ExitCode, CliError> {
     )
 }
 
-fn hook(args: &[String]) -> ExitCode {
-    let Some(event) = hook_event(args) else {
-        return ExitCode::SUCCESS;
-    };
+fn hook(args: &[OsString]) -> ExitCode {
     let socket = socket_path();
-    let output = hook_with(event, io::stdin(), &hook_env(), socket.as_deref());
+    claude_hook_with(
+        args,
+        io::stdin(),
+        &hook_env(),
+        socket.as_deref(),
+        &mut io::stdout(),
+    )
+}
+
+pub fn claude_hook_with(
+    args: &[OsString],
+    input: impl Read + Send + 'static,
+    env: &HookEnv,
+    socket: Option<&Path>,
+    out: &mut dyn Write,
+) -> ExitCode {
+    let output = hook_event(args).and_then(|event| hook_with(event, input, env, socket));
     if let Some(output) = output {
-        let _ = writeln!(io::stdout(), "{output}");
+        let _ = writeln!(out, "{output}");
     }
     ExitCode::SUCCESS
 }
 
 pub fn claude_with(
-    args: ClaudeArgs,
+    change: SettingsChange,
     settings_path: &Path,
     selflow: &str,
     version_output: Option<&str>,
     localizer: &Localizer,
     prompt: &mut dyn Prompt,
 ) -> Result<ExitCode, CliError> {
-    let (yes, installing) = match args.action {
-        ClaudeAction::Hook { args } => return Ok(hook(&args)),
-        ClaudeAction::Install { yes } => (yes, true),
-        ClaudeAction::Uninstall { yes } => (yes, false),
+    let (yes, installing) = match change {
+        SettingsChange::Install { yes } => (yes, true),
+        SettingsChange::Uninstall { yes } => (yes, false),
     };
-    let mut settings = read_settings(settings_path)?;
+    let original = read_settings_bytes(settings_path)?;
+    let mut settings = parse_settings(settings_path, original.as_deref())?;
     let edits = match installing {
         true => install(&mut settings, selflow),
         false => uninstall(&mut settings),
@@ -105,6 +128,10 @@ pub fn claude_with(
     warnings.iter().for_each(|warning| prompt.say(warning));
     if !yes && !confirmed(localizer, prompt) {
         prompt.say(&localizer.text("cli-claude-declined", &path));
+        return Ok(ExitCode::from(1));
+    }
+    if read_settings_bytes(settings_path)? != original {
+        prompt.say(&localizer.text("cli-claude-changed", &path));
         return Ok(ExitCode::from(1));
     }
     write_settings(settings_path, &settings)?;

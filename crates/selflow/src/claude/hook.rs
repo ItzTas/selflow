@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc;
@@ -24,11 +25,11 @@ pub fn hook_env() -> HookEnv {
     }
 }
 
-pub fn hook_event(args: &[String]) -> Option<HookEvent> {
+pub fn hook_event(args: &[OsString]) -> Option<HookEvent> {
     let [arg] = args else {
         return None;
     };
-    HookEvent::from_str(arg, false).ok()
+    HookEvent::from_str(arg.to_str()?, false).ok()
 }
 
 pub fn attended(env: &HookEnv) -> bool {

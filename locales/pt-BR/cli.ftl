@@ -33,6 +33,7 @@ cli-claude-confirm = Salvar estas mudanças? [s/N]
 cli-claude-written = { $path } salvo.
 cli-claude-unchanged = Nada a mudar em { $path }.
 cli-claude-declined = Nada foi salvo. { $path } continua como estava.
+cli-claude-changed = { $path } mudou enquanto o Selflow esperava sua resposta, então nada foi salvo. Rode o comando de novo.
 cli-claude-invalid-file = { $path } não é um JSON válido, então o Selflow não mexeu nele: { $detail }
 cli-claude-file-failed = O Selflow não conseguiu ler ou gravar { $path }: { $detail }
 cli-claude-no-settings-path = O Selflow não encontrou suas configurações do Claude Code. Defina HOME ou CLAUDE_CONFIG_DIR.
