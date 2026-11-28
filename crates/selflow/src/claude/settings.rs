@@ -114,8 +114,8 @@ fn install_event(hooks: &mut Map<String, Value>, event: HookEvent, selflow: &str
     };
     let wanted = selflow_command(selflow, event);
     let mut current = false;
-    let removed = remove_selflow_entries(groups, event, |command| {
-        let kept = !current && command == wanted;
+    let removed = remove_selflow_entries(groups, event, |matcher, entry| {
+        let kept = !current && is_current(event, &wanted, matcher, entry);
         current |= kept;
         kept
     });
@@ -151,7 +151,7 @@ fn uninstall_event(hooks: &mut Map<String, Value>, event: HookEvent) -> Vec<Hook
     let Some(groups) = hooks.get_mut(name).and_then(Value::as_array_mut) else {
         return Vec::new();
     };
-    let removed = remove_selflow_entries(groups, event, |_| false);
+    let removed = remove_selflow_entries(groups, event, |_, _| false);
     if !removed.is_empty() && groups.is_empty() {
         hooks.shift_remove(name);
     }
@@ -171,10 +171,11 @@ fn removed_edits(name: &str, removed: Vec<String>) -> Vec<HookEdit> {
 fn remove_selflow_entries(
     groups: &mut Vec<Value>,
     event: HookEvent,
-    mut keep: impl FnMut(&str) -> bool,
+    mut keep: impl FnMut(Option<&str>, &Value) -> bool,
 ) -> Vec<String> {
     let mut removed = Vec::new();
     groups.retain_mut(|group| {
+        let matcher = group["matcher"].as_str().map(str::to_owned);
         let Some(entries) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
             return true;
         };
@@ -183,7 +184,7 @@ fn remove_selflow_entries(
             let Some(command) = entry["command"].as_str() else {
                 return true;
             };
-            if !is_selflow_command(command, event) || keep(command) {
+            if !is_selflow_command(command, event) || keep(matcher.as_deref(), entry) {
                 return true;
             }
             removed.push(command.to_owned());
@@ -192,6 +193,12 @@ fn remove_selflow_entries(
         entries.len() == before || !entries.is_empty()
     });
     removed
+}
+
+fn is_current(event: HookEvent, wanted: &str, matcher: Option<&str>, entry: &Value) -> bool {
+    entry["command"].as_str() == Some(wanted)
+        && entry["timeout"].as_u64() == Some(HOOK_TIMEOUT_SECONDS)
+        && matcher == event.matcher()
 }
 
 fn selflow_command(selflow: &str, event: HookEvent) -> String {

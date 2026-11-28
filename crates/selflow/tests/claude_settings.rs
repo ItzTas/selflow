@@ -146,6 +146,41 @@ fn installing_from_another_path_replaces_the_old_entries() {
 }
 
 #[test]
+fn installing_again_replaces_a_selflow_group_with_another_matcher_or_timeout() {
+    let mut settings = users_settings();
+    install(&mut settings, SELFLOW);
+    let tool_group = settings["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap();
+    tool_group["matcher"] = json!("Edit|Write|MultiEdit|NotebookEdit|Bash");
+    settings["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] = json!(10);
+    let edits = install(&mut settings, SELFLOW);
+    let replaced = |event: &'static str, arg: &str| {
+        [
+            HookEdit::Removed {
+                event: event.to_owned(),
+                command: command(SELFLOW, arg),
+            },
+            HookEdit::Added {
+                event,
+                command: command(SELFLOW, arg),
+            },
+        ]
+    };
+    let expected: Vec<HookEdit> = [
+        replaced("SessionStart", "session-start"),
+        replaced("PreToolUse", "tool"),
+    ]
+    .concat();
+    assert_eq!(edits, expected);
+    let mut fresh = users_settings();
+    install(&mut fresh, SELFLOW);
+    assert_eq!(text(&settings), text(&fresh));
+}
+
+#[test]
 fn uninstall_removes_only_selflows_entries() {
     let mut settings = users_settings();
     install(&mut settings, SELFLOW);
