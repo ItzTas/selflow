@@ -33,20 +33,26 @@ Behavior a person sees:
   `announced` live in memory (`crates/selflowd/src/engine/mod.rs`, fields at :36-37, `send_notices`
   at :135-178), so a restarted daemon sends again every notice from the last two minutes. Same
   cause as M1's notices. From Task 6 (minor), Task 7 (minor) and the isolation harness.
-  **Covered by the IPC plan (`docs/superpowers/plans/2026-11-26-selflow-ipc-versioning.md`,
-  Task 5).** That task stores the notices sent and the announcements per boot, writes them before
-  the notice goes out, and restores them in `Engine::new` (tests `a_restart_does_not_repeat_a_notice`
-  and `a_restart_keeps_the_announced_shutdown_time`). The state is per boot, so a reboot that
-  comes back within `WARNING_GRACE` is not covered. Re-run the harness repro after that plan lands.
+  **Fixed for a daemon restart within a boot** by the IPC plan's Task 5 (commits a463371 and
+  e75e0aa): the engine stores the notices sent and the announcements per boot before the notice
+  goes out and restores them in `Engine::new` (`crates/selflowd/tests/restart.rs`:
+  `a_restart_does_not_repeat_a_notice`, `a_restart_keeps_the_announced_shutdown_time`,
+  `a_restart_keeps_the_fresh_minute_a_resume_gave`). **Still open for a reboot that comes back
+  within `WARNING_GRACE`**: the per-boot state starts empty on a new boot (IPC design section 6.5,
+  controller ruling T5-2), so such a reboot sends the recent notices again.
 - **E2. A done `once` shutdown can announce "shuts down in a minute" again, with no shutdown
   after it.** `notices_for` (`crates/selflow-core/src/enforce/mod.rs:199`) keeps listing a done
   non-repeating window's notices until `ends_at`; a daemon back within `WARNING_GRACE` re-sends
   them, and with `announced` empty the notice is the false "shuts down in a minute". Task 7
   suggested dropping the notices of a done non-repeating window. From Task 7 (two minors) and the
-  isolation harness. **Covered by the IPC plan (`docs/superpowers/plans/2026-11-26-selflow-ipc-versioning.md`,
-  Task 5)**: the sent notices, the announcements and the rules that shut down are restored per boot,
-  so the notice is not sent again. The cause in `notices_for` stays, so check the harness repro once
-  that plan is done and drop this item only if it passes.
+  isolation harness. **Fixed for a daemon restart within a boot** by the IPC plan's Task 5
+  (commits a463371 and e75e0aa): the sent notices, the announcements and the rules that shut down
+  are restored per boot, so the notice is not sent again (`crates/selflowd/tests/restart.rs`:
+  `a_restart_does_not_repeat_a_notice`, `a_restart_after_a_shutdown_does_not_shut_down_again`).
+  **Still open for a reboot that comes back within `WARNING_GRACE`**: the per-boot state starts
+  empty on a new boot (IPC design section 6.5, controller ruling T5-2), and the cause in
+  `notices_for` stays, so after a quick reboot that follows a done `once` shutdown the false
+  "shuts down in a minute" notice can still go out.
 - **E3. A shutdown notice sent under a lock names `max(start, now + 1 min)`.** The real time is
   decided by the lock screen and can be a minute later, and no ruling covers the text of such a
   notice. Such notices do not count as announcements, which `a_shutdown_notice_under_a_lock_does_not_count_as_its_announcement`
