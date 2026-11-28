@@ -7,6 +7,6 @@ ipc-test-lock-no-rule = There's no lock rule for today. Pick one with --rule.
 ipc-test-lock-unknown-rule = There's no rule called { $rule }. The rules you have are: { $rules }
 ipc-release-locked = A lock is on screen now, so it stays. To ask for more time, run selflow unlock again.
 ipc-exception-unknown-rule = There's no rule called { $rule } today. Today's rules are: { $rules }
-ipc-exception-locked = The { $label } lock is running tonight, so it can't be skipped.
+ipc-exception-locked = The { $label } lock is running, so it can't be skipped.
 ipc-exception-done = The { $label } rule is already off for the rest of the day.
 ipc-exception-not-started = There's no request to skip this rule today. Run selflow exception again to start one.

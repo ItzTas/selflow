@@ -829,6 +829,28 @@ fn a_lock_removed_after_the_first_notice_still_needs_the_challenges() {
     ));
 }
 
+#[test]
+fn a_lock_added_after_the_first_notice_of_a_notice_only_rule_needs_the_challenges() {
+    let unlocked = no_jitter().replace("lock = true\nshutdown_after = \"30m\"\n", "");
+    let store = Store::open_in_memory().unwrap();
+    save_at(&store, &unlocked, at(17, 12, 0));
+    let started = windows_for(
+        &parse(&unlocked).unwrap(),
+        store.seed().unwrap(),
+        date(2026, 11, 19),
+        &brt(),
+    )
+    .remove(0);
+    store.record_started(&started).unwrap();
+    save_at(&store, &no_jitter(), at(19, 22, 46));
+    let clock = Arc::new(TestClock::new(at(19, 22, 50)));
+    let shared = shared_over(Arc::new(Mutex::new(store)), clock, PowerMode::LogOnly);
+    assert!(matches!(
+        handle(start_exception("bedtime"), &shared),
+        Response::ExceptionChallenge(_)
+    ));
+}
+
 #[tokio::test]
 async fn an_exception_needs_an_extension_left_for_its_rule() {
     let text = format!(

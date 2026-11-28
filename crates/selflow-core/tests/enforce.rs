@@ -535,3 +535,15 @@ fn a_started_window_keeps_its_action_and_steps_in_the_rule() {
     assert_eq!(judged.agent[0].level, AgentLevel::SaveOnly);
     assert_eq!(started_rule(&rule, None), rule);
 }
+
+#[test]
+fn a_started_window_without_an_action_takes_the_action_of_the_rule() {
+    let plain = parse(&no_jitter().replace("lock = true\nshutdown_after = \"30m\"\n", "")).unwrap();
+    let started = windows_for(&plain, Seed(7), date(2026, 11, 19), &brt()).remove(0);
+    assert_eq!(started.action, Action::Nothing);
+    let locking = parse(&no_jitter()).unwrap();
+    let rule = locking.rule_sets[0].rules[0].clone();
+    let judged = started_rule(&rule, Some(&started));
+    assert!(judged.enforces());
+    assert_eq!(judged.action, rule.action);
+}

@@ -189,6 +189,7 @@ fn merged_start(started: &RuleWindow, computed: &RuleWindow, now: Timestamp) -> 
 
 fn stricter_action(started: Action, computed: Action) -> Action {
     match (started, computed) {
+        (Action::Nothing, computed) => computed,
         (
             Action::Lock {
                 shutdown_after: kept,
