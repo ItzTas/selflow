@@ -28,7 +28,7 @@ end)
 
 Once those lines are in place, start the daemon with `systemctl --user start selflowd.service`, or log out and back in.
 
-To update, run `make install` again, then `systemctl --user restart selflowd.service`. The old daemon keeps running until you restart it, and it would try to open a lock screen that the update removed.
+To update, run `make install` again. The next `selflow` command checks the running daemon against the installed one and restarts the daemon if they differ, so you don't have to restart the service yourself. If the installed programs don't match each other, for example after an install that stopped halfway, nothing is restarted. The command says so and exits with code 2, and running `make install` again fixes it.
 
 The first time, run `selflow config edit` and save. No rule runs until that first save. While nothing is saved yet, closing the editor saves the file even if you left it as it was. Updating from the first milestone starts the configuration over (your reports and extensions stay), so run it then too. It opens the new default file with your old settings as comments at the end, if you have any. Set them again there, outside your lock hours. Everything in the first save applies at once, and so does a new lock or shutdown later. Saving a lock during its hours locks the screen right away, and saving a shutdown rule during its hours turns the computer off a minute later.
 
