@@ -409,10 +409,18 @@ impl Check<'_> {
 
     fn before(&mut self, raw: &RawRule, value: &Spanned<String>) -> Option<SignedDuration> {
         let before = self.offset(value)?;
-        if before < LONGEST_RULE {
+        if before >= LONGEST_RULE {
+            self.report(value, "config-agent-too-early", id_value_args(raw, value));
+            return None;
+        }
+        if before.subsec_nanos() == 0 && before.as_secs() % 60 == 0 {
             return Some(before);
         }
-        self.report(value, "config-agent-too-early", id_value_args(raw, value));
+        self.report(
+            value,
+            "config-agent-whole-minutes",
+            id_value_args(raw, value),
+        );
         None
     }
 

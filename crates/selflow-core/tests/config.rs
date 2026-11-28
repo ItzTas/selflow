@@ -437,6 +437,12 @@ fn reports_each_error_with_its_line() {
         ),
         (
             "shutdown_after = \"30m\"\n",
+            "shutdown_after = \"30m\"\n\n[[rule_set.rule.agent]]\nbefore = \"90s\"\nlevel = \"light\"\n",
+            "config-agent-whole-minutes",
+            30,
+        ),
+        (
+            "shutdown_after = \"30m\"\n",
             "shutdown_after = \"30m\"\n\n[agent]\nallowed_commands = [\" \"]\n",
             "config-agent-empty-command",
             30,

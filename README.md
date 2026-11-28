@@ -103,7 +103,7 @@ level = "save-only"
 message = "Bedtime soon. Save the work and stop here."
 ```
 
-- `before` says how long before the rule's start the step happens. It has to be under 24 hours.
+- `before` says how long before the rule's start the step happens. It has to be whole minutes and under 24 hours.
 - `level` is one of four, from lightest to firmest. With `message`, Claude gets the message and passes it on to you, and nothing else changes. With `light`, every prompt you send also carries a reminder to finish what is underway and take on only small tasks. With `no-new-work`, the reminder asks Claude to start nothing new, help save the work, write down where it stopped and what comes next, and tell you to go rest. `save-only` sends the same reminder and also blocks file edits and shell commands, except the allowed commands below.
 - `message` replaces Selflow's own text for that step.
 - `folders` limits the step to sessions working inside those folders. Write `~`, a path starting with `~/`, or an absolute path. A folder covers everything inside it, but `~/Workspace/app` doesn't cover `~/Workspace/app-old`. Without `folders`, the step covers every session.

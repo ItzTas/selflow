@@ -27,5 +27,6 @@ config-agent-bad-level = The level `{ $value }` in a Claude step of the rule `{ 
 config-agent-bad-folder = The folder `{ $value }` in a Claude step of the rule `{ $id }` needs to be `~`, start with `~/`, or be an absolute path. None of its parts can be `.` or `..`.
 config-agent-duplicate-step = The rule `{ $id }` has two Claude steps with before = `{ $before }` and level `{ $level }`. Remove one of them, or change its before or its level.
 config-agent-too-early = A Claude step of the rule `{ $id }` has before = `{ $value }`. It needs to be under 24h.
+config-agent-whole-minutes = A Claude step of the rule `{ $id }` has before = `{ $value }`. Use whole minutes, like 1m or 90m.
 config-agent-empty-command = An entry of allowed_commands under [agent] is empty. Write a command like "git status", or remove the entry.
 config-before-update = Your settings from before this Selflow update, kept here for reference. Selflow no longer reads them, so copy what you want to keep into the file above.
