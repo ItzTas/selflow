@@ -87,6 +87,35 @@ fn a_restart_keeps_the_shutdown_time_on_the_lock_screen() {
 }
 
 #[test]
+fn a_restart_after_a_shutdown_does_not_shut_down_again() {
+    let repeat = LIGHTS_OUT.replace(r#"shutdown = "once""#, r#"shutdown = "repeat""#);
+    let (mut engine, calls, clock, store) = start_engine_with(&repeat, at(20, 2, 0));
+    engine.tick().unwrap();
+    clock.set(at(20, 2, 1));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["warn", "shut down"]);
+    drop(engine);
+    clock.set(second(20, 2, 1, 30));
+    let (mut restarted, calls) = engine_on(store, clock);
+    restarted.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+}
+
+#[test]
+fn a_restart_after_a_lock_shut_down_does_not_shut_down_again() {
+    let (mut engine, calls, clock, store) = setup(at(19, 23, 0));
+    engine.tick().unwrap();
+    clock.set(at(19, 23, 30));
+    engine.tick().unwrap();
+    assert_eq!(steps(&calls), ["shut down"]);
+    drop(engine);
+    clock.set(second(19, 23, 30, 30));
+    let (mut restarted, calls) = engine_on(store, clock);
+    restarted.tick().unwrap();
+    assert_eq!(steps(&calls), Vec::<&str>::new());
+}
+
+#[test]
 fn a_restart_does_not_repeat_a_notice() {
     let (mut engine, calls, clock, store) = setup(at(19, 22, 45));
     engine.tick().unwrap();
